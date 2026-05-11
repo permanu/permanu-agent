@@ -1,0 +1,688 @@
+syntax = "proto3";
+
+package agent.v1;
+
+option go_package = "deploy/pkg/agentpb";
+
+import "google/protobuf/timestamp.proto";
+
+service AgentService {
+  rpc Heartbeat(HeartbeatRequest) returns (HeartbeatResponse);
+  rpc CommandStream(stream CommandResult) returns (stream Command);
+  rpc PushLogs(stream LogBatch) returns (LogAck);
+  rpc DownloadAgentBinary(DownloadAgentBinaryRequest) returns (stream AgentBinaryChunk);
+  rpc PushSpans(stream SpanBatch) returns (SpanAck);
+  rpc ForwardObserveEvent(ObserveEventRequest) returns (ObserveEventResponse);
+  // ListServerRoutes returns the canonical route set the backend has on record
+  // for a given server. Called by the agent on reconnect so it can upsert any
+  // route that was lost during a Dwaar restart (G-4 reconcile-on-reconnect).
+  rpc ListServerRoutes(ListServerRoutesRequest) returns (ListServerRoutesResponse);
+  // AckCommand lets the agent acknowledge receipt of a command. The backend
+  // flips server_commands.status from pending → dispatched so the reconciler
+  // (PR 2) does not re-dispatch a command the agent has already started.
+  // G-39 PR1 dual-write phase: server stores the row; agent ACKs receipt.
+  rpc AckCommand(CommandAck) returns (CommandAckResponse);
+}
+
+// SpanBatch carries raw OTLP ExportTraceServiceRequest bytes.
+// The backend parses once — this keeps serialization off the edge.
+message SpanBatch {
+  bytes otlp_payload = 1;
+}
+
+// SpanAck is the response from a completed PushSpans stream.
+message SpanAck {
+  bool accepted = 1;
+  int64 received_count = 2;
+  string error_message = 3;
+}
+
+message ObserveEventRequest {
+  string tenant_id    = 1;
+  string deploy_id    = 2;
+  string service_name = 3;
+  // payload_json is the canonical permanu.error/v1 JSON blob emitted by the
+  // reporter. It is opaque at the gRPC layer; the backend parses + validates.
+  string payload_json  = 4;
+  google.protobuf.Timestamp observed_at = 5;
+}
+
+message ObserveEventResponse {
+  bool   accepted = 1;
+  string error    = 2;
+}
+
+message LogBatch {
+  string server_id = 1;
+  repeated LogEntry entries = 2;
+}
+
+message LogEntry {
+  int64 timestamp_ns = 1;
+  string source = 2;       // "dwaar", "app:{slug}", "service:{name}"
+  string level = 3;        // "info", "warn", "error", "debug"
+  string message = 4;
+  map<string, string> fields = 5;  // structured fields
+  // UUID of the Permanu app; empty for dwaar/agent sources.
+  string app_id = 6;
+  // UUID of the deployment that produced this log entry.
+  // Set for build/clone/deploy/health-check phases; empty for runtime container-tail entries.
+  string deployment_id = 7;
+}
+
+message LogAck {
+  bool accepted = 1;
+  int64 received_count = 2;
+  string error_message = 3;
+}
+
+message DownloadAgentBinaryRequest {
+  string version = 1;
+  string os = 2;
+  string arch = 3;
+}
+
+message AgentBinaryChunk {
+  uint32 seq = 1;
+  bytes data = 2;
+  string version = 3;
+  string arch = 4;
+  string checksum = 5;
+  int64 total_size = 6;
+}
+
+message SlowQuery {
+  string query = 1;
+  int64 calls = 2;
+  double total_exec_time_ms = 3;
+  double mean_exec_time_ms = 4;
+  double min_exec_time_ms = 5;
+  double max_exec_time_ms = 6;
+  int64 rows = 7;
+  double shared_blks_hit_ratio = 8;
+  string container_name = 9;
+}
+
+message HeartbeatRequest {
+  string agent_version = 1;
+  google.protobuf.Timestamp timestamp = 2;
+  SystemMetrics system = 3;
+  repeated ContainerMetrics containers = 4;
+  repeated RouteMetrics route_metrics = 5;
+  ProxyMetrics proxy_metrics = 6;
+  repeated AnalyticsSnapshot analytics = 7;
+  repeated ServiceMetric service_metrics = 8;
+  repeated SlowQuery slow_queries = 9;
+  repeated HealthCheckResult health_check_results = 10;
+
+  // G-7: Agent self-report fields for mismatch detection.
+  // Fields 11-13 — additive, backward-compatible with older agents.
+  string disk_server_id = 11;        // SERVER_ID from /etc/permanu-agent.env
+  bool rebootstrap_key_present = 12; // true if /etc/permanu-agent/rebootstrap.token exists
+  string agent_version_disk = 13;    // running binary version (same as agent_version for now)
+
+  // G-1: last rebootstrap failure message for operator visibility.
+  // Empty string means no failure since last restart.
+  // Format: "RFC3339_TIMESTAMP: human-readable reason".
+  string last_rebootstrap_error = 14;
+
+  // G-27: whether the Docker daemon is reachable from the agent at heartbeat time.
+  // False means the Docker daemon is down or the socket is unavailable — the server
+  // should be shown as "degraded" even when the agent itself is online.
+  // Defaults to true on the wire (proto3 default) so pre-G27 agents are treated as
+  // healthy; the backend only stores explicit false to avoid false positives.
+  bool docker_reachable = 15;
+
+  // G-32 PR1: agent X25519 public key (32 bytes, raw).
+  // Generated on first boot; reported on every heartbeat.
+  // The private key never leaves the VPS (see local/security-exceptions.md EX-006).
+  bytes agent_x25519_pubkey = 16;
+
+  // SD-34: SHA256 (lowercase hex) of the running agent binary on disk.
+  // Computed once at startup from os.Executable(). Lets the control plane
+  // dispatch UPDATE_AGENT when the bytes differ even if the version string
+  // is unchanged (e.g., a rebuild without a version bump).
+  string agent_checksum = 17;
+
+  // SD-AS11: Host-quarantine state (Block 11).
+  // true when /var/lib/permanu-agent/quarantine.flag is present on disk.
+  // The backend must stop dispatching commands to this server while true.
+  // Cleared via COMMAND_TYPE_AGENT_RECONNECT after operator triage.
+  bool agent_quarantined = 18;
+
+  // SD-AS11: Human-readable reason the quarantine marker was written.
+  // Mirrors the Quarantine.Reason field from the on-disk marker.
+  // Empty string when agent_quarantined=false.
+  string quarantine_reason = 19;
+
+  // SD-AS11: Cross-arch build capability status (Block 11).
+  // Values: "" (not yet probed), "available", "unavailable_no_buildx",
+  //         "unavailable_no_qemu", "unavailable" (both missing).
+  // The control plane uses this to surface "this host can/can't do
+  // cross-arch builds" in the UI before a build is attempted.
+  string buildx_status = 20;
+
+  // SD-CI25: Node.js version on this agent (Block 25).
+  // Empty string when node is absent or version < 18.
+  // Example: "v20.11.0"
+  // Used by the control plane to surface "this agent can/cannot run JS actions"
+  // in the UI and to fail-fast at dispatch time with a clear error.
+  string node_version = 21;
+}
+
+message HealthCheckResult {
+  string check_id = 1;
+  string status = 2;
+  int64 latency_ms = 3;
+  int32 status_code = 4;
+  string error_message = 5;
+  string app_id = 6;
+  string deploy_id = 7;
+  int64 timestamp_ns = 8;
+  string deploy_timestamp = 9;
+  string commit_sha = 10;
+  string prev_deploy_id = 11;
+}
+
+message ServiceMetric {
+  string container_name = 1;  // e.g. "deploy-svc-postgresql-672d"
+  string service_type = 2;    // "postgres", "redis", "mysql"
+  map<string, double> gauges = 3;   // point-in-time values (connections, cache_hit_ratio)
+  map<string, int64> counters = 4;  // cumulative counters (queries_total, rows_read)
+}
+
+message SystemMetrics {
+  double cpu_percent = 1;
+  int64 memory_used_mb = 2;
+  int64 memory_total_mb = 3;
+  int64 disk_used_mb = 4;
+  int64 disk_total_mb = 5;
+  string os_info = 6;
+  string docker_version = 7;
+  int64 network_rx_bytes = 8;
+  int64 network_tx_bytes = 9;
+  string cpu_model = 11;
+  string kernel_version = 12;
+  string arch = 13;
+  string machine_id = 14;
+
+  // Load average (from /proc/loadavg)
+  double load_avg_1 = 20;
+  double load_avg_5 = 21;
+  double load_avg_15 = 22;
+
+  // CPU breakdown (percentages, from /proc/stat)
+  double cpu_user_percent = 23;
+  double cpu_system_percent = 24;
+  double cpu_iowait_percent = 25;
+  double cpu_steal_percent = 26;
+
+  // Memory breakdown (MB, from /proc/meminfo)
+  int64 memory_available_mb = 30;
+  int64 memory_buffers_mb = 31;
+  int64 memory_cached_mb = 32;
+  int64 swap_used_mb = 33;
+  int64 swap_total_mb = 34;
+
+  // Disk I/O (from /proc/diskstats)
+  int64 disk_read_bytes = 40;
+  int64 disk_write_bytes = 41;
+  int64 disk_read_ops = 42;
+  int64 disk_write_ops = 43;
+
+  // System health (from /proc)
+  int64 open_file_descriptors = 50;
+  int64 process_count = 51;
+  int64 tcp_established = 52;
+  int64 tcp_time_wait = 53;
+  int64 tcp_close_wait = 54;
+  int64 uptime_seconds = 55;
+
+  // Public IP addresses (from network interfaces — global unicast, non-private)
+  string public_ipv4 = 56;
+  string public_ipv6 = 57;
+
+  // Top processes by resource usage (from /proc/[pid]/stat)
+  repeated TopProcess top_processes = 60;
+}
+
+message TopProcess {
+  int32 pid = 1;
+  string name = 2;           // human-readable: "postgres", "node:app-slug:a1b2c3"
+  double cpu_percent = 3;
+  int64 memory_mb = 4;
+  string user = 5;           // process owner (root, www-data, etc.)
+  repeated TopProcess children = 6;  // threads/workers grouped under parent
+}
+
+message ContainerMetrics {
+  string container_id = 1;
+  string name = 2;
+  string image = 3;
+  string status = 4;
+  double cpu_percent = 5;
+  int64 memory_used_mb = 6;
+  int64 memory_limit_mb = 7;
+  int64 network_rx_bytes = 8;
+  int64 network_tx_bytes = 9;
+  string health_status = 10;  // "healthy" | "unhealthy" | "unknown"
+  int32 restart_count = 11;
+  bool oom_killed = 12;
+  int32 exit_code = 13;
+  string exit_reason = 14;
+  string started_at = 15;
+  string finished_at = 16;
+  // Docker Compose project label (com.docker.compose.project) when present.
+  // Lets the orphan reconciler detect compose-managed projects whose owning
+  // service_instance row is gone (e.g. handler bypassed, mid-request crash,
+  // manual DB delete). Empty for non-compose containers.
+  string compose_project = 17;
+}
+
+message RouteMetrics {
+  string domain = 1;
+  string path = 2;
+  int64 request_count = 3;
+  double latency_p50_ms = 4;
+  double latency_p95_ms = 5;
+  double latency_p99_ms = 6;
+  int64 status_2xx = 7;
+  int64 status_3xx = 8;
+  int64 status_4xx = 9;
+  int64 status_5xx = 10;
+  int64 bytes_sent = 11;
+  // New Dwaar fields
+  int64 bot_requests = 12;
+  int64 cache_hits = 13;
+  int64 cache_misses = 14;
+}
+
+message ProxyMetrics {
+  int64 total_requests = 1;
+  int64 active_connections = 2;
+  int64 memory_bytes = 3;
+  int64 cache_hits_total = 4;
+  int64 cache_misses_total = 5;
+  int64 rate_limit_rejects = 6;
+  int64 bytes_sent_total = 7;
+  int64 bytes_received_total = 8;
+}
+
+message AnalyticsSnapshot {
+  string domain = 1;
+  int64 unique_visitors = 2;
+  // Deprecated: use page_views_60m. Still populated to match page_views_60m
+  // until every consumer has migrated. Remove after v1 cut.
+  int64 total_pageviews = 3 [deprecated = true];
+  int64 bytes_sent = 4;
+  string timestamp = 5;
+  // Status code breakdown
+  int64 status_1xx = 6;
+  int64 status_2xx = 7;
+  int64 status_3xx = 8;
+  int64 status_4xx = 9;
+  int64 status_5xx = 10;
+  // Web Vitals p75 (Google's core threshold)
+  double lcp_p75 = 11;
+  double cls_p75 = 12;
+  double inp_p75 = 13;
+  // Top items (capped)
+  repeated PageCount top_pages = 14;
+  repeated ReferrerCount referrers = 15;
+  repeated CountryCount countries = 16;
+  // page_views_1m is the rolling 1-minute pageview counter; page_views_60m
+  // is the 60-minute counter. Both come straight from Dwaar's analytics
+  // socket; total_pageviews (field 3) is deprecated and mirrors
+  // page_views_60m for one release cycle.
+  int64 page_views_1m = 17;
+  int64 page_views_60m = 18;
+  // Bot vs human pageview split, classified by Dwaar's bot-detect plugin.
+  // Sum approximately equals page_views_60m modulo flush-cycle timing.
+  int64 bot_views = 19;
+  int64 human_views = 20;
+  // Per-device-class pageview counts across the fixed
+  // mobile|desktop|tablet|bot|unknown enum. Classified by Dwaar's
+  // aggregation layer from the User-Agent header — the raw UA never
+  // leaves the agent, only the bucket label.
+  repeated DeviceCount devices = 21;
+  // Marketing-attribution UTM parameters extracted by Dwaar from the
+  // request query string. Each counter is top-N sampled at source
+  // (sources 50, mediums 20, campaigns 50, terms 25, contents 25) and
+  // values are lowercased on ingest so the agent cannot fan out an
+  // unbounded label set. term and content carry tighter caps than the
+  // other three because their real-world cardinality (ad-network
+  // keyword bids, A/B creative identifiers) is the most ad-hoc.
+  repeated UtmCount utm_sources = 22;
+  repeated UtmCount utm_mediums = 23;
+  repeated UtmCount utm_campaigns = 24;
+  // HTTP status classes (1xx..5xx) always emitted in order with zero
+  // counts included so the status-code heatmap dashboard keys on a
+  // stable label set. Sibling of the StatusCodeBreakdown fields above
+  // but shaped for a label-based fan-out rather than individual proto
+  // fields — matches the dashboard's PromQL grouping model.
+  repeated StatusClassCount status_classes = 25;
+  // utm_term / utm_content attribution counters. Added one release
+  // cycle after utm_sources/mediums/campaigns so they carry later
+  // field numbers; additive proto change, backward compatible with
+  // agents that still omit these fields.
+  repeated UtmCount utm_terms = 26;
+  repeated UtmCount utm_contents = 27;
+  // Server-observed response-latency histogram — ten fixed buckets
+  // (Dwaar edges: [10, 50, 100, 250, 500, 1000, 2500, 5000, 10000,
+  // +Inf] milliseconds) always emitted in order with zero counts
+  // included so the downstream heatmap renders a stable y-axis.
+  // Cardinality is bounded at ten labels by construction on the
+  // Dwaar side, so no per-label cap is needed on this end.
+  repeated LatencyBucket response_latency_buckets = 28;
+}
+
+message PageCount {
+  string path = 1;
+  int64 count = 2;
+}
+
+message ReferrerCount {
+  string domain = 1;
+  int64 count = 2;
+}
+
+message CountryCount {
+  string code = 1;
+  int64 count = 2;
+}
+
+// DeviceCount reports pageview counts per classified device bucket.
+// The bucket label is one of: mobile, desktop, tablet, bot, unknown.
+// Cardinality is bounded at the enum size so VictoriaMetrics cannot
+// be made to explode by a malicious or broken client.
+message DeviceCount {
+  string device = 1;
+  int64 count = 2;
+}
+
+// UtmCount reports pageview counts per UTM attribution value. A single
+// message shape covers all five UTM dimensions (utm_source, utm_medium,
+// utm_campaign, utm_term, utm_content) — the owning repeated field on
+// AnalyticsSnapshot carries the dimension so consumers know which
+// label to stamp on the metric.
+message UtmCount {
+  string value = 1;
+  int64 count = 2;
+}
+
+// StatusClassCount reports pageview counts per HTTP status class
+// (1xx, 2xx, 3xx, 4xx, 5xx). Dwaar always emits all five classes in
+// order with zero counts included so downstream dashboards can key on
+// a stable label enumeration.
+message StatusClassCount {
+  string class = 1;
+  int64 count = 2;
+}
+
+// LatencyBucket reports the non-cumulative count of requests whose
+// server-observed response latency landed in the (previous_edge, le]
+// interval. Dwaar emits all ten buckets in order (le labels "10",
+// "50", "100", "250", "500", "1000", "2500", "5000", "10000", "+Inf"
+// ms) so the downstream heatmap keys on a stable y-axis.
+message LatencyBucket {
+  // Upper-bound label for this bucket, in milliseconds, matching the
+  // Prometheus `le` convention. Always one of the ten Dwaar bucket
+  // labels; "+Inf" is the catch-all for latencies above the last
+  // finite edge.
+  string le = 1;
+  // Non-cumulative count of observations that landed in this bucket
+  // during the current 60 s flush window.
+  uint64 count = 2;
+}
+
+// AppContainerMapping associates a Docker container name with its Permanu app UUID.
+// The backend pushes the full set for a server on every heartbeat so the agent can
+// populate LogEntry.app_id without any local DB access.
+message AppContainerMapping {
+  string container_name = 1; // e.g. "deploy-app-myapp-a1b2c3"
+  string app_id = 2;         // UUID of the Permanu app
+}
+
+message HeartbeatResponse {
+  bool accepted = 1;
+  string error_message = 2;
+  bool update_available = 3;
+  string latest_version = 4;
+  int32 heartbeat_interval_seconds = 5;
+  MonitoringConfig monitoring_config = 6;
+  // app_containers maps each active app container on this server to its app UUID.
+  // The agent caches this and uses it to populate LogEntry.app_id. Empty means
+  // no apps are deployed on this server yet.
+  repeated AppContainerMapping app_containers = 7;
+}
+
+message MonitoringConfig {
+  int64 config_version = 1;
+  int32 system_interval_seconds = 2;
+  int32 container_interval_seconds = 3;
+  int32 service_interval_seconds = 4;
+  int32 slow_query_interval_seconds = 5;
+  repeated HealthCheckConfig health_checks = 6;
+  bool statsd_enabled = 7;
+  int32 statsd_port = 8;
+}
+
+message HealthCheckConfig {
+  string id = 1;
+  string name = 2;
+  string type = 3;
+  string target = 4;
+  int32 interval_seconds = 5;
+  int32 timeout_ms = 6;
+  int32 expected_status = 7;
+  string app_id = 8;
+  string deploy_id = 9;
+  string deploy_timestamp = 10;
+  string commit_sha = 11;
+  string prev_deploy_id = 12;
+}
+
+enum CommandType {
+  COMMAND_TYPE_UNSPECIFIED = 0;
+  COMMAND_TYPE_DEPLOY = 1;
+  COMMAND_TYPE_RESTART = 2;
+  COMMAND_TYPE_LOGS = 3;
+  COMMAND_TYPE_UPDATE_AGENT = 4;
+  COMMAND_TYPE_EXEC = 5;
+
+  // Service lifecycle (10-19)
+  COMMAND_TYPE_SERVICE_CREATE  = 10;
+  COMMAND_TYPE_SERVICE_START   = 11;
+  COMMAND_TYPE_SERVICE_STOP    = 12;
+  COMMAND_TYPE_SERVICE_RESTART = 13;
+  COMMAND_TYPE_SERVICE_DESTROY = 14;
+  COMMAND_TYPE_SERVICE_LOGS    = 15;
+  COMMAND_TYPE_WAIT_FOR_HEALTHY = 16; // B2.2: check service container health/started status
+
+  // Backup operations (20-29)
+  COMMAND_TYPE_BACKUP_CREATE   = 20;
+  COMMAND_TYPE_BACKUP_UPLOAD   = 21;
+  COMMAND_TYPE_BACKUP_RESTORE  = 22;
+  COMMAND_TYPE_BACKUP_CLEANUP  = 23;
+  COMMAND_TYPE_BACKUP_DOWNLOAD = 24; // stream local backup file bytes to control plane
+
+  // Compose operations (30-39)
+  COMMAND_TYPE_COMPOSE_UP      = 30;
+  COMMAND_TYPE_COMPOSE_DOWN    = 31;
+  COMMAND_TYPE_COMPOSE_RESTART = 32;
+  COMMAND_TYPE_COMPOSE_LOGS    = 33;
+
+  // App deployment operations (40-49)
+  COMMAND_TYPE_APP_CLONE        = 40;
+  COMMAND_TYPE_APP_BUILD        = 41;
+  COMMAND_TYPE_APP_DEPLOY       = 42;
+  COMMAND_TYPE_APP_STOP         = 43;
+  COMMAND_TYPE_APP_LOGS         = 44;
+  COMMAND_TYPE_APP_PROXY_SETUP  = 45;
+  COMMAND_TYPE_APP_PROXY_REMOVE = 46;
+  COMMAND_TYPE_APP_CLEANUP           = 47;
+  COMMAND_TYPE_APP_DETECT_FRAMEWORK  = 48;
+  COMMAND_TYPE_APP_ROLLBACK          = 49;
+
+  // Route management (50-59) — Dwaar reverse proxy routes
+  COMMAND_TYPE_ROUTE_ADD    = 50;
+  COMMAND_TYPE_ROUTE_REMOVE = 51;
+
+  // Lifecycle hooks (60-69)
+  COMMAND_TYPE_RUN_HOOKS         = 60;
+  COMMAND_TYPE_RUN_RELEASE_HOOK  = 61; // ephemeral container exec for release hook (B1.2)
+
+  // Edge cache management (70-79) — Dwaar HTTP cache purge
+  COMMAND_TYPE_CACHE_PURGE = 70;
+
+  // Agent lifecycle (80-89)
+  COMMAND_TYPE_UNINSTALL          = 80;
+  COMMAND_TYPE_TCP_PROXY_START    = 81;
+  COMMAND_TYPE_TCP_PROXY_STOP     = 82;
+  COMMAND_TYPE_TCP_PROXY_UPDATE   = 83;
+
+  // Maintenance operations (90-99)
+  COMMAND_TYPE_CERT_ROTATE    = 90;
+  COMMAND_TYPE_BACKUP_VERIFY  = 91;
+  COMMAND_TYPE_SQL_EXEC       = 92;
+
+  // Monitoring configuration (100-109)
+  COMMAND_TYPE_CONFIGURE_MONITORING = 100;
+
+  // Introspection (110-119) — operator visibility into edge + agent state.
+  // All three return a JSON payload in CommandResult.output so new fields
+  // can be added without further proto churn.
+  COMMAND_TYPE_ROUTE_LIST      = 110; // list Dwaar routes on this server
+  COMMAND_TYPE_CERT_LIST       = 111; // list TLS certs Dwaar manages
+  COMMAND_TYPE_PROXY_TRAFFIC   = 112; // per-host request/latency/status histogram
+  COMMAND_TYPE_AGENT_LOGS      = 113; // tail the agent's own journald logs
+  COMMAND_TYPE_AGENT_STATUS    = 114; // snapshot of agent process health
+  COMMAND_TYPE_AGENT_PING      = 115; // round-trip liveness probe
+  COMMAND_TYPE_AGENT_RECONNECT = 116; // ask the agent to exit(0); systemd Restart=always brings it back
+  COMMAND_TYPE_DWAAR_RECONCILE = 117; // upsert backend-of-record routes that are missing from Dwaar (G-4)
+
+  // Docker resource removal (120-129) — orphan-cleanup kinds that require the agent.
+  COMMAND_TYPE_NETWORK_REMOVE   = 120; // remove a Docker network by name
+  COMMAND_TYPE_VOLUME_REMOVE    = 121; // remove a Docker volume by name
+  COMMAND_TYPE_NETWORK_INSPECT  = 122; // inspect a Docker network; returns container→IP table (G-6)
+  COMMAND_TYPE_RESTART_SELF     = 123; // operator-triggered agent restart: ack queued, then exit(0); systemd Restart=always brings it back (G-3)
+  COMMAND_TYPE_REENROLL         = 124; // operator-triggered re-enrollment: backend mints a one-shot install URL, agent downloads + runs the installer, then exit(0); systemd Restart=always brings it back with new identity (G-8)
+
+  // CI pipeline execution (130-139) — Block 14.
+  COMMAND_TYPE_CI_JOB = 130; // dispatch a single CI job (matrix-expanded) to an agent
+
+  // Secrets delivery (140-149) — control plane -> agent.
+  // Both frames carry the CF token sealed with the agent's X25519 pubkey.
+  COMMAND_TYPE_BOOTSTRAP_SECRETS  = 140; // sent once per stream open before any route push
+  COMMAND_TYPE_ROTATE_SECRETS     = 141; // broadcast when CLOUDFLARE_API_TOKEN changes
+  COMMAND_TYPE_ROTATE_AGENT_SECRET = 142; // sealed new AGENT_SECRET; agent writes env + restarts
+
+  // Host-level diagnostic introspection (150) — read-only host-level visibility
+  // for the AI SRE: process table, listening sockets, systemd journal tail.
+  // Payload: {"kind":"process_list"|"listeners"|"journal_tail", ...args}.
+  // Response (CommandResult.Output) is a JSON object {"kind":..., "data":...}.
+  // Allowlist enforced on the agent — units restricted to permanu-agent/dwaar/docker,
+  // lines capped at 500, since duration capped at 24h.
+  COMMAND_TYPE_HOST_DIAGNOSTIC = 150;
+
+  // Dwaarfile config patch (151) — typed agent-mediated mutation of a single
+  // top-level Dwaarfile block. Allowlisted on the agent (block ∈ {"analytics",
+  // "log_level", "rate_limit_default"}); never an SSH path. Payload:
+  //   {"block":"analytics","action":"upsert"|"remove","value":"..."}
+  // Response (CommandResult.Output) on success:
+  //   {"block":..., "action":..., "prev":"...", "new":"...", "restart_ok":true}
+  // On any error: Status="failed" with {"error":"..."}.
+  COMMAND_TYPE_DWAAR_CONFIG_PATCH = 151;
+
+  // Docker Swarm stack/service operations (160-169) - stateful-ready runtime
+  // lane parallel to Compose. These are transactional commands that acquire an
+  // agent semaphore slot and return bounded JSON/status output.
+  COMMAND_TYPE_SWARM_STACK_DEPLOY     = 160; // payload: {"stack_name","compose_content","extra_files",...}
+  COMMAND_TYPE_SWARM_STACK_REMOVE     = 161; // payload: {"stack_name"}
+  COMMAND_TYPE_SWARM_STACK_STATUS     = 162; // payload: {"stack_name"}; output: {"stack","services","tasks"}
+  COMMAND_TYPE_SWARM_SERVICE_ROLLBACK = 163; // payload: {"stack_name","service_name"}
+
+  // Per-command cancellation (99) — backend sends this to cancel a specific
+  // in-flight streaming command (e.g. COMPOSE_LOGS) by its cmdID.
+  // Payload: {"cancel_command_id": "cmd-abc123"}.
+  // CANCEL_COMMAND must NOT be gated by the command semaphore so it can
+  // always free a saturated semaphore slot.
+  COMMAND_TYPE_CANCEL_COMMAND  = 99;
+}
+
+message Command {
+  string id = 1;
+  CommandType type = 2;
+  bytes payload = 3;
+  google.protobuf.Timestamp issued_at = 4;
+}
+
+message CommandResult {
+  string command_id = 1;
+  string status = 2;
+  bytes output = 3;
+  bool is_final = 4;
+  google.protobuf.Timestamp timestamp = 5;
+}
+
+// CommandAck is sent by the agent to acknowledge receipt of a command.
+// G-39 PR1: flips server_commands.status pending → dispatched on the backend.
+message CommandAck {
+  string command_id = 1;
+  string server_id  = 2;
+  // phase is informational only (e.g. "received", "started"). Not persisted.
+  string phase      = 3;
+}
+
+// CommandAckResponse is the empty acknowledgement from the backend.
+message CommandAckResponse {}
+
+// ListServerRoutesRequest is sent by the agent on reconnect to fetch the
+// canonical route set from the backend.
+message ListServerRoutesRequest {
+  string server_id = 1;
+}
+
+// ServerRoute carries one backend-of-record route entry.
+message ServerRoute {
+  string domain          = 1;
+  string container_name  = 2; // Docker container name (deploy-app-<slug>)
+  int32  port            = 3; // app's declared listen port
+  string app_id          = 4;
+  // SD-19: optional path prefix (e.g. "/api"). Empty means catch-all (the
+  // pre-SD-19 behaviour). When set, the route is applied via a Dwaarfile
+  // snippet only — the bare admin-API single-upstream POST is skipped so
+  // multiple path-scoped routes can coexist on the same hostname.
+  string path_prefix     = 5;
+  // SD-93: when true, the agent emits an `analytics on` directive in the
+  // hostname's Dwaarfile snippet so Dwaar exports per-route metrics.
+  bool   analytics_enabled = 6;
+}
+
+// ListServerRoutesResponse is the backend's canonical route set for a server.
+message ListServerRoutesResponse {
+  repeated ServerRoute routes = 1;
+}
+
+// BootstrapSecretsPayload is the JSON-encoded payload for
+// COMMAND_TYPE_BOOTSTRAP_SECRETS. Sent by the backend immediately after a
+// CommandStream connects, before any route push, so Dwaar can issue DNS-01
+// certs from the first reload without waiting for a wildcard route.
+//
+// cf_token_enc is a base64-encoded SealForAgent blob (X25519+AES-256-GCM).
+// cf_token_env names the environment variable to write (default "CF_API_TOKEN").
+// Both fields are empty when CLOUDFLARE_API_TOKEN is not configured on the BE.
+message BootstrapSecretsPayload {
+  string cf_token_enc = 1;
+  string cf_token_env = 2;
+}
+
+// RotateSecretsPayload is the JSON-encoded payload for
+// COMMAND_TYPE_ROTATE_SECRETS. Broadcast to all connected agents when
+// CLOUDFLARE_API_TOKEN changes. Agents re-decrypt, write the new token, and
+// reload Dwaar. Idempotent: agents skip write+reload when the value matches
+// what is already on disk.
+message RotateSecretsPayload {
+  string cf_token_enc = 1;
+  string cf_token_env = 2;
+}
