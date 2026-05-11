@@ -11,7 +11,7 @@ use futures::future::{AbortHandle, Abortable};
 use serde::Serialize;
 use serde_json::json;
 use tokio::{
-    sync::{mpsc, RwLock, Semaphore, TryAcquireError},
+    sync::{mpsc, watch, RwLock, Semaphore, TryAcquireError},
     time::Duration,
 };
 use tokio_stream::wrappers::ReceiverStream;
@@ -120,16 +120,17 @@ const MAX_INTROSPECTION_RESPONSE_BYTES: usize = 4 * 1024 * 1024;
 const MAX_STATUS_RESPONSE_BYTES: usize = 64 * 1024;
 const JOURNALCTL_TIMEOUT_SECONDS: u64 = 10;
 const REENROLL_TIMEOUT_SECONDS: u64 = 300;
+const COMMAND_RECONNECT_INITIAL_DELAY: Duration = Duration::from_secs(1);
+const COMMAND_RECONNECT_MAX_DELAY: Duration = Duration::from_secs(30);
 
 pub async fn run(
     cfg: Arc<Config>,
-    mut client: AgentServiceClient<Channel>,
     agent_keypair: Arc<AgentKeypair>,
     monitoring: Arc<MonitoringState>,
     route_aggregator: Arc<RouteAggregator>,
+    mut shutdown: watch::Receiver<bool>,
 ) -> Result<()> {
     let agent_started = Instant::now();
-    let (tx, rx) = mpsc::channel::<CommandResult>(128);
     let semaphore = Arc::new(Semaphore::new(command_runtime::MAX_CONCURRENT_COMMANDS));
     let cancels = Arc::new(CommandCancels::default());
     let command_ctx = Arc::new(CommandContext {
@@ -141,45 +142,131 @@ pub async fn run(
         agent_keypair,
         internal_apex: Arc::new(RwLock::new(cfg.internal_apex.clone())),
     });
-    let request = cfg.attach_auth(tonic::Request::new(ReceiverStream::new(rx)))?;
-    let mut stream = client
-        .command_stream(request)
-        .await
-        .context("open command stream")?
-        .into_inner();
 
-    while let Some(command) = stream.message().await.context("receive command")? {
-        let cfg = cfg.clone();
-        let tx = tx.clone();
-        let ack_client = client.clone();
-        let command_ctx = command_ctx.clone();
-        if !command_runtime::command_type_is_valid(command.r#type) {
-            tokio::spawn(async move {
-                if let Err(err) =
-                    ack_and_send_result(cfg, ack_client, tx, &command, invalid_command(&command))
-                        .await
+    let mut reconnect_delay = COMMAND_RECONNECT_INITIAL_DELAY;
+    loop {
+        if *shutdown.borrow() {
+            return Ok(());
+        }
+
+        let channel = match cfg.connect_channel().await {
+            Ok(channel) => channel,
+            Err(err) => {
+                warn!(
+                    error = ?err,
+                    retry_in_seconds = reconnect_delay.as_secs(),
+                    "command stream backend connect failed"
+                );
+                if wait_for_reconnect(&mut shutdown, reconnect_delay).await {
+                    return Ok(());
+                }
+                reconnect_delay = next_reconnect_delay(reconnect_delay);
+                continue;
+            }
+        };
+        let mut client = AgentServiceClient::new(channel)
+            .max_decoding_message_size(cfg.max_message_size)
+            .max_encoding_message_size(cfg.max_message_size);
+        let (tx, rx) = mpsc::channel::<CommandResult>(128);
+        let request = cfg.attach_auth(tonic::Request::new(ReceiverStream::new(rx)))?;
+        let mut stream = match client.command_stream(request).await {
+            Ok(response) => {
+                reconnect_delay = COMMAND_RECONNECT_INITIAL_DELAY;
+                response.into_inner()
+            }
+            Err(err) => {
+                warn!(
+                    error = ?err,
+                    retry_in_seconds = reconnect_delay.as_secs(),
+                    "open command stream failed"
+                );
+                if wait_for_reconnect(&mut shutdown, reconnect_delay).await {
+                    return Ok(());
+                }
+                reconnect_delay = next_reconnect_delay(reconnect_delay);
+                continue;
+            }
+        };
+
+        loop {
+            let command = tokio::select! {
+                changed = shutdown.changed() => {
+                    if changed.is_err() || *shutdown.borrow() {
+                        return Ok(());
+                    }
+                    continue;
+                }
+                message = stream.message() => match message {
+                    Ok(Some(command)) => command,
+                    Ok(None) => {
+                        info!("command stream closed by backend");
+                        break;
+                    }
+                    Err(err) => {
+                        warn!(error = ?err, "command stream receive failed");
+                        break;
+                    }
+                }
+            };
+
+            let cfg = cfg.clone();
+            let tx = tx.clone();
+            let ack_client = client.clone();
+            let command_ctx = command_ctx.clone();
+            if !command_runtime::command_type_is_valid(command.r#type) {
+                tokio::spawn(async move {
+                    if let Err(err) = ack_and_send_result(
+                        cfg,
+                        ack_client,
+                        tx,
+                        &command,
+                        invalid_command(&command),
+                    )
+                    .await
+                    {
+                        warn!(error = ?err, "invalid command handler failed");
+                    }
+                });
+                continue;
+            }
+
+            if command.r#type == COMMAND_TYPE_CANCEL_COMMAND {
+                tokio::spawn(async move {
+                    if let Err(err) = handle_command(command_ctx, ack_client, tx, command).await {
+                        warn!(error = ?err, "cancel command handler failed");
+                    }
+                });
+                continue;
+            }
+
+            let permit =
+                match command_runtime::admission_for(command.r#type, semaphore.available_permits())
                 {
-                    warn!(error = ?err, "invalid command handler failed");
-                }
-            });
-            continue;
-        }
-
-        if command.r#type == COMMAND_TYPE_CANCEL_COMMAND {
-            tokio::spawn(async move {
-                if let Err(err) = handle_command(command_ctx, ack_client, tx, command).await {
-                    warn!(error = ?err, "cancel command handler failed");
-                }
-            });
-            continue;
-        }
-
-        let permit =
-            match command_runtime::admission_for(command.r#type, semaphore.available_permits()) {
-                CommandAdmission::BypassLimit => None,
-                CommandAdmission::AcquirePermit => match semaphore.clone().try_acquire_owned() {
-                    Ok(permit) => Some(permit),
-                    Err(TryAcquireError::NoPermits) => {
+                    CommandAdmission::BypassLimit => None,
+                    CommandAdmission::AcquirePermit => {
+                        match semaphore.clone().try_acquire_owned() {
+                            Ok(permit) => Some(permit),
+                            Err(TryAcquireError::NoPermits) => {
+                                tokio::spawn(async move {
+                                    let result = failed_text(
+                                        &command.id,
+                                        "agent command capacity exhausted; retry later",
+                                    );
+                                    if let Err(err) =
+                                        ack_and_send_result(cfg, ack_client, tx, &command, result)
+                                            .await
+                                    {
+                                        warn!(error = ?err, "busy command handler failed");
+                                    }
+                                });
+                                continue;
+                            }
+                            Err(TryAcquireError::Closed) => {
+                                return Err(anyhow::anyhow!("command semaphore closed"));
+                            }
+                        }
+                    }
+                    CommandAdmission::RejectBusy => {
                         tokio::spawn(async move {
                             let result = failed_text(
                                 &command.id,
@@ -193,51 +280,49 @@ pub async fn run(
                         });
                         continue;
                     }
-                    Err(TryAcquireError::Closed) => {
-                        return Err(anyhow::anyhow!("command semaphore closed"))
+                };
+            let (abort_handle, abort_registration) = AbortHandle::new_pair();
+            let command_id = command.id.clone();
+            command_ctx.cancels.register(&command_id, abort_handle);
+            let abort_tx = tx.clone();
+            tokio::spawn(async move {
+                let _permit = permit;
+                let command_id_for_cleanup = command_id.clone();
+                let cancels = command_ctx.cancels.clone();
+                let result = Abortable::new(
+                    handle_command(command_ctx, ack_client, tx, command),
+                    abort_registration,
+                )
+                .await;
+                cancels.remove(&command_id_for_cleanup);
+                match result {
+                    Ok(Ok(())) => {}
+                    Ok(Err(err)) => warn!(error = ?err, "command handler failed"),
+                    Err(_) => {
+                        let _ = abort_tx
+                            .send(cancelled_text(&command_id_for_cleanup, "cancelled"))
+                            .await;
                     }
-                },
-                CommandAdmission::RejectBusy => {
-                    tokio::spawn(async move {
-                        let result = failed_text(
-                            &command.id,
-                            "agent command capacity exhausted; retry later",
-                        );
-                        if let Err(err) =
-                            ack_and_send_result(cfg, ack_client, tx, &command, result).await
-                        {
-                            warn!(error = ?err, "busy command handler failed");
-                        }
-                    });
-                    continue;
                 }
-            };
-        let (abort_handle, abort_registration) = AbortHandle::new_pair();
-        let command_id = command.id.clone();
-        command_ctx.cancels.register(&command_id, abort_handle);
-        let abort_tx = tx.clone();
-        tokio::spawn(async move {
-            let _permit = permit;
-            let command_id_for_cleanup = command_id.clone();
-            let cancels = command_ctx.cancels.clone();
-            let result = Abortable::new(
-                handle_command(command_ctx, ack_client, tx, command),
-                abort_registration,
-            )
-            .await;
-            cancels.remove(&command_id_for_cleanup);
-            match result {
-                Ok(Ok(())) => {}
-                Ok(Err(err)) => warn!(error = ?err, "command handler failed"),
-                Err(_) => {
-                    let _ = abort_tx
-                        .send(cancelled_text(&command_id_for_cleanup, "cancelled"))
-                        .await;
-                }
-            }
-        });
+            });
+        }
+
+        if wait_for_reconnect(&mut shutdown, reconnect_delay).await {
+            return Ok(());
+        }
+        reconnect_delay = next_reconnect_delay(reconnect_delay);
     }
-    Ok(())
+}
+
+async fn wait_for_reconnect(shutdown: &mut watch::Receiver<bool>, delay: Duration) -> bool {
+    tokio::select! {
+        changed = shutdown.changed() => changed.is_err() || *shutdown.borrow(),
+        _ = tokio::time::sleep(delay) => false,
+    }
+}
+
+fn next_reconnect_delay(current: Duration) -> Duration {
+    current.saturating_mul(2).min(COMMAND_RECONNECT_MAX_DELAY)
 }
 
 #[derive(Clone)]
@@ -1844,4 +1929,25 @@ async fn docker_reachable() -> bool {
         return false;
     };
     docker_observe::inspect_docker(&docker).await.reachable
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn reconnect_delay_backs_off_until_cap() {
+        assert_eq!(
+            next_reconnect_delay(COMMAND_RECONNECT_INITIAL_DELAY),
+            Duration::from_secs(2)
+        );
+        assert_eq!(
+            next_reconnect_delay(Duration::from_secs(16)),
+            Duration::from_secs(30)
+        );
+        assert_eq!(
+            next_reconnect_delay(Duration::from_secs(30)),
+            Duration::from_secs(30)
+        );
+    }
 }

@@ -33,7 +33,7 @@ use std::{collections::HashMap, sync::Arc};
 
 use anyhow::Result;
 use tokio::sync::watch;
-use tracing::{error, info};
+use tracing::{error, info, warn};
 use tracing_subscriber::EnvFilter;
 
 use crate::{config::Config, proto::agent::v1::agent_service_client::AgentServiceClient};
@@ -56,7 +56,7 @@ async fn main() -> Result<()> {
     );
 
     let agent_keypair = Arc::new(agent_crypto::AgentKeypair::load_or_generate_default()?);
-    let channel = cfg.connect_channel().await?;
+    let channel = connect_channel_with_retry(&cfg).await;
     let client = AgentServiceClient::new(channel)
         .max_decoding_message_size(cfg.max_message_size)
         .max_encoding_message_size(cfg.max_message_size);
@@ -112,10 +112,10 @@ async fn main() -> Result<()> {
     ));
     let command_task = tokio::spawn(command::run(
         cfg.clone(),
-        client.clone(),
         agent_keypair.clone(),
         monitoring_state.clone(),
         route_aggregator.clone(),
+        shutdown_rx.clone(),
     ));
 
     tokio::select! {
@@ -144,6 +144,23 @@ async fn main() -> Result<()> {
     monitoring_task.abort();
     route_metrics_task.abort();
     Ok(())
+}
+
+async fn connect_channel_with_retry(cfg: &Config) -> tonic::transport::Channel {
+    let retry_delay = std::time::Duration::from_secs(5);
+    loop {
+        match cfg.connect_channel().await {
+            Ok(channel) => return channel,
+            Err(err) => {
+                warn!(
+                    error = ?err,
+                    retry_in_seconds = retry_delay.as_secs(),
+                    "backend gRPC unavailable; retrying"
+                );
+                tokio::time::sleep(retry_delay).await;
+            }
+        }
+    }
 }
 
 fn init_tracing() {
