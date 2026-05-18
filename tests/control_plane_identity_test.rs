@@ -193,7 +193,7 @@ fn reenroll_script_is_written_executable_and_output_is_redacted() {
 
 fn tempfile_dir(name: &str) -> std::path::PathBuf {
     let dir = std::env::temp_dir().join(format!(
-        "permanu-agent-rs-{name}-{}",
+        "permanu-agent-{name}-{}",
         std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .expect("time")

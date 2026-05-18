@@ -35,15 +35,14 @@ impl Config {
         let backend_grpc_addr = required_env("BACKEND_GRPC_ADDR")?;
         let server_id = required_env("SERVER_ID")?;
         let agent_secret = required_env("AGENT_SECRET")?;
-        let version = env::var("AGENT_VERSION")
-            .unwrap_or_else(|_| format!("rust-dev-{}-{}", env::consts::OS, env::consts::ARCH));
+        let version = agent_version();
         let insecure = env::var("AGENT_INSECURE")
             .map(|v| v.eq_ignore_ascii_case("true") || v == "1")
             .unwrap_or(false);
         let heartbeat_interval = env_duration("AGENT_HEARTBEAT_SECONDS", 30);
         let spool_dir = env::var("PERMANU_AGENT_SPOOL_DIR")
             .map(PathBuf::from)
-            .unwrap_or_else(|_| PathBuf::from("/var/lib/permanu-agent-rs/spool"));
+            .unwrap_or_else(|_| PathBuf::from("/var/lib/permanu-agent/spool"));
 
         Ok(Self {
             backend_grpc_addr,
@@ -83,7 +82,7 @@ impl Config {
             .unwrap_or_else(|_| format!("rust-probe-{}-{}", env::consts::OS, env::consts::ARCH));
         let spool_dir = env::var("PERMANU_AGENT_SPOOL_DIR")
             .map(PathBuf::from)
-            .unwrap_or_else(|_| PathBuf::from("/tmp/permanu-agent-rs-probe/spool"));
+            .unwrap_or_else(|_| PathBuf::from("/tmp/permanu-agent-probe/spool"));
 
         Self {
             backend_grpc_addr: "probe.invalid:0".to_string(),
@@ -105,10 +104,10 @@ impl Config {
             docksmith_bin: env::var("PERMANU_DOCKSMITH_BIN")
                 .unwrap_or_else(|_| "docksmith".to_string()),
             docksmith_timeout: env_duration("PERMANU_DOCKSMITH_TIMEOUT_SECONDS", 30),
-            agent_env_file: PathBuf::from("/tmp/permanu-agent-rs-probe/permanu-agent.env"),
-            dwaar_cf_token_path: PathBuf::from("/tmp/permanu-agent-rs-probe/dwaar/cf-token"),
+            agent_env_file: PathBuf::from("/tmp/permanu-agent-probe/permanu-agent.env"),
+            dwaar_cf_token_path: PathBuf::from("/tmp/permanu-agent-probe/dwaar/cf-token"),
             dwaar_cf_token_drop_in_dir: PathBuf::from(
-                "/tmp/permanu-agent-rs-probe/systemd/dwaar.service.d",
+                "/tmp/permanu-agent-probe/systemd/dwaar.service.d",
             ),
             internal_apex: env::var("INTERNAL_APEX").unwrap_or_default(),
         }
@@ -144,6 +143,25 @@ impl Config {
         request.metadata_mut().insert("server-id", server_id);
         Ok(request)
     }
+}
+
+pub fn agent_version() -> String {
+    env::var("AGENT_VERSION")
+        .ok()
+        .filter(|value| !value.trim().is_empty())
+        .or_else(|| {
+            option_env!("PERMANU_AGENT_BUILD_VERSION")
+                .filter(|value| !value.trim().is_empty())
+                .map(str::to_string)
+        })
+        .unwrap_or_else(|| {
+            format!(
+                "{}-{}-{}",
+                env!("CARGO_PKG_VERSION"),
+                env::consts::OS,
+                env::consts::ARCH
+            )
+        })
 }
 
 fn required_env(name: &str) -> Result<String> {

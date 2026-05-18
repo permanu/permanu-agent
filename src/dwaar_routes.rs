@@ -422,7 +422,7 @@ fn render_route_snippet(
         validate_path_prefix(path_prefix)?;
     }
     let mut content = String::new();
-    content.push_str("# Managed by permanu-agent-rs. DO NOT EDIT.\n");
+    content.push_str("# Managed by permanu-agent. DO NOT EDIT.\n");
     content.push_str(domain);
     content.push_str(" {\n");
     if path_prefix.trim().is_empty() {

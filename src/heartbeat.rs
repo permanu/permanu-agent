@@ -90,6 +90,9 @@ async fn send_once(
         );
     }
 
+    let mut service_metrics = vec![agent_self_metric(&cfg, &log_forwarder)];
+    service_metrics.extend(system::collect_host_mount_metrics());
+
     let request = HeartbeatRequest {
         agent_version: cfg.version.clone(),
         timestamp: Some(now_timestamp()),
@@ -102,7 +105,7 @@ async fn send_once(
             .into_iter()
             .map(Into::into)
             .collect(),
-        service_metrics: vec![agent_self_metric(&cfg, &log_forwarder)],
+        service_metrics,
         slow_queries: Vec::new(),
         health_check_results: monitoring.drain_health_check_results(),
         disk_server_id: cfg.server_id.clone(),

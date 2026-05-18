@@ -162,27 +162,36 @@ impl DiskSpool {
             ));
         }
 
-        let mut remaining = Vec::new();
-        let mut skip = ack.records;
-        for segment in &state.segments {
-            for payload in read_segment_payloads(&segment.path)? {
-                if skip > 0 {
-                    skip -= 1;
-                } else {
-                    remaining.push(payload);
-                }
+        let mut records_to_ack = ack.records as u64;
+        while records_to_ack > 0 {
+            let Some(segment) = state.segments.first().cloned() else {
+                break;
+            };
+
+            if records_to_ack >= segment.records {
+                remove_segment_file(&segment.path)?;
+                state.bytes -= segment.bytes;
+                state.records -= segment.records;
+                state.segments.remove(0);
+                records_to_ack -= segment.records;
+                continue;
             }
+
+            let payloads = read_segment_payloads(&segment.path)?;
+            let skip = usize::try_from(records_to_ack).map_err(|_| {
+                io::Error::new(io::ErrorKind::InvalidInput, "ack record count overflow")
+            })?;
+            let remaining: Vec<Vec<u8>> = payloads.into_iter().skip(skip).collect();
+            let (bytes, records) = rewrite_segment_records(&segment.path, &remaining)?;
+
+            state.bytes -= segment.bytes - bytes;
+            state.records -= records_to_ack;
+            state.segments[0].bytes = bytes;
+            state.segments[0].records = records;
+            records_to_ack = 0;
         }
 
-        let dropped_records = state.dropped_records;
-        let dropped_bytes = state.dropped_bytes;
-        clear_segments(&state.segments)?;
-        *state = SpoolState {
-            dropped_records,
-            dropped_bytes,
-            ..SpoolState::default()
-        };
-        rewrite_records(&self.config, &mut state, remaining)
+        Ok(())
     }
 
     pub fn counters(&self) -> SpoolCounters {
@@ -365,48 +374,34 @@ fn enforce_budget(config: &SpoolConfig, state: &mut SpoolState) -> io::Result<()
     Ok(())
 }
 
-fn clear_segments(segments: &[Segment]) -> io::Result<()> {
-    for segment in segments {
-        match fs::remove_file(&segment.path) {
-            Ok(()) => {}
-            Err(err) if err.kind() == io::ErrorKind::NotFound => {}
-            Err(err) => return Err(err),
+fn remove_segment_file(path: &Path) -> io::Result<()> {
+    match fs::remove_file(path) {
+        Ok(()) => Ok(()),
+        Err(err) if err.kind() == io::ErrorKind::NotFound => Ok(()),
+        Err(err) => Err(err),
+    }
+}
+
+fn rewrite_segment_records(path: &Path, records: &[Vec<u8>]) -> io::Result<(u64, u64)> {
+    let mut file = OpenOptions::new().write(true).truncate(true).open(path)?;
+    let mut bytes = 0_u64;
+    let mut count = 0_u64;
+
+    {
+        let mut writer = BufWriter::new(&mut file);
+        for payload in records {
+            let record_bytes = record_disk_bytes(payload)?;
+            let len = checked_len_u64(payload.len())?;
+            writer.write_all(&len.to_be_bytes())?;
+            writer.write_all(payload)?;
+            bytes += record_bytes;
+            count += 1;
         }
-    }
-    Ok(())
-}
-
-fn rewrite_records(
-    config: &SpoolConfig,
-    state: &mut SpoolState,
-    records: Vec<Vec<u8>>,
-) -> io::Result<()> {
-    for payload in records {
-        let record_bytes = record_disk_bytes(&payload)?;
-        let index = writable_segment_index(config, state, record_bytes)?;
-        write_record_without_sync(&state.segments[index].path, &payload)?;
-        state.segments[index].bytes += record_bytes;
-        state.segments[index].records += 1;
-        state.bytes += record_bytes;
-        state.records += 1;
+        writer.flush()?;
     }
 
-    for segment in &state.segments {
-        OpenOptions::new()
-            .read(true)
-            .open(&segment.path)?
-            .sync_data()?;
-    }
-
-    Ok(())
-}
-
-fn write_record_without_sync(path: &Path, payload: &[u8]) -> io::Result<()> {
-    let mut writer = BufWriter::new(OpenOptions::new().append(true).create(true).open(path)?);
-    let len = checked_len_u64(payload.len())?;
-    writer.write_all(&len.to_be_bytes())?;
-    writer.write_all(payload)?;
-    writer.flush()
+    file.sync_data()?;
+    Ok((bytes, count))
 }
 
 fn record_disk_bytes(payload: &[u8]) -> io::Result<u64> {
@@ -549,6 +544,63 @@ mod tests {
         let second = spool.read_batch(10, 1024).expect("read remaining");
         assert_eq!(second.records.len(), 1);
         assert_eq!(second.records[0].payload, b"c");
+
+        fs::remove_dir_all(dir).expect("cleanup");
+    }
+
+    #[test]
+    fn ack_rewrites_only_partially_consumed_head_segment() {
+        let dir = temp_dir("partial-head-ack");
+        let spool = DiskSpool::open(SpoolConfig {
+            dir: dir.clone(),
+            max_bytes: 16 * 1024,
+            max_segment_bytes: 18,
+        })
+        .expect("open spool");
+
+        for payload in [b"a", b"b", b"c", b"d", b"e"] {
+            spool.append_bytes(payload).expect("append");
+        }
+
+        {
+            let state = spool.lock_state().expect("state");
+            let sequences: Vec<u64> = state
+                .segments
+                .iter()
+                .map(|segment| segment.sequence)
+                .collect();
+            assert_eq!(sequences, vec![0, 1, 2]);
+        }
+
+        let first = spool.read_batch(1, 1024).expect("read first");
+        spool.ack(first.ack).expect("ack first");
+
+        {
+            let state = spool.lock_state().expect("state");
+            let sequences: Vec<u64> = state
+                .segments
+                .iter()
+                .map(|segment| segment.sequence)
+                .collect();
+            let records: Vec<u64> = state
+                .segments
+                .iter()
+                .map(|segment| segment.records)
+                .collect();
+            assert_eq!(sequences, vec![0, 1, 2]);
+            assert_eq!(records, vec![1, 2, 1]);
+        }
+
+        let remaining = spool.read_batch(10, 1024).expect("read remaining");
+        let payloads: Vec<Vec<u8>> = remaining
+            .records
+            .iter()
+            .map(|record| record.payload.clone())
+            .collect();
+        assert_eq!(
+            payloads,
+            vec![b"b".to_vec(), b"c".to_vec(), b"d".to_vec(), b"e".to_vec()]
+        );
 
         fs::remove_dir_all(dir).expect("cleanup");
     }

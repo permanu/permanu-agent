@@ -81,7 +81,7 @@ pub async fn run(duration: Duration) -> Result<()> {
             started.elapsed().as_secs().to_string(),
         );
         forwarder
-            .push(agent_log("info", "permanu-agent-rs probe tick", fields))
+            .push(agent_log("info", "permanu-agent probe tick", fields))
             .context("enqueue probe log")?;
 
         if let Some(docker) = &docker {

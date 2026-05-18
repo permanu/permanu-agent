@@ -1,0 +1,61 @@
+name: release
+
+on:
+  push:
+    branches:
+      - main
+    tags:
+      - "v0.1.*"
+  pull_request:
+
+permissions:
+  contents: write
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Format
+        run: cargo fmt --check
+      - name: Test
+        run: cargo test --locked --bin permanu-agent
+      - name: Version guard
+        if: startsWith(github.ref, 'refs/tags/')
+        run: scripts/check-version.sh
+
+  build-linux:
+    needs: test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-unknown-linux-musl,aarch64-unknown-linux-musl
+      - uses: mlugg/setup-zig@v2
+      - name: Install cargo-zigbuild
+        run: cargo install cargo-zigbuild --locked
+      - name: Build release artifacts
+        run: VERSION="${GITHUB_REF_NAME#v}" scripts/build-release.sh
+      - uses: actions/upload-artifact@v4
+        with:
+          name: permanu-agent-linux
+          path: dist/
+
+  github-release:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: build-linux
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: permanu-agent-linux
+          path: dist
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            dist/permanu-agent-linux-amd64
+            dist/permanu-agent-linux-arm64
+            dist/permanu-agent-release.json
+            dist/SHA256SUMS

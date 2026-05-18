@@ -85,6 +85,11 @@ pub async fn handle_compose_up(
                 );
             }
         }
+        if let Err(err) =
+            crate::job_deployment::validate_compose_up_content(&payload.compose_content)
+        {
+            return failed_text(command_id, &format!("compose validation failed: {err}"));
+        }
         if let Err(err) = write_compose_file(&project_dir, &payload.compose_content) {
             return failed_text(command_id, &format!("failed to write compose file: {err}"));
         }

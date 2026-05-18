@@ -1,7 +1,8 @@
 use std::{
+    collections::BTreeMap,
     fs,
     path::{Path, PathBuf},
-    sync::Arc,
+    sync::{atomic::AtomicBool, Arc},
     time::Instant,
 };
 
@@ -34,6 +35,7 @@ use crate::{
     dwaar_routes,
     host_admin::{self, UninstallStep},
     job_deployment,
+    log_forwarder::LogForwarder,
     monitoring::MonitoringState,
     proto::agent::v1::{
         agent_service_client::AgentServiceClient, Command, CommandAck, CommandResult,
@@ -126,6 +128,7 @@ const COMMAND_RECONNECT_MAX_DELAY: Duration = Duration::from_secs(30);
 pub async fn run(
     cfg: Arc<Config>,
     agent_keypair: Arc<AgentKeypair>,
+    log_forwarder: Arc<LogForwarder>,
     monitoring: Arc<MonitoringState>,
     route_aggregator: Arc<RouteAggregator>,
     mut shutdown: watch::Receiver<bool>,
@@ -140,6 +143,7 @@ pub async fn run(
         monitoring,
         route_aggregator,
         agent_keypair,
+        log_forwarder,
         internal_apex: Arc::new(RwLock::new(cfg.internal_apex.clone())),
     });
 
@@ -232,7 +236,9 @@ pub async fn run(
 
             if command.r#type == COMMAND_TYPE_CANCEL_COMMAND {
                 tokio::spawn(async move {
-                    if let Err(err) = handle_command(command_ctx, ack_client, tx, command).await {
+                    if let Err(err) =
+                        handle_command(command_ctx, ack_client, tx, command, None).await
+                    {
                         warn!(error = ?err, "cancel command handler failed");
                     }
                 });
@@ -283,14 +289,25 @@ pub async fn run(
                 };
             let (abort_handle, abort_registration) = AbortHandle::new_pair();
             let command_id = command.id.clone();
-            command_ctx.cancels.register(&command_id, abort_handle);
+            let cancellation_signal = if command.r#type == COMMAND_TYPE_CI_JOB {
+                Some(Arc::new(AtomicBool::new(false)))
+            } else {
+                None
+            };
+            if let Some(signal) = &cancellation_signal {
+                command_ctx
+                    .cancels
+                    .register_with_signal(&command_id, abort_handle, signal.clone());
+            } else {
+                command_ctx.cancels.register(&command_id, abort_handle);
+            }
             let abort_tx = tx.clone();
             tokio::spawn(async move {
                 let _permit = permit;
                 let command_id_for_cleanup = command_id.clone();
                 let cancels = command_ctx.cancels.clone();
                 let result = Abortable::new(
-                    handle_command(command_ctx, ack_client, tx, command),
+                    handle_command(command_ctx, ack_client, tx, command, cancellation_signal),
                     abort_registration,
                 )
                 .await;
@@ -333,6 +350,7 @@ struct CommandContext {
     monitoring: Arc<MonitoringState>,
     route_aggregator: Arc<RouteAggregator>,
     agent_keypair: Arc<AgentKeypair>,
+    log_forwarder: Arc<LogForwarder>,
     internal_apex: Arc<RwLock<String>>,
 }
 
@@ -341,10 +359,17 @@ async fn handle_command(
     mut client: AgentServiceClient<Channel>,
     tx: mpsc::Sender<CommandResult>,
     command: Command,
+    cancellation_signal: Option<Arc<AtomicBool>>,
 ) -> Result<()> {
     info!(id = %command.id, kind = command.r#type, "received command");
 
-    ack_command_receipt(&ctx.cfg, &mut client, &command.id).await?;
+    ack_command_receipt(
+        &ctx.cfg,
+        &mut client,
+        &command.id,
+        command_requires_ack(command.r#type),
+    )
+    .await?;
 
     let result = match command.r#type {
         COMMAND_TYPE_CACHE_PURGE => handle_cache_purge_command(&command.id, &command.payload).await,
@@ -522,7 +547,7 @@ async fn handle_command(
             handle_volume_remove_command(&command.id, &command.payload).await
         }
         COMMAND_TYPE_NETWORK_INSPECT => handle_network_inspect_command(&command.id).await,
-        COMMAND_TYPE_REENROLL => handle_reenroll_command(&command.id, &command.payload).await,
+        COMMAND_TYPE_REENROLL => handle_reenroll_command(&command.id, &command.payload, &ctx.cfg.server_id).await,
         COMMAND_TYPE_BOOTSTRAP_SECRETS => {
             handle_bootstrap_secrets_command(&command.id, &command.payload, &ctx).await
         }
@@ -532,7 +557,11 @@ async fn handle_command(
         COMMAND_TYPE_ROTATE_AGENT_SECRET => {
             handle_rotate_agent_secret_command(&command.id, &command.payload, &ctx).await
         }
-        COMMAND_TYPE_CI_JOB => handle_ci_job_command(&command.id, &command.payload),
+        COMMAND_TYPE_CI_JOB => {
+            let cancellation =
+                cancellation_signal.unwrap_or_else(|| Arc::new(AtomicBool::new(false)));
+            handle_ci_job_command(&command.id, &command.payload, cancellation, ctx.log_forwarder.clone()).await
+        }
         COMMAND_TYPE_HOST_DIAGNOSTIC => sre_tools::handle_command(&command.id, &command.payload).await,
         COMMAND_TYPE_DWAAR_CONFIG_PATCH => {
             handle_dwaar_config_patch_command(&command.id, &command.payload).await
@@ -556,7 +585,7 @@ async fn handle_command(
         other => failed_text(
             &command.id,
             &format!(
-                "unsupported_command_type: {other} is not implemented in permanu-agent-rs yet"
+                "unsupported_command_type: {other} is not implemented in permanu-agent yet"
             ),
         ),
     };
@@ -665,16 +694,31 @@ fn decrypt_agent_text(agent_keypair: &AgentKeypair, sealed: &[u8]) -> anyhow::Re
     Ok(text.trim().to_string())
 }
 
-async fn handle_reenroll_command(command_id: &str, payload: &[u8]) -> CommandResult {
+async fn handle_reenroll_command(
+    command_id: &str,
+    payload: &[u8],
+    server_id: &str,
+) -> CommandResult {
     let parsed = match control_plane_identity::parse_reenroll_payload(payload, command_id) {
         Ok(parsed) => parsed,
         Err(err) => return failed_text(command_id, &format!("reenroll: {err}")),
     };
-    let script =
-        match control_plane_identity::download_installer_with_curl(&parsed.install_url).await {
-            Ok(script) => script,
-            Err(err) => return failed_text(command_id, &format!("reenroll download: {err}")),
-        };
+
+    // Persist the current server_id before reenrolling so the new agent
+    // instance can carry forward its identity for server relinking.
+    if let Err(err) = control_plane_identity::persist_previous_server_id(server_id) {
+        // Non-fatal: best-effort identity carry-forward.
+        warn!(error = %err, "failed to persist previous server_id (non-fatal)");
+    }
+
+    // Append previous_server_id to the install URL so the control plane
+    // can match the new installation to the old server row.
+    let install_url = control_plane_identity::append_previous_server_id_to_url(&parsed.install_url);
+
+    let script = match control_plane_identity::download_installer_with_curl(&install_url).await {
+        Ok(script) => script,
+        Err(err) => return failed_text(command_id, &format!("reenroll download: {err}")),
+    };
     let script_path =
         match control_plane_identity::write_reenroll_script(&parsed, &script, std::env::temp_dir())
         {
@@ -713,6 +757,7 @@ async fn handle_run_hooks_command(command_id: &str, payload: &[u8]) -> CommandRe
             args: args.to_vec(),
             work_dir: Some(plan.work_dir.clone()),
             env: plan.env.clone(),
+            host_env: BTreeMap::new(),
             timeout_seconds: plan.timeout_seconds,
         });
     }
@@ -754,8 +799,32 @@ async fn run_job_invocations(
     completed_text(command_id, output.trim())
 }
 
-fn handle_ci_job_command(command_id: &str, payload: &[u8]) -> CommandResult {
-    let result = job_deployment::handle_ci_job(command_id, payload);
+async fn handle_ci_job_command(
+    command_id: &str,
+    payload: &[u8],
+    cancellation: Arc<AtomicBool>,
+    log_forwarder: Arc<LogForwarder>,
+) -> CommandResult {
+    let command_id = command_id.to_string();
+    let worker_command_id = command_id.clone();
+    let payload = payload.to_vec();
+    let worker_cancellation = cancellation.clone();
+    let result = match tokio::task::spawn_blocking(move || {
+        job_deployment::handle_ci_job_with_cancellation_and_logs(
+            &worker_command_id,
+            &payload,
+            worker_cancellation,
+            Some(log_forwarder),
+        )
+    })
+    .await
+    {
+        Ok(result) => result,
+        Err(err) => {
+            cancellation.store(true, std::sync::atomic::Ordering::SeqCst);
+            return failed_text(command_id.as_str(), &format!("ci job worker failed: {err}"));
+        }
+    };
     CommandResult {
         command_id: result.command_id,
         status: result.status,
@@ -789,13 +858,10 @@ async fn handle_app_proxy_setup_command(
             setup.upstream = upstream;
         }
     }
-    let path = Path::new(DWAAR_APPS_DIR).join(format!("{}.dwaar", setup.slug));
-    if !Path::new(DWAAR_APPS_DIR).is_dir() {
-        return failed_text(
-            command_id,
-            &format!("dwaar apps dir {DWAAR_APPS_DIR} missing"),
-        );
+    if let Err(err) = ensure_dwaar_runtime().await {
+        return failed_text(command_id, &format!("ensure dwaar runtime: {err}"));
     }
+    let path = Path::new(DWAAR_APPS_DIR).join(format!("{}.dwaar", setup.slug));
     let apex = {
         let apex = ctx.internal_apex.read().await;
         if apex.trim().is_empty() {
@@ -813,6 +879,115 @@ async fn handle_app_proxy_setup_command(
         return failed_text(command_id, &format!("reload dwaar: {err}"));
     }
     completed_text(command_id, "proxy configured")
+}
+
+async fn ensure_dwaar_runtime() -> Result<()> {
+    fs::create_dir_all(DWAAR_APPS_DIR)
+        .with_context(|| format!("create dwaar apps dir {DWAAR_APPS_DIR}"))?;
+    if command_exists("dwaar").await {
+        start_dwaar().await?;
+        return Ok(());
+    }
+    let output = tokio::time::timeout(
+        Duration::from_secs(120),
+        tokio::process::Command::new("sh")
+            .arg("-lc")
+            .arg("DWAAR_VERSION=0.1.0 curl -fsSL https://raw.githubusercontent.com/permanu/Dwaar/v0.1.0/scripts/install.sh | sh")
+            .env("HOME", "/root")
+            .env("PATH", "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin")
+            .output(),
+    )
+    .await
+    .context("dwaar install timed out")?
+    .context("run dwaar installer")?;
+    if !output.status.success() {
+        anyhow::bail!(
+            "installer failed: {}{}",
+            String::from_utf8_lossy(&output.stdout).trim(),
+            String::from_utf8_lossy(&output.stderr).trim()
+        );
+    }
+    fs::create_dir_all(DWAAR_APPS_DIR)
+        .with_context(|| format!("create dwaar apps dir {DWAAR_APPS_DIR}"))?;
+    start_dwaar().await?;
+    Ok(())
+}
+
+async fn start_dwaar() -> Result<()> {
+    let systemctl_output = tokio::time::timeout(
+        Duration::from_secs(20),
+        tokio::process::Command::new("sh")
+            .arg("-lc")
+            .arg("systemctl start dwaar 2>/dev/null || systemctl restart dwaar 2>/dev/null")
+            .env("HOME", "/root")
+            .env(
+                "PATH",
+                "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
+            )
+            .output(),
+    )
+    .await
+    .context("dwaar start timed out")?
+    .context("start dwaar")?;
+
+    if systemctl_output.status.success()
+        && wait_for_dwaar_admin(Duration::from_secs(10)).await.is_ok()
+    {
+        return Ok(());
+    }
+
+    fs::create_dir_all("/var/log/dwaar").context("create dwaar log dir")?;
+    let fallback_output = tokio::time::timeout(
+        Duration::from_secs(20),
+        tokio::process::Command::new("sh")
+            .arg("-lc")
+            .arg("nohup dwaar -c /etc/dwaar/Dwaarfile --admin-socket /run/dwaar/admin.sock >/var/log/dwaar/dwaar.log 2>&1 &")
+            .env("HOME", "/root")
+            .env("PATH", "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin")
+            .output(),
+    )
+    .await
+    .context("dwaar fallback start timed out")?
+    .context("fallback start dwaar")?;
+    if !fallback_output.status.success() {
+        anyhow::bail!(
+            "start failed: systemctl={}{} fallback={}{}",
+            String::from_utf8_lossy(&systemctl_output.stdout).trim(),
+            String::from_utf8_lossy(&systemctl_output.stderr).trim(),
+            String::from_utf8_lossy(&fallback_output.stdout).trim(),
+            String::from_utf8_lossy(&fallback_output.stderr).trim()
+        );
+    }
+    wait_for_dwaar_admin(Duration::from_secs(15)).await
+}
+
+async fn wait_for_dwaar_admin(timeout_after: Duration) -> Result<()> {
+    let started = Instant::now();
+    let dwaar = DwaarAdmin::new(DWAAR_ADMIN_SOCKET);
+    let mut last_err = None;
+    while started.elapsed() < timeout_after {
+        match dwaar.request("GET", "/routes", &[], 1024).await {
+            Ok(response) if response.status < 500 => return Ok(()),
+            Ok(response) => {
+                last_err = Some(anyhow::anyhow!("dwaar admin returned {}", response.status));
+            }
+            Err(err) => last_err = Some(err),
+        }
+        tokio::time::sleep(Duration::from_millis(500)).await;
+    }
+    match last_err {
+        Some(err) => Err(err).context("dwaar admin did not become ready"),
+        None => anyhow::bail!("dwaar admin did not become ready"),
+    }
+}
+
+async fn command_exists(program: &str) -> bool {
+    tokio::process::Command::new("sh")
+        .arg("-lc")
+        .arg(format!("command -v {program} >/dev/null 2>&1"))
+        .status()
+        .await
+        .is_ok_and(|status| status.success())
 }
 
 async fn handle_app_proxy_remove_command(command_id: &str, payload: &[u8]) -> CommandResult {
@@ -840,14 +1015,19 @@ async fn ack_and_send_result(
     command: &Command,
     result: CommandResult,
 ) -> Result<()> {
-    ack_command_receipt(&cfg, &mut client, &command.id).await?;
+    ack_command_receipt(&cfg, &mut client, &command.id, false).await?;
     tx.send(result).await.context("send command result")
+}
+
+fn command_requires_ack(command_type: i32) -> bool {
+    command_type == COMMAND_TYPE_CI_JOB
 }
 
 async fn ack_command_receipt(
     cfg: &Config,
     client: &mut AgentServiceClient<Channel>,
     command_id: &str,
+    require_success: bool,
 ) -> Result<()> {
     if command_id.is_empty() {
         return Ok(());
@@ -860,8 +1040,22 @@ async fn ack_command_receipt(
     let request = cfg.attach_auth(tonic::Request::new(ack))?;
     match tokio::time::timeout(Duration::from_secs(3), client.ack_command(request)).await {
         Ok(Ok(_)) => {}
-        Ok(Err(err)) => warn!(error = ?err, command_id = %command_id, "command ack failed"),
-        Err(err) => warn!(error = ?err, command_id = %command_id, "command ack timed out"),
+        Ok(Err(err)) => {
+            warn!(error = ?err, command_id = %command_id, "command ack failed");
+            if require_success {
+                return Err(anyhow::anyhow!(
+                    "command ack failed for {command_id}: {err}"
+                ));
+            }
+        }
+        Err(err) => {
+            warn!(error = ?err, command_id = %command_id, "command ack timed out");
+            if require_success {
+                return Err(anyhow::anyhow!(
+                    "command ack timed out for {command_id}: {err}"
+                ));
+            }
+        }
     }
     Ok(())
 }
@@ -1949,5 +2143,23 @@ mod tests {
             next_reconnect_delay(Duration::from_secs(30)),
             Duration::from_secs(30)
         );
+    }
+
+    #[test]
+    fn command_requires_successful_ack_for_ci_jobs_only() {
+        assert!(command_requires_ack(COMMAND_TYPE_CI_JOB));
+
+        for command_type in [
+            COMMAND_TYPE_EXEC,
+            COMMAND_TYPE_UPDATE_AGENT,
+            COMMAND_TYPE_CANCEL_COMMAND,
+            COMMAND_TYPE_AGENT_STATUS,
+            COMMAND_TYPE_APP_DEPLOY,
+        ] {
+            assert!(
+                !command_requires_ack(command_type),
+                "command type {command_type} should keep best-effort ACK semantics"
+            );
+        }
     }
 }

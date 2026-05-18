@@ -1,6 +1,15 @@
 # Permanu Agent
 
-Rust implementation of the Permanu remote agent.
+Source-available Rust implementation of the Permanu remote agent.
+
+## License
+
+Permanu Agent is licensed under the Elastic License 2.0. See `LICENSE`.
+
+This is a source-available license, not an OSI open-source license. You may
+inspect, build, modify, and redistribute the agent subject to the license terms.
+You may not offer the agent or a modified version as a competing hosted or
+managed service.
 
 The agent is a long-lived process that connects a customer server to the
 Permanu control plane over gRPC/TLS. It is designed for low idle memory,
@@ -29,6 +38,16 @@ cargo build --release
 The build uses the vendored `protoc` dependency and the checked-in
 `proto/agent/v1/agent.proto` file.
 
+For release artifacts:
+
+```bash
+scripts/build-release.sh
+```
+
+Release tags are patch-line guarded. For now, publish `v0.1.x` tags only, and
+the tag must match the `Cargo.toml` package version exactly. The first public
+release is `v0.1.0`; the next patch is `v0.1.1`.
+
 ## Test
 
 ```bash
@@ -51,7 +70,6 @@ Optional environment:
 - `AGENT_VERSION`: override reported agent version.
 - `PERMANU_AGENT_REPORT_CHECKSUM=1`: include the running binary SHA-256 in
   heartbeat metadata.
-- `PERMANU_AGENT_TLS_INSECURE_SKIP_VERIFY=true`: development-only TLS bypass.
 - `PERMANU_AGENT_SPOOL_DIR`: local command/log spool directory.
 
 The production service should run with a dedicated system user, least-privilege

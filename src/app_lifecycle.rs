@@ -68,6 +68,7 @@ struct DeployPayload {
     process_name: String,
     replica_index: i32,
     labels: HashMap<String, String>,
+    command: Vec<String>,
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -168,11 +169,10 @@ pub async fn handle_app_clone(
     )
     .await;
 
-    if let Some(path) = askpass {
-        let _ = std::fs::remove_file(path);
-    }
-
     if let Err(err) = clone_result {
+        if let Some(path) = askpass.as_ref() {
+            let _ = std::fs::remove_file(path);
+        }
         let _ = tokio::fs::remove_dir_all(&clone_dir).await;
         return failed_text(command_id, &format!("git clone failed: {err}"));
     }
@@ -185,6 +185,9 @@ pub async fn handle_app_clone(
         )
         .await
         {
+            if let Some(path) = askpass.as_ref() {
+                let _ = std::fs::remove_file(path);
+            }
             let _ = tokio::fs::remove_dir_all(&clone_dir).await;
             return failed_text(
                 command_id,
@@ -193,12 +196,19 @@ pub async fn handle_app_clone(
         }
         if let Err(err) = run_git_quiet(&clone_dir, &envs, &["checkout", &payload.commit_sha]).await
         {
+            if let Some(path) = askpass.as_ref() {
+                let _ = std::fs::remove_file(path);
+            }
             let _ = tokio::fs::remove_dir_all(&clone_dir).await;
             return failed_text(
                 command_id,
                 &format!("git checkout {} failed: {err}", payload.commit_sha),
             );
         }
+    }
+
+    if let Some(path) = askpass.as_ref() {
+        let _ = std::fs::remove_file(path);
     }
 
     if let Ok(head) = run_command_output(
@@ -853,6 +863,12 @@ fn parse_deploy_payload(payload: &[u8]) -> Result<DeployPayload> {
         replica_index: i32,
         #[serde(default)]
         labels: HashMap<String, String>,
+        #[serde(default)]
+        override_cmd: String,
+        #[serde(default)]
+        cron_schedule: String,
+        #[serde(default)]
+        cron_command: String,
     }
 
     let payload: Payload = serde_json::from_slice(payload)?;
@@ -869,6 +885,11 @@ fn parse_deploy_payload(payload: &[u8]) -> Result<DeployPayload> {
     for label in payload.labels.keys() {
         validate_label_key(label)?;
     }
+    let command = container_command(
+        &payload.override_cmd,
+        &payload.cron_schedule,
+        &payload.cron_command,
+    )?;
     Ok(DeployPayload {
         container_name: payload.container_name.trim().to_string(),
         image_tag: payload.image_tag.trim().to_string(),
@@ -895,7 +916,75 @@ fn parse_deploy_payload(payload: &[u8]) -> Result<DeployPayload> {
         process_name: payload.process_name,
         replica_index: payload.replica_index,
         labels: payload.labels,
+        command,
     })
+}
+
+fn container_command(
+    override_cmd: &str,
+    cron_schedule: &str,
+    cron_command: &str,
+) -> Result<Vec<String>> {
+    let override_cmd = override_cmd.trim();
+    let cron_schedule = cron_schedule.trim();
+    let cron_command = cron_command.trim();
+
+    if !cron_schedule.is_empty() || !cron_command.is_empty() {
+        validate_cron_schedule(cron_schedule)?;
+        validate_no_control(cron_command, "cron_command")?;
+        return Ok(vec![
+            "sh".to_string(),
+            "-c".to_string(),
+            cron_shell_supervisor(cron_schedule, cron_command),
+        ]);
+    }
+
+    if override_cmd.is_empty() {
+        return Ok(Vec::new());
+    }
+    validate_no_control(override_cmd, "override_cmd")?;
+    Ok(vec![
+        "sh".to_string(),
+        "-c".to_string(),
+        override_cmd.to_string(),
+    ])
+}
+
+fn validate_cron_schedule(schedule: &str) -> Result<()> {
+    validate_no_control(schedule, "cron_schedule")?;
+    let fields: Vec<&str> = schedule.split_whitespace().collect();
+    if fields.len() != 5 {
+        anyhow::bail!("cron_schedule must have exactly 5 fields");
+    }
+    for field in fields {
+        if field.is_empty()
+            || !field
+                .bytes()
+                .all(|byte| byte.is_ascii_digit() || matches!(byte, b'*' | b',' | b'-' | b'/'))
+        {
+            anyhow::bail!("cron_schedule contains unsupported field {field:?}");
+        }
+    }
+    Ok(())
+}
+
+fn cron_shell_supervisor(schedule: &str, command: &str) -> String {
+    let fields: Vec<&str> = schedule.split_whitespace().collect();
+    format!(
+        "match_one() {{ token=\"$1\"; val=\"$2\"; case \"$token\" in \"*\") return 0;; \"*/\"*) step=\"${{token#*/}}\"; [ \"$step\" -gt 0 ] && [ $((val % step)) -eq 0 ];; *-*) start=\"${{token%-*}}\"; end=\"${{token#*-}}\"; [ \"$val\" -ge \"$start\" ] && [ \"$val\" -le \"$end\" ];; *) [ \"$val\" -eq \"$token\" ];; esac; }}\n\
+match_field() {{ field=\"$1\"; val=$(expr \"$2\" + 0); oldifs=\"$IFS\"; IFS=,; for token in $field; do if match_one \"$token\" \"$val\"; then IFS=\"$oldifs\"; return 0; fi; done; IFS=\"$oldifs\"; return 1; }}\n\
+while true; do set -- $(date '+%M %H %d %m %w'); if match_field '{}' \"$1\" && match_field '{}' \"$2\" && match_field '{}' \"$3\" && match_field '{}' \"$4\" && match_field '{}' \"$5\"; then sh -c {}; fi; sleep 60; done",
+        fields[0],
+        fields[1],
+        fields[2],
+        fields[3],
+        fields[4],
+        shell_single_quote(command)
+    )
+}
+
+fn shell_single_quote(value: &str) -> String {
+    format!("'{}'", value.replace('\'', "'\"'\"'"))
 }
 
 fn parse_container_name_payload(payload: &[u8]) -> Result<String> {
@@ -1028,6 +1117,7 @@ fn docker_create_args(payload: &DeployPayload) -> Vec<String> {
         args.extend(["-v".to_string(), bind]);
     }
     args.push(payload.image_tag.clone());
+    args.extend(payload.command.iter().cloned());
     args
 }
 
@@ -1266,7 +1356,23 @@ async fn probe_container_health(payload: &DeployPayload) -> Result<bool> {
     let deadline = tokio::time::Instant::now() + Duration::from_secs(60);
     tokio::time::sleep(Duration::from_secs(5)).await;
     while tokio::time::Instant::now() < deadline {
-        let inspect = inspect_container(&payload.container_name).await?;
+        let inspect = match inspect_container(&payload.container_name).await {
+            Ok(inspect) => inspect,
+            Err(err) => {
+                let ps = docker_ps_by_name(&payload.container_name)
+                    .await
+                    .unwrap_or_default();
+                anyhow::bail!(
+                    "inspect failed for {}: {err}; docker ps -a match: {}",
+                    payload.container_name,
+                    if ps.trim().is_empty() {
+                        "<none>"
+                    } else {
+                        ps.trim()
+                    }
+                );
+            }
+        };
         if inspect
             .state
             .as_ref()
@@ -1342,6 +1448,28 @@ async fn inspect_container(container: &str) -> Result<InspectContainer> {
     }
     let mut containers: Vec<InspectContainer> = serde_json::from_slice(&output.stdout)?;
     containers.pop().context("empty docker inspect response")
+}
+
+async fn docker_ps_by_name(container: &str) -> Result<String> {
+    let filter = format!("name=^/{}$", container);
+    let output = run_command_output(
+        "docker",
+        &[
+            "ps",
+            "-a",
+            "--no-trunc",
+            "--filter",
+            &filter,
+            "--format",
+            "{{.ID}} {{.Names}} {{.Status}}",
+        ],
+        None,
+        &[],
+        DOCKER_OP_TIMEOUT,
+        MAX_COMMAND_OUTPUT_BYTES,
+    )
+    .await?;
+    Ok(output.combined_string())
 }
 
 fn pick_container_ip(inspect: &InspectContainer, preferred_network: &str) -> Option<String> {
@@ -2040,6 +2168,43 @@ mod tests {
 
         assert_eq!(payload.port, 3000);
         assert_eq!(payload.network, "deploy-net");
+    }
+
+    #[test]
+    fn deploy_payload_adds_worker_command_after_image() {
+        let payload = parse_deploy_payload(
+            br#"{"container_name":"deploy-app-worker-abc","image_tag":"deploy-app:abc","override_cmd":"bundle exec sidekiq"}"#,
+        )
+        .expect("parse deploy payload");
+
+        let args = docker_create_args(&payload);
+        let image_idx = args
+            .iter()
+            .position(|arg| arg == "deploy-app:abc")
+            .expect("image arg");
+        assert_eq!(&args[image_idx + 1..], ["sh", "-c", "bundle exec sidekiq"]);
+    }
+
+    #[test]
+    fn deploy_payload_wraps_cron_process_without_host_shell() {
+        let payload = parse_deploy_payload(
+            br#"{"container_name":"deploy-app-cron-abc","image_tag":"deploy-app:abc","cron_schedule":"*/5 * * * *","cron_command":"./bin/scheduler --run"}"#,
+        )
+        .expect("parse deploy payload");
+
+        assert_eq!(&payload.command[0..2], ["sh", "-c"]);
+        assert!(payload.command[2].contains("match_field '*/5'"));
+        assert!(payload.command[2].contains("sh -c './bin/scheduler --run'"));
+    }
+
+    #[test]
+    fn deploy_payload_rejects_malformed_cron_schedule() {
+        let err = parse_deploy_payload(
+            br#"{"container_name":"deploy-app-cron-abc","image_tag":"deploy-app:abc","cron_schedule":"not a cron","cron_command":"./bin/scheduler"}"#,
+        )
+        .unwrap_err();
+
+        assert!(err.to_string().contains("cron_schedule"));
     }
 
     #[test]

@@ -27,6 +27,7 @@ use control_plane_identity_files::{
 const DEFAULT_CF_TOKEN_ENV: &str = "CF_API_TOKEN";
 const MAX_REENROLL_SCRIPT_BYTES: usize = 10 << 20;
 const AGENT_RESTART_DELAY: Duration = Duration::from_secs(2);
+const PREVIOUS_SERVER_ID_FILE: &str = "/var/lib/permanu/previous-server-id";
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum CommandStatus {
@@ -175,6 +176,43 @@ pub fn parse_reenroll_payload(payload: &[u8], command_id: &str) -> Result<Reenro
     })
 }
 
+/// Persists the current server_id to a well-known file before reenrollment.
+/// This allows the new agent instance to carry forward its identity for
+/// server relinking when the IP changes between installations.
+pub fn persist_previous_server_id(server_id: &str) -> Result<()> {
+    if server_id.trim().is_empty() || server_id == "probe" {
+        return Ok(());
+    }
+    let path = Path::new(PREVIOUS_SERVER_ID_FILE);
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent).context("create previous-server-id directory")?;
+    }
+    atomic_write_file(path, server_id.as_bytes(), 0o644)?;
+    Ok(())
+}
+
+/// Reads the previously persisted server_id, if any. Returns None if the file
+/// doesn't exist or can't be read (non-fatal).
+pub fn read_previous_server_id() -> Option<String> {
+    let path = Path::new(PREVIOUS_SERVER_ID_FILE);
+    match std::fs::read_to_string(path) {
+        Ok(id) if !id.trim().is_empty() => Some(id.trim().to_string()),
+        Ok(_) | Err(_) => None,
+    }
+}
+
+/// Appends the previous server_id as a query parameter to the install URL.
+/// This allows the control plane to match the new installation to the old
+/// server row and relink resources instead of creating an orphan.
+pub fn append_previous_server_id_to_url(install_url: &str) -> String {
+    let previous_id = match read_previous_server_id() {
+        Some(id) => id,
+        None => return install_url.to_string(),
+    };
+    let separator = if install_url.contains('?') { '&' } else { '?' };
+    format!("{install_url}{separator}previous_server_id={previous_id}")
+}
+
 pub fn validate_install_url(raw: &str) -> Result<()> {
     if raw
         .bytes()
@@ -268,6 +306,7 @@ pub async fn run_reenroll_script(script_path: &Path, timeout: Duration) -> Resul
     reject_path_with_traversal(script_path)?;
     let child = Command::new("/bin/bash")
         .arg(script_path)
+        .env("PERMANU_FORCE_REENROLL", "1")
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -424,5 +463,42 @@ impl AgentCommandResult {
     fn with_internal_apex(mut self, apex: Option<String>) -> Self {
         self.internal_apex = apex;
         self
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::fs;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    #[tokio::test]
+    async fn run_reenroll_script_sets_force_reenroll_env() {
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("clock before unix epoch")
+            .as_nanos();
+        let path = std::env::temp_dir().join(format!(
+            "permanu-reenroll-env-test-{}-{unique}.sh",
+            std::process::id()
+        ));
+        fs::write(
+            &path,
+            r#"#!/bin/sh
+if [ "${PERMANU_FORCE_REENROLL:-}" = "1" ]; then
+  echo forced
+  exit 0
+fi
+echo missing-force-flag
+exit 23
+"#,
+        )
+        .expect("write test script");
+
+        let result = run_reenroll_script(&path, Duration::from_secs(5)).await;
+        let _ = fs::remove_file(&path);
+
+        let output = result.expect("reenroll script should see PERMANU_FORCE_REENROLL=1");
+        assert!(output.contains("forced"), "unexpected output: {output}");
     }
 }

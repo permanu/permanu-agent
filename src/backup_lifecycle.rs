@@ -11,12 +11,14 @@ use tokio::{
     io::{AsyncRead, AsyncReadExt, AsyncWriteExt},
     process::Command,
     sync::mpsc,
+    task,
     time::{timeout, Duration},
 };
 
 use crate::{proto::agent::v1::CommandResult, timeutil::now_timestamp};
 
 const BACKUP_DATA_DIR: &str = "/var/lib/permanu-agent/backups";
+const AGENT_ARTIFACT_SCHEME: &str = "agent-artifact://";
 const DOWNLOAD_CHUNK_SIZE: usize = 64 * 1024;
 const MAX_COMMAND_OUTPUT_BYTES: usize = 1024 * 1024;
 const BACKUP_TIMEOUT: Duration = Duration::from_secs(30 * 60);
@@ -77,6 +79,8 @@ struct BackupPayload {
     image: String,
     s3_endpoint: String,
     s3_bucket: String,
+    download_filename: String,
+    content_type: String,
 }
 
 #[derive(Serialize)]
@@ -89,6 +93,22 @@ struct BackupResult {
     verified: bool,
     verify_count: i32,
     restored_engine: String,
+}
+
+#[derive(Debug)]
+struct PreparedDownload {
+    local_path: PathBuf,
+    cleanup_path: Option<PathBuf>,
+    filename: String,
+    size_bytes: i64,
+    content_type: String,
+}
+
+#[derive(Serialize)]
+struct DownloadMetadata {
+    filename: String,
+    size_bytes: i64,
+    content_type: String,
 }
 
 pub async fn handle_backup_create(
@@ -107,7 +127,7 @@ pub async fn handle_backup_create(
                 let _ = send_running(
                     &tx,
                     command_id,
-                    "S3 upload is not enabled in permanu-agent-rs yet; keeping local backup.",
+                    "S3 upload is not enabled in permanu-agent yet; keeping local backup.",
                 )
                 .await;
                 result.storage_tier = "local".to_string();
@@ -186,6 +206,10 @@ fn parse_backup_payload(payload: &[u8], operation: BackupOperation) -> Result<Ba
         s3_endpoint: String,
         #[serde(default)]
         s3_bucket: String,
+        #[serde(default)]
+        download_filename: String,
+        #[serde(default)]
+        content_type: String,
     }
 
     let payload: Payload = serde_json::from_slice(payload)?;
@@ -198,6 +222,8 @@ fn parse_backup_payload(payload: &[u8], operation: BackupOperation) -> Result<Ba
         image: payload.image.trim().to_string(),
         s3_endpoint: payload.s3_endpoint,
         s3_bucket: payload.s3_bucket,
+        download_filename: payload.download_filename.trim().to_string(),
+        content_type: payload.content_type.trim().to_string(),
     })
 }
 
@@ -661,11 +687,136 @@ async fn download_backup(
     tx: &mpsc::Sender<CommandResult>,
     command_id: &str,
 ) -> Result<BackupResult> {
-    let (local_path, _) = resolve_local_path(&payload.storage_path)?;
-    let total = stream_download_file(&local_path, tx, command_id).await?;
+    let prepared = prepare_download(payload).await?;
+    let total = stream_download_with_metadata(&prepared, tx, command_id).await;
+    if let Some(cleanup_path) = &prepared.cleanup_path {
+        let _ = fs::remove_file(cleanup_path).await;
+    }
+    let total = total?;
     let mut result = empty_result(BackupOperation::Download);
     result.downloaded_bytes = total;
     Ok(result)
+}
+
+async fn prepare_download(payload: &BackupPayload) -> Result<PreparedDownload> {
+    if payload.storage_path.starts_with(AGENT_ARTIFACT_SCHEME) {
+        return prepare_agent_artifact_download(payload).await;
+    }
+    let (local_path, size_bytes) = resolve_local_path(&payload.storage_path)?;
+    Ok(PreparedDownload {
+        filename: download_filename_for_path(&local_path, &payload.download_filename, "backup"),
+        content_type: fallback_content_type(&payload.content_type),
+        local_path,
+        cleanup_path: None,
+        size_bytes: i64::try_from(size_bytes).context("download file is too large")?,
+    })
+}
+
+async fn prepare_agent_artifact_download(payload: &BackupPayload) -> Result<PreparedDownload> {
+    prepare_agent_artifact_download_with_root(payload, &crate::job_deployment::ci_artifacts_root())
+        .await
+}
+
+async fn prepare_agent_artifact_download_with_root(
+    payload: &BackupPayload,
+    artifact_root: &Path,
+) -> Result<PreparedDownload> {
+    let local_path = resolve_artifact_path_with_root(artifact_root, &payload.storage_path)?;
+    let metadata = std::fs::symlink_metadata(&local_path)
+        .with_context(|| format!("read artifact metadata {}", local_path.display()))?;
+    if metadata.file_type().is_symlink() {
+        anyhow::bail!("artifact download refuses symlinks");
+    }
+    if metadata.is_file() {
+        return Ok(PreparedDownload {
+            filename: download_filename_for_path(
+                &local_path,
+                &payload.download_filename,
+                "artifact",
+            ),
+            content_type: fallback_content_type(&payload.content_type),
+            local_path,
+            cleanup_path: None,
+            size_bytes: i64::try_from(metadata.len()).context("artifact file is too large")?,
+        });
+    }
+    if !metadata.is_dir() {
+        anyhow::bail!("artifact path is neither file nor directory");
+    }
+
+    let zip_path = unique_temp_zip_path();
+    let zip_path_for_task = zip_path.clone();
+    let artifact_dir = local_path.clone();
+    let size_bytes =
+        task::spawn_blocking(move || zip_directory_artifact(&artifact_dir, &zip_path_for_task))
+            .await
+            .context("zip artifact task")??;
+    let base_name = download_filename_for_path(&local_path, &payload.download_filename, "artifact");
+    let filename = if base_name.ends_with(".zip") {
+        base_name
+    } else {
+        format!("{base_name}.zip")
+    };
+    Ok(PreparedDownload {
+        local_path: zip_path.clone(),
+        cleanup_path: Some(zip_path),
+        filename,
+        size_bytes,
+        content_type: "application/zip".to_string(),
+    })
+}
+
+fn resolve_artifact_path_with_root(root: &Path, storage_path: &str) -> Result<PathBuf> {
+    let raw_path = storage_path
+        .strip_prefix(AGENT_ARTIFACT_SCHEME)
+        .filter(|path| !path.is_empty())
+        .ok_or_else(|| {
+            anyhow::anyhow!("invalid storage_path (expected agent-artifact:// prefix)")
+        })?;
+    let relative = Path::new(raw_path);
+    if relative.is_absolute() {
+        anyhow::bail!("artifact storage path must be relative");
+    }
+    for component in relative.components() {
+        if !matches!(component, std::path::Component::Normal(_)) {
+            anyhow::bail!("artifact storage path must stay inside artifact root");
+        }
+    }
+    let root = canonical_or_absolute(root)?;
+    let requested = root.join(relative);
+    let resolved = std::fs::canonicalize(&requested)
+        .with_context(|| format!("resolve artifact path {}", requested.display()))?;
+    if !path_within_root(&resolved, &root) {
+        anyhow::bail!(
+            "path traversal rejected: {} is outside artifact root",
+            resolved.display()
+        );
+    }
+    Ok(resolved)
+}
+
+async fn stream_download_with_metadata(
+    prepared: &PreparedDownload,
+    tx: &mpsc::Sender<CommandResult>,
+    command_id: &str,
+) -> Result<i64> {
+    let metadata = DownloadMetadata {
+        filename: prepared.filename.clone(),
+        size_bytes: prepared.size_bytes,
+        content_type: prepared.content_type.clone(),
+    };
+    let mut header = serde_json::to_vec(&metadata).context("marshal download metadata")?;
+    header.push(b'\n');
+    tx.send(CommandResult {
+        command_id: command_id.to_string(),
+        status: "running".to_string(),
+        output: header,
+        is_final: false,
+        timestamp: Some(now_timestamp()),
+    })
+    .await
+    .context("send download metadata")?;
+    stream_download_file(&prepared.local_path, tx, command_id).await
 }
 
 async fn stream_download_file(
@@ -673,7 +824,7 @@ async fn stream_download_file(
     tx: &mpsc::Sender<CommandResult>,
     command_id: &str,
 ) -> Result<i64> {
-    let mut file = File::open(local_path).await?;
+    let mut file = open_download_file(local_path).await?;
     let mut buf = vec![0_u8; DOWNLOAD_CHUNK_SIZE];
     let mut total = 0_i64;
     loop {
@@ -693,6 +844,156 @@ async fn stream_download_file(
         .context("send backup download chunk")?;
     }
     Ok(total)
+}
+
+async fn open_download_file(local_path: &Path) -> Result<File> {
+    let mut options = fs::OpenOptions::new();
+    options.read(true);
+    #[cfg(unix)]
+    {
+        options.custom_flags(libc::O_NOFOLLOW);
+    }
+    options
+        .open(local_path)
+        .await
+        .with_context(|| format!("open download file {}", local_path.display()))
+}
+
+fn download_filename_for_path(path: &Path, requested: &str, fallback: &str) -> String {
+    let fallback_name = path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or(fallback);
+    sanitize_download_filename(
+        if requested.trim().is_empty() {
+            fallback_name
+        } else {
+            requested
+        },
+        fallback,
+    )
+}
+
+fn sanitize_download_filename(name: &str, fallback: &str) -> String {
+    let safe: String = name
+        .trim()
+        .chars()
+        .map(|ch| {
+            if ch.is_ascii_alphanumeric() || matches!(ch, '.' | '_' | '-') {
+                ch
+            } else {
+                '_'
+            }
+        })
+        .collect();
+    let safe = safe.trim_matches('.');
+    if safe.is_empty() {
+        fallback.to_string()
+    } else {
+        safe.to_string()
+    }
+}
+
+fn fallback_content_type(content_type: &str) -> String {
+    let content_type = content_type.trim();
+    if content_type.is_empty()
+        || content_type
+            .bytes()
+            .any(|byte| byte <= b' ' || matches!(byte, b'\r' | b'\n'))
+    {
+        return "application/octet-stream".to_string();
+    }
+    content_type.to_string()
+}
+
+fn unique_temp_zip_path() -> PathBuf {
+    let nanos = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_nanos())
+        .unwrap_or_default();
+    std::env::temp_dir().join(format!(
+        "permanu-agent-artifact-{}-{nanos}.zip",
+        std::process::id()
+    ))
+}
+
+fn zip_directory_artifact(root: &Path, zip_path: &Path) -> Result<i64> {
+    let root = std::fs::canonicalize(root)
+        .with_context(|| format!("resolve artifact directory {}", root.display()))?;
+    let mut files = Vec::new();
+    let mut stack = vec![root.clone()];
+    while let Some(dir) = stack.pop() {
+        for entry in std::fs::read_dir(&dir)
+            .with_context(|| format!("read artifact directory {}", dir.display()))?
+        {
+            let entry = entry.context("read artifact directory entry")?;
+            let path = entry.path();
+            let metadata = std::fs::symlink_metadata(&path)
+                .with_context(|| format!("read artifact metadata {}", path.display()))?;
+            if metadata.file_type().is_symlink() {
+                anyhow::bail!("artifact archive refuses symlinks");
+            }
+            if metadata.is_dir() {
+                stack.push(path);
+            } else if metadata.is_file() {
+                files.push(path);
+            }
+        }
+    }
+    files.sort();
+
+    let file = create_new_file_no_symlink(zip_path)?;
+    let mut archive = zip::ZipWriter::new(file);
+    let options = zip::write::SimpleFileOptions::default()
+        .compression_method(zip::CompressionMethod::Deflated);
+
+    for path in files {
+        let rel = path
+            .strip_prefix(&root)
+            .context("artifact path escaped archive root")?;
+        let name = rel
+            .to_string_lossy()
+            .replace(std::path::MAIN_SEPARATOR, "/");
+        if name.is_empty() || name == ".." || name.starts_with("../") {
+            anyhow::bail!("artifact path escapes archive root");
+        }
+        archive
+            .start_file(name, options)
+            .context("start artifact zip file")?;
+        let mut input = open_file_no_symlink(&path)?;
+        std::io::copy(&mut input, &mut archive).context("write artifact zip file")?;
+    }
+
+    let mut output = archive.finish().context("finish artifact zip")?;
+    std::io::Write::flush(&mut output).context("flush artifact zip")?;
+    let len = output.metadata().context("stat artifact zip")?.len();
+    i64::try_from(len).context("artifact zip is too large")
+}
+
+fn open_file_no_symlink(path: &Path) -> Result<std::fs::File> {
+    let mut options = std::fs::OpenOptions::new();
+    options.read(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.custom_flags(libc::O_NOFOLLOW);
+    }
+    options
+        .open(path)
+        .with_context(|| format!("open artifact file {}", path.display()))
+}
+
+fn create_new_file_no_symlink(path: &Path) -> Result<std::fs::File> {
+    let mut options = std::fs::OpenOptions::new();
+    options.write(true).create_new(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.custom_flags(libc::O_NOFOLLOW);
+    }
+    options
+        .open(path)
+        .with_context(|| format!("create artifact zip {}", path.display()))
 }
 
 async fn exec_stream_to_file(
@@ -1147,7 +1448,7 @@ mod tests {
 
     #[test]
     fn resolve_local_path_accepts_file_inside_root() {
-        let root = tempfile_like_dir("permanu-agent-rs-backup-root");
+        let root = tempfile_like_dir("permanu-agent-backup-root");
         let backup_path = root.join("backup.tar.gz");
         fs::write(&backup_path, b"backup-data").expect("write backup");
 
@@ -1170,7 +1471,7 @@ mod tests {
 
     #[test]
     fn resolve_local_path_rejects_directory() {
-        let dir = tempfile_like_dir("permanu-agent-rs-backup-dir");
+        let dir = tempfile_like_dir("permanu-agent-backup-dir");
         let storage = format!("agent-local://{}", dir.display());
         let err = resolve_local_path(&storage).unwrap_err();
 
@@ -1211,7 +1512,7 @@ mod tests {
 
     #[tokio::test]
     async fn stream_download_file_uses_64k_chunks() {
-        let dir = tempfile_like_dir("permanu-agent-rs-download");
+        let dir = tempfile_like_dir("permanu-agent-download");
         let file_path = dir.join("backup.tar.gz");
         let data = vec![b'x'; DOWNLOAD_CHUNK_SIZE + 3];
         fs::write(&file_path, &data).expect("write backup");
@@ -1227,6 +1528,114 @@ mod tests {
         assert_eq!(first.status, "running");
         assert_eq!(first.output.len(), DOWNLOAD_CHUNK_SIZE);
         assert_eq!(second.output.len(), 3);
+    }
+
+    #[tokio::test]
+    async fn stream_download_with_metadata_sends_header_before_file_chunks() {
+        let dir = tempfile_like_dir("permanu-agent-download-metadata");
+        let file_path = dir.join("artifact.bin");
+        fs::write(&file_path, b"artifact-bytes").expect("write artifact");
+        let (tx, mut rx) = mpsc::channel(4);
+        let prepared = PreparedDownload {
+            local_path: file_path,
+            cleanup_path: None,
+            filename: "artifact.bin".to_string(),
+            size_bytes: 14,
+            content_type: "application/octet-stream".to_string(),
+        };
+
+        let total = stream_download_with_metadata(&prepared, &tx, "cmd-1")
+            .await
+            .expect("stream download");
+
+        assert_eq!(total, 14);
+        let header = rx.recv().await.expect("metadata header");
+        assert_eq!(header.status, "running");
+        assert!(!header.is_final);
+        assert!(header.output.ends_with(b"\n"));
+        let metadata: serde_json::Value =
+            serde_json::from_slice(&header.output[..header.output.len() - 1])
+                .expect("metadata json");
+        assert_eq!(metadata["filename"], "artifact.bin");
+        assert_eq!(metadata["size_bytes"], 14);
+        let chunk = rx.recv().await.expect("file chunk");
+        assert_eq!(chunk.output, b"artifact-bytes");
+    }
+
+    #[test]
+    fn resolve_artifact_path_rejects_traversal() {
+        let root = tempfile_like_dir("permanu-agent-artifact-root");
+        let err = resolve_artifact_path_with_root(&root, "agent-artifact://../secret")
+            .expect_err("reject traversal");
+
+        assert!(err
+            .to_string()
+            .contains("artifact storage path must stay inside artifact root"));
+    }
+
+    #[tokio::test]
+    async fn prepare_agent_artifact_download_zips_directory() {
+        let root = tempfile_like_dir("permanu-agent-artifact-zip-root");
+        let artifact_dir = root.join("run/job/0-release");
+        fs::create_dir_all(artifact_dir.join("dist")).expect("create artifact dir");
+        fs::write(artifact_dir.join("dist/app"), b"release-binary").expect("write artifact");
+        let payload =
+            test_download_payload("agent-artifact://run/job/0-release", "release-bundle", "");
+
+        let prepared = prepare_agent_artifact_download_with_root(&payload, &root)
+            .await
+            .expect("prepare artifact");
+
+        assert_eq!(prepared.filename, "release-bundle.zip");
+        assert_eq!(prepared.content_type, "application/zip");
+        assert!(prepared.size_bytes > 0);
+        let zip_file = std::fs::File::open(&prepared.local_path).expect("open zip");
+        let mut archive = zip::ZipArchive::new(zip_file).expect("zip archive");
+        let mut file = archive.by_name("dist/app").expect("zip entry");
+        let mut contents = Vec::new();
+        std::io::Read::read_to_end(&mut file, &mut contents).expect("read zip entry");
+        assert_eq!(contents, b"release-binary");
+        if let Some(cleanup_path) = prepared.cleanup_path {
+            let _ = fs::remove_file(cleanup_path);
+        }
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn prepare_agent_artifact_download_rejects_symlink_in_directory() {
+        let root = tempfile_like_dir("permanu-agent-artifact-symlink-root");
+        let artifact_dir = root.join("run/job/0-release");
+        let outside = tempfile_like_dir("permanu-agent-artifact-symlink-outside");
+        fs::create_dir_all(&artifact_dir).expect("create artifact dir");
+        fs::write(outside.join("secret.txt"), b"secret").expect("write secret");
+        std::os::unix::fs::symlink(outside.join("secret.txt"), artifact_dir.join("secret.txt"))
+            .expect("symlink secret");
+        let payload = test_download_payload("agent-artifact://run/job/0-release", "release", "");
+
+        let err = prepare_agent_artifact_download_with_root(&payload, &root)
+            .await
+            .expect_err("reject symlink");
+
+        assert!(err.to_string().contains("symlink"), "{err}");
+    }
+
+    fn test_download_payload(
+        storage_path: &str,
+        download_filename: &str,
+        content_type: &str,
+    ) -> BackupPayload {
+        BackupPayload {
+            operation: BackupOperation::Download,
+            engine: BackupEngine::Unspecified,
+            container_name: String::new(),
+            backup_id: String::new(),
+            storage_path: storage_path.to_string(),
+            image: String::new(),
+            s3_endpoint: String::new(),
+            s3_bucket: String::new(),
+            download_filename: download_filename.to_string(),
+            content_type: content_type.to_string(),
+        }
     }
 
     fn tempfile_like_dir(name: &str) -> PathBuf {

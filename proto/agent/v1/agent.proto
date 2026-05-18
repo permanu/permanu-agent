@@ -244,6 +244,9 @@ message SystemMetrics {
 
   // Top processes by resource usage (from /proc/[pid]/stat)
   repeated TopProcess top_processes = 60;
+
+  // CPU core count (from /proc/cpuinfo or sysconf)
+  int32 cpu_cores = 61;
 }
 
 message TopProcess {

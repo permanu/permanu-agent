@@ -1,4 +1,10 @@
-use std::{collections::HashMap, sync::Mutex};
+use std::{
+    collections::HashMap,
+    sync::{
+        atomic::{AtomicBool, Ordering},
+        Arc, Mutex,
+    },
+};
 
 use anyhow::Result;
 use futures::future::AbortHandle;
@@ -22,7 +28,13 @@ const COMMAND_TYPE_ROTATE_AGENT_SECRET: i32 = 142;
 
 #[derive(Default)]
 pub struct CommandCancels {
-    inner: Mutex<HashMap<String, AbortHandle>>,
+    inner: Mutex<HashMap<String, CommandCancel>>,
+}
+
+#[derive(Clone)]
+struct CommandCancel {
+    abort: AbortHandle,
+    signal: Option<Arc<AtomicBool>>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -34,20 +46,41 @@ pub enum CommandAdmission {
 
 impl CommandCancels {
     pub fn register(&self, command_id: &str, abort: AbortHandle) {
+        self.register_cancel(command_id, abort, None);
+    }
+
+    pub fn register_with_signal(
+        &self,
+        command_id: &str,
+        abort: AbortHandle,
+        signal: Arc<AtomicBool>,
+    ) {
+        self.register_cancel(command_id, abort, Some(signal));
+    }
+
+    fn register_cancel(
+        &self,
+        command_id: &str,
+        abort: AbortHandle,
+        signal: Option<Arc<AtomicBool>>,
+    ) {
         if command_id.is_empty() {
             return;
         }
         let mut inner = self.inner.lock().expect("command cancel map poisoned");
-        inner.insert(command_id.to_string(), abort);
+        inner.insert(command_id.to_string(), CommandCancel { abort, signal });
     }
 
     pub fn cancel(&self, command_id: &str) -> bool {
-        let abort = {
+        let cancel = {
             let inner = self.inner.lock().expect("command cancel map poisoned");
             inner.get(command_id).cloned()
         };
-        if let Some(abort) = abort {
-            abort.abort();
+        if let Some(cancel) = cancel {
+            if let Some(signal) = cancel.signal {
+                signal.store(true, Ordering::SeqCst);
+            }
+            cancel.abort.abort();
             true
         } else {
             false
@@ -192,6 +225,18 @@ mod tests {
         assert!(cancels.cancel("cmd-1"));
         let result = futures::executor::block_on(future);
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn command_cancels_sets_registered_signal() {
+        let cancels = CommandCancels::default();
+        let (handle, _registration) = AbortHandle::new_pair();
+        let signal = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+
+        cancels.register_with_signal("cmd-1", handle, signal.clone());
+
+        assert!(cancels.cancel("cmd-1"));
+        assert!(signal.load(std::sync::atomic::Ordering::SeqCst));
     }
 
     #[test]

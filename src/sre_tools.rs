@@ -491,16 +491,24 @@ pub fn parse_ps_rows(output: &str, limit: usize) -> Vec<ProcessRow> {
         let Ok(rss_kib) = fields[fields.len() - 1].parse::<u64>() else {
             continue;
         };
+        let command = fields[2..fields.len() - 3].join(" ");
+        if is_kernel_thread_ps_row(&command, rss_kib) {
+            continue;
+        }
         rows.push(ProcessRow {
             pid,
             user: fields[1].to_string(),
-            command: redact_text(&fields[2..fields.len() - 3].join(" ")),
+            command: redact_text(&command),
             cpu_percent,
             mem_percent,
             rss_kib,
         });
     }
     rows
+}
+
+fn is_kernel_thread_ps_row(command: &str, rss_kib: u64) -> bool {
+    rss_kib == 0 && command.starts_with('[') && command.ends_with(']')
 }
 
 pub fn parse_proc_net_tcp(content: &str, limit: usize) -> Vec<TcpSocketRow> {
@@ -1196,5 +1204,38 @@ fn failed_text(command_id: &str, text: &str) -> CommandResult {
         output: redact_text(text).as_bytes().to_vec(),
         is_final: true,
         timestamp: Some(now_timestamp()),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parse_ps_rows_filters_kernel_threads() {
+        let output = "\
+PID USER COMMAND %CPU %MEM RSS
+18 root [rcu_preempt] 0.0 0.0 0
+1058 messagebus /usr/bin/dbus-daemon --system 0.0 0.0 5312
+";
+
+        let rows = parse_ps_rows(output, 10);
+
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].pid, 1058);
+        assert_eq!(rows[0].command, "/usr/bin/dbus-daemon --system");
+    }
+
+    #[test]
+    fn parse_ps_rows_keeps_bracketed_user_process_with_memory() {
+        let output = "\
+PID USER COMMAND %CPU %MEM RSS
+1234 app [worker] 0.1 0.1 2048
+";
+
+        let rows = parse_ps_rows(output, 10);
+
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].command, "[worker]");
     }
 }
