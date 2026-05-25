@@ -9,7 +9,11 @@ use tokio::{
     time::timeout,
 };
 
-use crate::{proto::agent::v1::CommandResult, timeutil::now_timestamp};
+use crate::{
+    log_forwarder::{agent_log, redact_log_message},
+    proto::agent::v1::{CommandResult, LogEntry},
+    timeutil::now_timestamp,
+};
 
 const IMAGE_PULL_TIMEOUT: Duration = Duration::from_secs(15 * 60);
 const DOCKER_OP_TIMEOUT: Duration = Duration::from_secs(30);
@@ -265,6 +269,46 @@ pub async fn handle_service_logs(
         Ok(()) => completed_text(command_id, "log stream ended"),
         Err(err) => failed_text(command_id, &format!("service logs failed: {err}")),
     }
+}
+
+#[allow(dead_code)]
+fn service_log_entry_for_forwarding(
+    container_name: &str,
+    stream: &str,
+    line: impl AsRef<str>,
+) -> LogEntry {
+    let redacted = redact_log_message(line.as_ref());
+    let mut fields = HashMap::new();
+    fields.insert("source_type".to_string(), "service".to_string());
+    fields.insert("container_name".to_string(), container_name.to_string());
+    fields.insert("stream".to_string(), stream.to_string());
+    fields.insert("ingest_status".to_string(), "stream_scaffold".to_string());
+    fields.insert(
+        "redaction_status".to_string(),
+        if redacted.was_redacted {
+            "redacted".to_string()
+        } else {
+            "none".to_string()
+        },
+    );
+
+    let level = if stream == "stderr" { "error" } else { "info" };
+    let mut entry = agent_log(level, redacted.message, fields);
+    entry.source = format!("service:{container_name}");
+    entry
+}
+
+fn redact_service_stream_line(line: &str) -> String {
+    let had_newline = line.ends_with('\n');
+    let had_carriage = line.ends_with("\r\n");
+    let trimmed = line.trim_end_matches(['\r', '\n']);
+    let mut redacted = redact_log_message(trimmed).message;
+    if had_carriage {
+        redacted.push_str("\r\n");
+    } else if had_newline {
+        redacted.push('\n');
+    }
+    redacted
 }
 
 pub async fn handle_wait_for_healthy(command_id: &str, payload: &[u8]) -> CommandResult {
@@ -832,15 +876,16 @@ where
             line.truncate(MAX_STREAM_LINE_BYTES);
             line.push_str("...[truncated]\n");
         }
+        let redacted_line = redact_service_stream_line(&line);
         if tail.len() == 10 {
             tail.remove(0);
         }
-        tail.push(line.trim().to_string());
+        tail.push(redacted_line.trim().to_string());
         if tx
             .send(CommandResult {
                 command_id: command_id.clone(),
                 status: "running".to_string(),
-                output: line.as_bytes().to_vec(),
+                output: redacted_line.as_bytes().to_vec(),
                 is_final: false,
                 timestamp: Some(now_timestamp()),
             })
@@ -989,5 +1034,42 @@ mod tests {
             parse_exec_payload(br#"{"container_name":"deploy-service-db-1"}"#).expect("parse exec");
 
         assert_eq!(payload.command, vec!["/bin/sh"]);
+    }
+
+    #[test]
+    fn service_log_line_converts_to_redacted_log_entry_for_forwarding() {
+        let entry = service_log_entry_for_forwarding(
+            "deploy-svc-postgres-a1",
+            "stderr",
+            "Authorization: Bearer raw-token password=hunter2",
+        );
+
+        assert_eq!(entry.source, "service:deploy-svc-postgres-a1");
+        assert_eq!(entry.level, "error");
+        assert!(!entry.message.contains("raw-token"));
+        assert!(!entry.message.contains("hunter2"));
+        assert_eq!(
+            entry.fields.get("source_type").map(String::as_str),
+            Some("service")
+        );
+        assert_eq!(
+            entry.fields.get("container_name").map(String::as_str),
+            Some("deploy-svc-postgres-a1")
+        );
+        assert_eq!(
+            entry.fields.get("stream").map(String::as_str),
+            Some("stderr")
+        );
+        assert_eq!(
+            entry.fields.get("redaction_status").map(String::as_str),
+            Some("redacted")
+        );
+    }
+
+    #[test]
+    fn service_stream_line_redacts_secrets_without_changing_newline_shape() {
+        let line = redact_service_stream_line("token=raw-secret ok\n");
+
+        assert_eq!(line, "token=[REDACTED] ok\n");
     }
 }

@@ -444,6 +444,8 @@ message LatencyBucket {
 message AppContainerMapping {
   string container_name = 1; // e.g. "deploy-app-myapp-a1b2c3"
   string app_id = 2;         // UUID of the Permanu app
+  string deployment_id = 3;  // UUID of the active deployment for this container
+  string container_id = 4;   // Docker container ID when the backend knows it
 }
 
 message HeartbeatResponse {

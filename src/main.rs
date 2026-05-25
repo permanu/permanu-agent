@@ -89,6 +89,7 @@ async fn main() -> Result<()> {
 
     let monitoring_state = Arc::new(monitoring::MonitoringState::default());
     let route_aggregator = Arc::new(route_metrics::RouteAggregator::default());
+    let container_identity_mappings = container_logs::ContainerIdentityMappings::default();
     let analytics_collector = Arc::new(dwaar_analytics::DwaarAnalyticsCollector::new(
         dwaar_analytics::DwaarAnalyticsConfig::default(),
     ));
@@ -100,6 +101,7 @@ async fn main() -> Result<()> {
         monitoring_state.clone(),
         route_aggregator.clone(),
         analytics_collector.clone(),
+        container_identity_mappings.clone(),
         shutdown_rx.clone(),
     ));
     let log_task = tokio::spawn(log_forwarder::run(
@@ -110,6 +112,7 @@ async fn main() -> Result<()> {
     ));
     let container_logs_task = tokio::spawn(container_logs::run(
         log_forwarder.clone(),
+        container_identity_mappings.clone(),
         shutdown_rx.clone(),
     ));
     let monitoring_task = tokio::spawn(monitoring::run(

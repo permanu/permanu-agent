@@ -79,6 +79,92 @@ pub fn agent_log(
     }
 }
 
+pub struct RedactedLogMessage {
+    pub message: String,
+    pub was_redacted: bool,
+}
+
+pub fn redact_log_message(message: &str) -> RedactedLogMessage {
+    let words: Vec<&str> = message.split_whitespace().collect();
+    let mut redacted = Vec::with_capacity(words.len());
+    let mut redact_next = false;
+    let mut was_redacted = false;
+
+    for word in words {
+        let lower = word.to_ascii_lowercase();
+        if redact_next {
+            redacted.push("[REDACTED]".to_string());
+            redact_next = false;
+            was_redacted = true;
+            continue;
+        }
+
+        if lower.trim_end_matches(':') == "authorization" {
+            redacted.push(word.to_string());
+            continue;
+        }
+
+        if is_secret_assignment(&lower) {
+            redacted.push(redact_assignment(word));
+            redact_next = word.ends_with(':');
+            was_redacted = true;
+            continue;
+        }
+
+        if is_secret_flag(&lower) || is_secret_label(&lower) || lower == "bearer" {
+            redacted.push(word.to_string());
+            redact_next = true;
+            continue;
+        }
+
+        redacted.push(word.to_string());
+    }
+
+    RedactedLogMessage {
+        message: redacted.join(" "),
+        was_redacted,
+    }
+}
+
+fn is_secret_assignment(lower: &str) -> bool {
+    SECRET_MARKERS.iter().any(|marker| {
+        lower.starts_with(&format!("{marker}=")) || lower.starts_with(&format!("{marker}:"))
+    })
+}
+
+fn is_secret_flag(lower: &str) -> bool {
+    matches!(
+        lower,
+        "--token" | "--password" | "--secret" | "--api-key" | "--apikey" | "-token" | "-password"
+    )
+}
+
+fn is_secret_label(lower: &str) -> bool {
+    SECRET_MARKERS
+        .iter()
+        .any(|marker| lower.trim_end_matches(':') == *marker)
+}
+
+fn redact_assignment(word: &str) -> String {
+    let separator = if word.contains('=') { '=' } else { ':' };
+    word.split_once(separator)
+        .map(|(key, _)| format!("{key}{separator}[REDACTED]"))
+        .unwrap_or_else(|| "[REDACTED]".to_string())
+}
+
+const SECRET_MARKERS: &[&str] = &[
+    "authorization",
+    "password",
+    "passwd",
+    "token",
+    "secret",
+    "api_key",
+    "apikey",
+    "access_token",
+    "client_secret",
+    "database_url",
+];
+
 async fn drain_once(
     cfg: Arc<Config>,
     forwarder: Arc<LogForwarder>,

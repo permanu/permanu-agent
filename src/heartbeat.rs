@@ -8,6 +8,7 @@ use tracing::{debug, warn};
 use crate::{
     agent_crypto::AgentKeypair,
     config::Config,
+    container_logs::ContainerIdentityMappings,
     docker_observe,
     dwaar_analytics::DwaarAnalyticsCollector,
     log_forwarder::LogForwarder,
@@ -34,6 +35,7 @@ pub async fn run(
     monitoring: Arc<MonitoringState>,
     route_aggregator: Arc<RouteAggregator>,
     analytics_collector: Arc<DwaarAnalyticsCollector>,
+    container_identity_mappings: ContainerIdentityMappings,
     mut shutdown: watch::Receiver<bool>,
 ) {
     let mut interval = cfg.heartbeat_interval;
@@ -47,6 +49,7 @@ pub async fn run(
             monitoring.clone(),
             route_aggregator.clone(),
             analytics_collector.clone(),
+            container_identity_mappings.clone(),
         )
         .await
         {
@@ -75,6 +78,7 @@ async fn send_once(
     monitoring: Arc<MonitoringState>,
     route_aggregator: Arc<RouteAggregator>,
     analytics_collector: Arc<DwaarAnalyticsCollector>,
+    container_identity_mappings: ContainerIdentityMappings,
 ) -> Result<Option<Duration>> {
     let docker = docker_snapshot().await;
     let mut system_metrics = system::collect_system_metrics();
@@ -128,6 +132,7 @@ async fn send_once(
     let request = cfg.attach_auth(tonic::Request::new(request))?;
     let response = client.heartbeat(request).await.context("heartbeat rpc")?;
     let response = response.into_inner();
+    container_identity_mappings.update_from_heartbeat(response.app_containers);
     debug!(
         accepted = response.accepted,
         update_available = response.update_available,

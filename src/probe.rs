@@ -49,7 +49,11 @@ pub async fn run(duration: Duration) -> Result<()> {
     let cfg = Config::probe_from_env();
     let forwarder = Arc::new(LogForwarder::open(&cfg)?);
     let (shutdown_tx, shutdown_rx) = watch::channel(false);
-    let tail_task = tokio::spawn(container_logs::run(forwarder.clone(), shutdown_rx.clone()));
+    let tail_task = tokio::spawn(container_logs::run(
+        forwarder.clone(),
+        container_logs::ContainerIdentityMappings::default(),
+        shutdown_rx.clone(),
+    ));
     let monitoring_state = Arc::new(monitoring::MonitoringState::default());
     let monitoring_task = tokio::spawn(monitoring::run(monitoring_state, shutdown_rx.clone()));
     let route_aggregator = Arc::new(route_metrics::RouteAggregator::default());
