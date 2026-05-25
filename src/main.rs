@@ -111,6 +111,7 @@ async fn main() -> Result<()> {
         shutdown_rx.clone(),
     ));
     let container_logs_task = tokio::spawn(container_logs::run(
+        cfg.clone(),
         log_forwarder.clone(),
         container_identity_mappings.clone(),
         shutdown_rx.clone(),

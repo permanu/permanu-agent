@@ -21,12 +21,15 @@ pub struct LogForwarder {
 impl LogForwarder {
     pub fn open(cfg: &Config) -> Result<Self> {
         let dir = cfg.spool_dir.join("logs");
-        let spool = DiskSpool::open(SpoolConfig {
+        Self::open_spool(SpoolConfig {
             dir,
             max_bytes: cfg.log_spool_max_bytes,
             max_segment_bytes: cfg.log_spool_segment_bytes,
         })
-        .context("open log spool")?;
+    }
+
+    pub fn open_spool(config: SpoolConfig) -> Result<Self> {
+        let spool = DiskSpool::open(config).context("open log spool")?;
         Ok(Self { spool })
     }
 
@@ -38,6 +41,30 @@ impl LogForwarder {
 
     pub fn counters(&self) -> SpoolCounters {
         self.spool.counters()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::spool::SpoolRecord;
+    use prost::Message;
+
+    #[test]
+    fn decode_spooled_log_records_skips_corrupt_payloads() {
+        let valid = agent_log("info", "kept", HashMap::new()).encode_to_vec();
+        let records = vec![
+            SpoolRecord {
+                payload: b"not a protobuf log entry".to_vec(),
+            },
+            SpoolRecord { payload: valid },
+        ];
+
+        let (decoded, decode_errors) = decode_spooled_log_records(&records);
+
+        assert_eq!(decode_errors, 1);
+        assert_eq!(decoded.len(), 1);
+        assert_eq!(decoded[0].message, "kept");
     }
 }
 
@@ -165,6 +192,21 @@ const SECRET_MARKERS: &[&str] = &[
     "database_url",
 ];
 
+fn decode_spooled_log_records(records: &[crate::spool::SpoolRecord]) -> (Vec<LogEntry>, usize) {
+    let mut decode_errors = 0_usize;
+    let mut entries = Vec::with_capacity(records.len());
+    for record in records {
+        match LogEntry::decode(record.payload.as_slice()) {
+            Ok(entry) => entries.push(entry),
+            Err(err) => {
+                decode_errors += 1;
+                warn!(error = ?err, "dropping corrupt spooled log record");
+            }
+        }
+    }
+    (entries, decode_errors)
+}
+
 async fn drain_once(
     cfg: Arc<Config>,
     forwarder: Arc<LogForwarder>,
@@ -178,17 +220,7 @@ async fn drain_once(
         return Ok(());
     }
 
-    let mut decode_errors = 0_usize;
-    let mut entries = Vec::with_capacity(batch.records.len());
-    for record in &batch.records {
-        match LogEntry::decode(record.payload.as_slice()) {
-            Ok(entry) => entries.push(entry),
-            Err(err) => {
-                decode_errors += 1;
-                warn!(error = ?err, "dropping corrupt spooled log record");
-            }
-        }
-    }
+    let (entries, decode_errors) = decode_spooled_log_records(&batch.records);
 
     if entries.is_empty() {
         forwarder

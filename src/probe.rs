@@ -50,6 +50,7 @@ pub async fn run(duration: Duration) -> Result<()> {
     let forwarder = Arc::new(LogForwarder::open(&cfg)?);
     let (shutdown_tx, shutdown_rx) = watch::channel(false);
     let tail_task = tokio::spawn(container_logs::run(
+        Arc::new(cfg.clone()),
         forwarder.clone(),
         container_logs::ContainerIdentityMappings::default(),
         shutdown_rx.clone(),

@@ -1,20 +1,25 @@
 use std::{
     collections::{HashMap, HashSet},
+    fs, io,
+    path::{Path, PathBuf},
     sync::Arc,
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
 use futures_util::{pin_mut, StreamExt};
+use serde::{Deserialize, Serialize};
 use tokio::sync::watch;
 use tracing::{debug, warn};
 
 use crate::{
+    config::Config,
     docker_observe::{self, ContainerLogLine, LogLevel, NameFilter, ObservableContainer},
     log_forwarder::{agent_log, redact_log_message, LogForwarder},
     proto::agent::v1::{AppContainerMapping, LogEntry},
 };
 
 pub async fn run(
+    cfg: Arc<Config>,
     forwarder: Arc<LogForwarder>,
     identity_mappings: ContainerIdentityMappings,
     mut shutdown: watch::Receiver<bool>,
@@ -26,6 +31,14 @@ pub async fn run(
 
     let filter = NameFilter::default();
     let tailed = TailRegistry::default();
+    let checkpoints = match ContainerLogCheckpointStore::open(cfg.spool_dir.join("container_logs"))
+    {
+        Ok(store) => store,
+        Err(err) => {
+            warn!(error = ?err, "container log checkpointing disabled");
+            ContainerLogCheckpointStore::disabled()
+        }
+    };
 
     loop {
         match docker_observe::list_observable_containers(&docker, &filter).await {
@@ -37,10 +50,18 @@ pub async fn run(
                     let docker = docker.clone();
                     let forwarder = forwarder.clone();
                     let identity_mappings = identity_mappings.clone();
+                    let checkpoints = checkpoints.clone();
                     let tailed = tailed.clone();
                     let container_id = container.id.clone();
                     tokio::spawn(async move {
-                        tail_container(docker, forwarder, identity_mappings, container).await;
+                        tail_container(
+                            docker,
+                            forwarder,
+                            identity_mappings,
+                            checkpoints,
+                            container,
+                        )
+                        .await;
                         tailed.mark_finished(&container_id);
                     });
                 }
@@ -63,21 +84,29 @@ async fn tail_container(
     docker: bollard::Docker,
     forwarder: Arc<LogForwarder>,
     identity_mappings: ContainerIdentityMappings,
+    checkpoints: ContainerLogCheckpointStore,
     container: ObservableContainer,
 ) {
     debug!(container = %container.name, "starting container log tail");
     let context = ContainerLogContext::from_container(&container, &identity_mappings);
-    let since = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_secs() as i64;
+    let since = checkpoints
+        .resume_since(&container)
+        .unwrap_or_else(current_unix_seconds);
+    let checkpoint_container = container.clone();
     let stream = docker_observe::stream_container_logs(&docker, container, Some(since)).await;
     pin_mut!(stream);
 
     while let Some(item) = stream.next().await {
         match item {
             Ok(line) => {
-                if let Err(err) = forwarder.push(log_entry_with_context(line, &context)) {
+                if let Err(err) = forward_container_log_line_with_context(
+                    &forwarder,
+                    &checkpoints,
+                    &context,
+                    &checkpoint_container,
+                    line,
+                    current_unix_seconds(),
+                ) {
                     warn!(error = ?err, "failed to enqueue container log");
                 }
             }
@@ -87,6 +116,99 @@ async fn tail_container(
             }
         }
     }
+}
+
+#[derive(Clone, Debug)]
+pub struct ContainerLogCheckpointStore {
+    path: Option<PathBuf>,
+    checkpoints: Arc<std::sync::Mutex<HashMap<String, ContainerLogCheckpoint>>>,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+struct ContainerLogCheckpoint {
+    container_id: String,
+    since_seconds: i64,
+}
+
+impl ContainerLogCheckpointStore {
+    pub fn open(dir: impl AsRef<Path>) -> io::Result<Self> {
+        let dir = dir.as_ref();
+        fs::create_dir_all(dir)?;
+        let path = dir.join("checkpoints.json");
+        let checkpoints = match fs::read(&path) {
+            Ok(bytes) if bytes.is_empty() => HashMap::new(),
+            Ok(bytes) => serde_json::from_slice(&bytes).map_err(|err| {
+                io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    format!("decode container log checkpoints: {err}"),
+                )
+            })?,
+            Err(err) if err.kind() == io::ErrorKind::NotFound => HashMap::new(),
+            Err(err) => return Err(err),
+        };
+        Ok(Self {
+            path: Some(path),
+            checkpoints: Arc::new(std::sync::Mutex::new(checkpoints)),
+        })
+    }
+
+    fn disabled() -> Self {
+        Self {
+            path: None,
+            checkpoints: Arc::new(std::sync::Mutex::new(HashMap::new())),
+        }
+    }
+
+    fn resume_since(&self, container: &ObservableContainer) -> Option<i64> {
+        self.checkpoints
+            .lock()
+            .expect("container log checkpoint lock poisoned")
+            .get(&container.name)
+            .filter(|checkpoint| checkpoint.container_id == container.id)
+            .map(|checkpoint| checkpoint.since_seconds)
+    }
+
+    fn record_forwarded_line(
+        &self,
+        container: &ObservableContainer,
+        since_seconds: i64,
+    ) -> io::Result<()> {
+        let Some(path) = &self.path else {
+            return Ok(());
+        };
+        let snapshot = {
+            let mut checkpoints = self
+                .checkpoints
+                .lock()
+                .map_err(|_| io::Error::other("container log checkpoint lock poisoned"))?;
+            checkpoints.insert(
+                container.name.clone(),
+                ContainerLogCheckpoint {
+                    container_id: container.id.clone(),
+                    since_seconds,
+                },
+            );
+            checkpoints.clone()
+        };
+        write_checkpoint_file(path, &snapshot)
+    }
+}
+
+fn write_checkpoint_file(
+    path: &Path,
+    checkpoints: &HashMap<String, ContainerLogCheckpoint>,
+) -> io::Result<()> {
+    let tmp_path = path.with_extension("json.tmp");
+    let bytes = serde_json::to_vec_pretty(checkpoints).map_err(io::Error::other)?;
+    fs::write(&tmp_path, bytes)?;
+    fs::rename(tmp_path, path)
+}
+
+fn current_unix_seconds() -> i64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs() as i64
 }
 
 #[derive(Clone, Debug, Default)]
@@ -271,6 +393,38 @@ fn log_entry_with_context(line: ContainerLogLine, context: &ContainerLogContext)
     entry
 }
 
+#[cfg(test)]
+fn forward_container_log_line(
+    forwarder: &LogForwarder,
+    checkpoints: &ContainerLogCheckpointStore,
+    container: &ObservableContainer,
+    line: ContainerLogLine,
+    forwarded_at_seconds: i64,
+) -> anyhow::Result<()> {
+    let context = ContainerLogContext::from(container);
+    forward_container_log_line_with_context(
+        forwarder,
+        checkpoints,
+        &context,
+        container,
+        line,
+        forwarded_at_seconds,
+    )
+}
+
+fn forward_container_log_line_with_context(
+    forwarder: &LogForwarder,
+    checkpoints: &ContainerLogCheckpointStore,
+    context: &ContainerLogContext,
+    container: &ObservableContainer,
+    line: ContainerLogLine,
+    forwarded_at_seconds: i64,
+) -> anyhow::Result<()> {
+    forwarder.push(log_entry_with_context(line, context))?;
+    checkpoints.record_forwarded_line(container, forwarded_at_seconds)?;
+    Ok(())
+}
+
 fn insert_nonempty(fields: &mut std::collections::HashMap<String, String>, key: &str, value: &str) {
     if !value.is_empty() {
         fields.insert(key.to_string(), value.to_string());
@@ -291,6 +445,17 @@ fn source_for_container(name: &str) -> String {
 mod tests {
     use super::*;
     use crate::proto::agent::v1::AppContainerMapping;
+    use std::fs;
+
+    fn temp_dir(name: &str) -> std::path::PathBuf {
+        let nonce = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("clock moved backwards")
+            .as_nanos();
+        let dir = std::env::temp_dir().join(format!("permanu-container-logs-{name}-{nonce}"));
+        fs::create_dir_all(&dir).expect("create temp dir");
+        dir
+    }
 
     #[test]
     fn source_names_match_backend_log_conventions() {
@@ -445,5 +610,91 @@ mod tests {
         registry.mark_finished("ctr-1");
 
         assert!(registry.try_mark_tailed("ctr-1"));
+    }
+
+    #[test]
+    fn checkpoint_store_resumes_same_container_after_restart() {
+        let dir = temp_dir("resume");
+        let store = ContainerLogCheckpointStore::open(dir.clone()).expect("open checkpoint store");
+        let container = ObservableContainer {
+            id: "ctr-1".to_string(),
+            name: "deploy-app-web-a1".to_string(),
+            image: "web:1".to_string(),
+            status: "running".to_string(),
+            labels: HashMap::new(),
+        };
+
+        store
+            .record_forwarded_line(&container, 1_700_000_123)
+            .expect("record checkpoint");
+
+        let reopened = ContainerLogCheckpointStore::open(dir.clone()).expect("reopen store");
+        assert_eq!(reopened.resume_since(&container), Some(1_700_000_123));
+
+        fs::remove_dir_all(dir).expect("cleanup");
+    }
+
+    #[test]
+    fn checkpoint_store_does_not_resume_recreated_container_with_same_name() {
+        let dir = temp_dir("recreated");
+        let store = ContainerLogCheckpointStore::open(dir.clone()).expect("open checkpoint store");
+        let old_container = ObservableContainer {
+            id: "ctr-old".to_string(),
+            name: "deploy-app-web-a1".to_string(),
+            image: "web:1".to_string(),
+            status: "exited".to_string(),
+            labels: HashMap::new(),
+        };
+        let new_container = ObservableContainer {
+            id: "ctr-new".to_string(),
+            name: "deploy-app-web-a1".to_string(),
+            image: "web:2".to_string(),
+            status: "running".to_string(),
+            labels: HashMap::new(),
+        };
+
+        store
+            .record_forwarded_line(&old_container, 1_700_000_123)
+            .expect("record old checkpoint");
+
+        assert_eq!(store.resume_since(&new_container), None);
+
+        fs::remove_dir_all(dir).expect("cleanup");
+    }
+
+    #[test]
+    fn checkpoint_advances_for_forwarded_lines_even_when_spool_drops_oldest_records() {
+        let dir = temp_dir("spool-overflow");
+        let cfg = crate::spool::SpoolConfig {
+            dir: dir.join("logs"),
+            max_bytes: 1_024,
+            max_segment_bytes: 256,
+        };
+        let forwarder = LogForwarder::open_spool(cfg).expect("open forwarder");
+        let store = ContainerLogCheckpointStore::open(dir.join("checkpoints")).expect("open store");
+        let container = ObservableContainer {
+            id: "ctr-1".to_string(),
+            name: "deploy-app-web-a1".to_string(),
+            image: "web:1".to_string(),
+            status: "running".to_string(),
+            labels: HashMap::new(),
+        };
+
+        for index in 0..20 {
+            let line = ContainerLogLine {
+                container_id: container.id.clone(),
+                container_name: container.name.clone(),
+                level: LogLevel::Stdout,
+                message: format!("line-{index} token=secret-{index}"),
+            };
+            forward_container_log_line(&forwarder, &store, &container, line, 1_700_000_000 + index)
+                .expect("forward line");
+        }
+
+        let counters = forwarder.counters();
+        assert!(counters.dropped_records > 0);
+        assert_eq!(store.resume_since(&container), Some(1_700_000_019));
+
+        fs::remove_dir_all(dir).expect("cleanup");
     }
 }
