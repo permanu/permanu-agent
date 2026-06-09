@@ -730,18 +730,17 @@ runs:
         String::from_utf8_lossy(&result.output)
     );
     assert_eq!(output["step_statuses"]["s1"], "success");
-    assert!(
-        entries.contains("node:20-bookworm node /workspace/.github/actions/js-hooks/pre.js"),
+    assert_eq!(
+        entries
+            .matches("node:20-bookworm node /workspace/.permanu-ci/s1/s1-action-wrapper.js")
+            .count(),
+        3,
         "{entries}"
     );
-    assert!(
-        entries.contains("node:20-bookworm node /workspace/.github/actions/js-hooks/index.js"),
-        "{entries}"
-    );
-    assert!(
-        entries.contains("node:20-bookworm node /workspace/.github/actions/js-hooks/post.js"),
-        "{entries}"
-    );
+    let human_log = output["log"].as_str().expect("human log");
+    assert!(human_log.contains("[pre]"), "{human_log}");
+    assert!(human_log.contains("[main]"), "{human_log}");
+    assert!(human_log.contains("[post]"), "{human_log}");
 }
 
 #[cfg(unix)]
@@ -790,9 +789,7 @@ runs:
         .expect("human log")
         .contains("materialized action bundle owner/js@v1"));
     assert!(
-        entries.contains(
-            "node:20-bookworm node /workspace/.permanu/action-bundles/js123/dist/index.js"
-        ),
+        entries.contains("node:20-bookworm node /workspace/.permanu-ci/s1/s1-action-wrapper.js"),
         "{entries}"
     );
 }
@@ -2216,15 +2213,19 @@ fn ci_job_native_cosign_sign_blob_uses_kms_key_and_redacts_signing_secrets() {
 }
 
 #[test]
-fn ci_job_rejects_implicit_shell_syntax() {
+fn ci_job_allows_shell_syntax_in_run_steps() {
     let result = job_deployment::handle_ci_job(
         "cmd-1",
-        br#"{"job_db_id":"job-1","steps":[{"step_db_id":"s1","step_index":0,"run":"echo ok; rm -rf /"}]}"#,
+        br#"{"job_db_id":"job-1","steps":[{"step_db_id":"s1","step_index":0,"run":"printf ok; printf done"}]}"#,
     );
-    let output = String::from_utf8(result.output).expect("utf8 output");
+    let output: Value = serde_json::from_slice(&result.output).expect("json output");
 
-    assert_eq!(result.status, "failed");
-    assert!(output.contains("unsupported shell syntax"));
+    assert_eq!(result.status, "completed", "{output}");
+    assert_eq!(output["step_statuses"]["s1"], "success");
+    assert!(output["log"]
+        .as_str()
+        .expect("human log")
+        .contains("okdone"));
 }
 
 #[cfg(unix)]

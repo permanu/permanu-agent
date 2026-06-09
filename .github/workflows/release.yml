@@ -10,6 +10,7 @@ on:
 
 permissions:
   contents: write
+  id-token: write
 
 jobs:
   test:
@@ -21,6 +22,8 @@ jobs:
         run: cargo fmt --check
       - name: Test
         run: cargo test --locked --bin permanu-agent
+      - name: Release signing helper tests
+        run: scripts/test-sign-release.sh
       - name: Version guard
         if: startsWith(github.ref, 'refs/tags/')
         run: scripts/check-version.sh
@@ -48,14 +51,18 @@ jobs:
     needs: build-linux
     runs-on: ubuntu-latest
     steps:
+      - uses: actions/checkout@v4
       - uses: actions/download-artifact@v4
         with:
           name: permanu-agent-linux
           path: dist
+      - uses: sigstore/cosign-installer@cad07c2e89fa2edd6e2d7bab4c1aa38e53f76003 # v4.1.1
+      - name: Sign release artifacts with cosign keyless OIDC
+        run: scripts/sign-release.sh dist
       - uses: softprops/action-gh-release@v2
         with:
           files: |
-            dist/permanu-agent-linux-amd64
-            dist/permanu-agent-linux-arm64
+            dist/permanu-agent-linux-amd64*
+            dist/permanu-agent-linux-arm64*
             dist/permanu-agent-release.json
             dist/SHA256SUMS

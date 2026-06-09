@@ -26,6 +26,7 @@ permissions:
   checks: write
   statuses: write
   pull-requests: read
+  id-token: write
 
 concurrency:
   group: permanu-agent-ci-${{ github.workflow }}-${{ github.ref }}
@@ -52,12 +53,18 @@ jobs:
             apt-get update
             DEBIAN_FRONTEND=noninteractive apt-get install -y build-essential pkg-config protobuf-compiler
           fi
+          if command -v rustup >/dev/null 2>&1; then
+            rustup component add rustfmt
+          fi
 
       - name: Format
         run: cargo fmt --check
 
       - name: Test
         run: cargo test --locked --all-targets
+
+      - name: Release signing helper tests
+        run: scripts/test-sign-release.sh
 
   main-artifact:
     name: permanu-ci / agent / main-artifact
@@ -121,6 +128,18 @@ jobs:
         env:
           ARCHES: amd64 arm64
 
+      - name: Install cosign
+        uses: sigstore/cosign-installer@cad07c2e89fa2edd6e2d7bab4c1aa38e53f76003 # v4.1.1
+
+      - name: Sign release artifacts
+        run: scripts/sign-release.sh dist
+        env:
+          COSIGN_KEY: ${{ secrets.COSIGN_KEY }}
+          PERMANU_COSIGN_KEY: ${{ secrets.PERMANU_COSIGN_KEY }}
+          COSIGN_PASSWORD: ${{ secrets.COSIGN_PASSWORD }}
+          SIGSTORE_ID_TOKEN: ${{ secrets.SIGSTORE_ID_TOKEN }}
+          PERMANU_SIGSTORE_ID_TOKEN: ${{ secrets.PERMANU_SIGSTORE_ID_TOKEN }}
+
       - name: Generate release notes
         run: scripts/release-notes.sh > dist/RELEASE_NOTES.md
 
@@ -136,8 +155,8 @@ jobs:
         with:
           body_path: dist/RELEASE_NOTES.md
           files: |
-            dist/permanu-agent-linux-amd64
-            dist/permanu-agent-linux-arm64
+            dist/permanu-agent-linux-amd64*
+            dist/permanu-agent-linux-arm64*
             dist/permanu-agent-release.json
             dist/SHA256SUMS
         env:
