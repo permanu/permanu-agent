@@ -98,7 +98,14 @@ missing_dist="${tmp_root}/missing"
 make_dist "$missing_dist"
 COSIGN_ARGS_FILE="${tmp_root}/missing.args"
 export COSIGN_ARGS_FILE
-if scripts/sign-release.sh "$missing_dist" >"${tmp_root}/missing.out" 2>&1; then
+if env \
+  -u PERMANU_COSIGN_KEY \
+  -u COSIGN_KEY \
+  -u PERMANU_SIGSTORE_ID_TOKEN \
+  -u SIGSTORE_ID_TOKEN \
+  -u ACTIONS_ID_TOKEN_REQUEST_URL \
+  -u ACTIONS_ID_TOKEN_REQUEST_TOKEN \
+  scripts/sign-release.sh "$missing_dist" >"${tmp_root}/missing.out" 2>&1; then
   echo "expected missing signing authority to fail" >&2
   exit 1
 fi
