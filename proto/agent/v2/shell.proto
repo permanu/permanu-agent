@@ -9,9 +9,10 @@ import "agent/v2/common.proto";
 
 // ShellService provides the only interactive exec path in local mode. There
 // is no unsigned exec: the first client frame must be ShellOpen carrying a
-// SignedPlan with action "shell.open" for the requested target, directly
-// signed (standing rules never authorize shell.open). The session is audited
-// and bounded by the plan's validity window.
+// SignedPlan whose only action is "shell.open" for the requested target,
+// user-signed with a fresh Touch ID by an owner key in every environment
+// (signed-plan.md 10.1; standing rules never authorize shell.open). The
+// session is audited and bounded by params.ttl_seconds (max 900 s).
 service ShellService {
   rpc Shell(stream ShellClientFrame) returns (stream ShellServerFrame);
 }

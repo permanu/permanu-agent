@@ -10,8 +10,9 @@ import "agent/v2/common.proto";
 
 // TelemetryService queries the server-local telemetry store (logs, traces,
 // metrics, Dwaar analytics). All RPCs are read-only. Retention changes are
-// signed changes (plan action "telemetry.retention.set") submitted through
-// ChangeService.SubmitSignedPlan.
+// signed plans submitted through ChangeService.SubmitSignedPlan, but
+// signed-plan.md has no action kind for this yet (open issue 13.1), so it is
+// not signable in v1; the agent rejects it until a v1.1 kind exists.
 //
 // Records are redacted before they are written to the store, so nothing
 // returned here contains secret values.
@@ -427,7 +428,7 @@ enum TelemetryKind {
 }
 
 // RetentionPolicy is enforced per kind; whichever limit hits first evicts
-// the oldest data. Changed only via signed action "telemetry.retention.set".
+// the oldest data. Changed only by a signed plan (kind pending, signed-plan.md 13.1).
 message RetentionPolicy {
   google.protobuf.Duration max_age = 1;
   uint64 max_bytes = 2;

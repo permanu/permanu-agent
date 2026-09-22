@@ -8,17 +8,19 @@ import "google/protobuf/timestamp.proto";
 import "agent/v2/common.proto";
 
 // ChangeService is the only general write path in local mode. Every server
-// change is a SignedPlan (see signed-plan.md) whose signatures verify
-// against the trusted-keys file, or a plan matching an installed standing
-// rule. The agent verifies signature, key trust, target server, validity
-// window and replay (nonce) before creating an operation.
+// change is a SignedPlan (docs/contracts/signed-plan.md) that the agent admits
+// with the ordered verification of signed-plan.md section 6.1. Standing
+// rules, trusted keys and shells are changed by plans too: rule.create,
+// rule.revoke, key.add and key.revoke go through SubmitSignedPlan, and
+// shell.open through ShellService.
 service ChangeService {
-  // SubmitSignedPlan verifies and enqueues a plan. Returns once accepted;
-  // execution progress is observed with WatchOperation. Re-submitting the
-  // same plan digest returns the original operation (deduplicated=true).
+  // SubmitSignedPlan verifies, admits and enqueues a plan. Returns once
+  // admitted; execution progress is observed with WatchOperation.
+  // Re-submitting an admitted plan (same id and digest) returns the original
+  // operation with deduplicated=true.
   rpc SubmitSignedPlan(SubmitSignedPlanRequest) returns (OperationRef);
   // VerifySignedPlan runs every check SubmitSignedPlan would, without
-  // executing or consuming the nonce. Read-only.
+  // admitting, executing or reserving the nonce. Read-only.
   rpc VerifySignedPlan(VerifySignedPlanRequest) returns (VerifySignedPlanResponse);
   rpc GetOperation(GetOperationRequest) returns (Operation);
   rpc ListOperations(ListOperationsRequest) returns (ListOperationsResponse);
@@ -26,46 +28,53 @@ service ChangeService {
   // events until the operation reaches a terminal state.
   rpc WatchOperation(WatchOperationRequest) returns (stream OperationEvent);
 
-  // Standing rules. Install carries the rule's own signatures; revoke needs
-  // a SignedPlan with action "standing_rule.revoke". Neither can be
-  // authorized by a standing rule.
-  rpc ListStandingRules(ListStandingRulesRequest) returns (ListStandingRulesResponse);
-  rpc InstallStandingRule(InstallStandingRuleRequest) returns (StandingRuleInfo);
-  rpc RevokeStandingRule(RevokeStandingRuleRequest) returns (StandingRuleInfo);
+  // GetStateHead returns the current state head for one scope, which the
+  // engine copies into plan.base.heads[server_id] (signed-plan.md 3.6).
+  // Server-level plans use project_id = "" and environment = "".
+  rpc GetStateHead(GetStateHeadRequest) returns (StateHead);
 
-  // Trusted keys. Add/revoke need a SignedPlan with action
-  // "trusted_key.add" / "trusted_key.revoke" signed by a currently trusted
-  // key. The agent refuses to revoke the last remaining key.
+  // ListAdmissions syncs the admission log (plans.db admissions) to the
+  // engine in admission order, after an opaque cursor. It covers user,
+  // agent-draft and rule plans, so the engine can record approval receipts
+  // for rule-backed plans and reconcile its own replay view. Read-only.
+  rpc ListAdmissions(ListAdmissionsRequest) returns (ListAdmissionsResponse);
+
+  // Standing rules and trusted keys, read-only. Changes are plans with
+  // kinds rule.create / rule.revoke / key.add / key.revoke.
+  rpc ListStandingRules(ListStandingRulesRequest) returns (ListStandingRulesResponse);
   rpc GetTrustedKeys(GetTrustedKeysRequest) returns (TrustedKeySet);
-  rpc AddTrustedKey(AddTrustedKeyRequest) returns (TrustedKeySet);
-  rpc RevokeTrustedKey(RevokeTrustedKeyRequest) returns (TrustedKeySet);
 }
 
 message SubmitSignedPlanRequest {
-  SignedChange change = 1;
+  SignedPlan plan = 1;
 }
 
 message VerifySignedPlanRequest {
-  SignedChange change = 1;
+  SignedPlan plan = 1;
 }
 
 message VerifySignedPlanResponse {
   bool valid = 1;
+  // "sha256:" + hex plan digest, computed by the agent.
   string plan_digest = 2;
   // key_ids whose signatures verified against trusted keys.
   repeated string verified_key_ids = 3;
-  string matched_standing_rule_id = 4;
-  // Action kinds found in the plan (e.g. "deploy", "cron.upsert").
+  // rule_id from plan.invocation, for rule plans.
+  string rule_id = 4;
+  // Action kinds in the plan, in order (signed-plan.md 3.2 strings).
   repeated string actions = 5;
-  google.protobuf.Timestamp not_before = 6;
+  google.protobuf.Timestamp created_at = 6;
   google.protobuf.Timestamp expires_at = 7;
-  // Every failed check, in evaluation order. Empty when valid.
+  // The first failed check in signed-plan.md 6.1 order. Empty when valid.
   repeated VerificationFailure failures = 8;
+  string plan_id = 9;
 }
 
 message VerificationFailure {
   ErrorReason reason = 1;
   string detail = 2;
+  // Exact signed-plan.md 6.1 code, e.g. "E_BASE_MISMATCH".
+  string code = 3;
 }
 
 enum OperationState {
@@ -80,7 +89,9 @@ enum OperationState {
 
 message Operation {
   string id = 1;
+  // "sha256:" + hex plan digest.
   string plan_digest = 2;
+  // Action kinds, in plan order.
   repeated string actions = 3;
   OperationState state = 4;
   google.protobuf.Timestamp submitted_at = 5;
@@ -93,16 +104,21 @@ message Operation {
   string error = 11;
   // "engine" | "webhook" | "scheduler" | "agent"
   string initiator = 12;
+  // plan.id (UUIDv7).
+  string plan_id = 13;
 }
 
 message OperationStep {
   uint32 index = 1;
   string name = 2;
+  // Action kind this step executes.
   string action = 3;
   OperationState state = 4;
   google.protobuf.Timestamp started_at = 5;
   google.protobuf.Timestamp finished_at = 6;
   string error = 7;
+  // Index into plan.actions.
+  uint32 action_index = 8;
 }
 
 message GetOperationRequest {
@@ -147,17 +163,91 @@ message StepLog {
   string line = 3;
 }
 
-// StandingRuleInfo describes an installed standing rule. The rule body is
-// returned verbatim as signed so the engine can re-verify and render it.
+message GetStateHeadRequest {
+  // Project id (UUIDv7), or "" for the server-level scope.
+  string project_id = 1;
+  // Environment name, or "" for the server-level scope.
+  string environment = 2;
+}
+
+message StateHead {
+  string project_id = 1;
+  string environment = 2;
+  // "sha256:" + 64 hex. The genesis head is "sha256:" + 64 x "0".
+  string head = 3;
+  // This agent's server id (UUIDv7): the key for plan.base.heads.
+  string server_id = 4;
+  // Plan that last advanced the head; empty at genesis.
+  string last_plan_id = 5;
+  google.protobuf.Timestamp updated_at = 6;
+  // True during the 17-minute quarantine after plans.db was recreated
+  // (signed-plan.md 6.3); admissions are refused until it ends.
+  bool quarantined = 7;
+}
+
+message ListAdmissionsRequest {
+  // Opaque cursor from a previous next_cursor; empty = from the oldest
+  // retained admission.
+  string cursor = 1;
+  // Max admissions per page. 0 means 100; capped at 500.
+  uint32 limit = 2;
+  // Include the full signed plan JSON in each record.
+  bool include_signed_plan = 3;
+}
+
+message ListAdmissionsResponse {
+  // Ascending admission order.
+  repeated Admission admissions = 1;
+  // Pass back as cursor. Never empty; equals the request cursor when there
+  // is nothing new.
+  string next_cursor = 2;
+}
+
+message Admission {
+  // plan.id (UUIDv7) and plan.nonce, as reserved in the replay store.
+  string plan_id = 1;
+  string nonce = 2;
+  // "sha256:" + hex plan digest.
+  string plan_digest = 3;
+  google.protobuf.Timestamp admitted_at = 4;
+  google.protobuf.Timestamp finished_at = 5;
+  // "" while running; then "succeeded" | "failed" | "rolled_back" | "expired".
+  string outcome = 6;
+  // "user" | "agent-draft" | "rule".
+  string author_kind = 7;
+  repeated string key_ids = 8;
+  string rule_id = 9;
+  // Action kinds, in plan order.
+  repeated string actions = 10;
+  string project_id = 11;
+  string environment = 12;
+  // Head of the scope after this admission.
+  string head_after = 13;
+  // signed-plan.md 3.3 envelope; set only when include_signed_plan.
+  bytes signed_plan_json = 14;
+  // plan.expires_at, for replay-window bookkeeping.
+  google.protobuf.Timestamp expires_at = 15;
+}
+
+// StandingRuleInfo describes an installed standing rule. The rule is returned
+// as its JCS text so the engine can recompute rule_digest and render it.
 message StandingRuleInfo {
   string rule_id = 1;
-  SignedStandingRule rule = 2;
+  // JCS of the StandingRule object (signed-plan.md 3.4).
+  bytes rule_jcs = 2;
+  // "sha256:" + hex rule digest.
   string rule_digest = 3;
   google.protobuf.Timestamp installed_at = 4;
   bool revoked = 5;
   google.protobuf.Timestamp revoked_at = 6;
   uint64 match_count = 7;
   google.protobuf.Timestamp last_matched_at = 8;
+  // Key that signed the rule.create plan, and that plan's id.
+  string created_by_key_id = 9;
+  string created_plan_id = 10;
+  google.protobuf.Timestamp expires_at = 11;
+  // Admissions of this rule in the last 3600 s.
+  uint32 invocations_last_hour = 12;
 }
 
 message ListStandingRulesRequest {
@@ -170,24 +260,24 @@ message ListStandingRulesResponse {
   PageInfo page = 2;
 }
 
-message InstallStandingRuleRequest {
-  SignedStandingRule rule = 1;
-}
-
-message RevokeStandingRuleRequest {
-  string rule_id = 1;
-  SignedPlan plan = 2;
-}
-
+// TrustedKey mirrors one entry of /etc/permanu/trusted-keys.json
+// (signed-plan.md 7.2), plus its effective revocation state.
 message TrustedKey {
   string key_id = 1;
-  string alg = 2; // "ES256-raw"
-  // Uncompressed SEC1 P-256 public key (65 bytes).
-  bytes public_key = 3;
+  string alg = 2; // "ES256"
+  // 91-byte SubjectPublicKeyInfo DER of the P-256 key.
+  bytes spki_der = 3;
   string label = 4; // e.g. "MacBook Pro (Secure Enclave)"
   google.protobuf.Timestamp added_at = 5;
+  // True when revoked directly or by cascade.
   bool revoked = 6;
   google.protobuf.Timestamp revoked_at = 7;
+  string role = 8;     // "owner" | "deployer" | "ci"
+  string presence = 9; // "biometry" | "user_presence" | "none"
+  // key_id of the owner that added it; empty for the TOFU root.
+  string added_by_key_id = 10;
+  // "lost" | "compromised" | "rotated" | "other" | "cascade"; empty if active.
+  string revocation_reason = 11;
 }
 
 message TrustedKeySet {
@@ -195,16 +285,10 @@ message TrustedKeySet {
   // Same value as HelloResponse.trusted_keys.fingerprint.
   string fingerprint = 2;
   uint64 generation = 3;
+  // The file bytes as stored, so the engine can re-validate the chain.
+  bytes trusted_keys_json = 4;
 }
 
 message GetTrustedKeysRequest {
   bool include_revoked = 1;
-}
-
-message AddTrustedKeyRequest {
-  SignedPlan plan = 1;
-}
-
-message RevokeTrustedKeyRequest {
-  SignedPlan plan = 1;
 }

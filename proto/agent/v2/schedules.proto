@@ -10,17 +10,21 @@ import "agent/v2/common.proto";
 import "agent/v2/telemetry.proto";
 
 // ScheduleService exposes the agent's cron scheduler. Reads are unsigned.
-// Create/update/delete are signed changes submitted via
-// ChangeService.SubmitSignedPlan (actions "cron.upsert", "cron.delete",
-// "cron.pause", "cron.resume"). RunCronJobNow carries its own SignedChange.
+// Create/update/delete are signed plans submitted via
+// ChangeService.SubmitSignedPlan (kinds "cron.create", "cron.update",
+// "cron.delete"). Pause and resume: signed-plan.md has no action kind for
+// them yet (open issue 13.1), so they are not signable in v1; the agent
+// rejects them until a v1.1 kind exists.
+// RunCronJobNow carries its own SignedPlan.
 service ScheduleService {
   rpc ListCronJobs(ListCronJobsRequest) returns (ListCronJobsResponse);
   rpc GetCronJob(GetCronJobRequest) returns (CronJob);
   rpc ListCronRuns(ListCronRunsRequest) returns (ListCronRunsResponse);
   rpc GetCronRun(GetCronRunRequest) returns (CronRun);
-  // RunCronJobNow triggers one out-of-schedule run. Requires a SignedChange
-  // whose plan contains action "cron.run" for job_id (a standing rule may
-  // authorize it). Overlap policy still applies.
+  // RunCronJobNow triggers one out-of-schedule run. Requires a user-signed
+  // SignedPlan whose only action is "cron.run" with cron_id = job_id.
+  // Standing rules never authorize it (v1 rules allow deploy only).
+  // Overlap policy still applies.
   rpc RunCronJobNow(RunCronJobNowRequest) returns (RunCronJobNowResponse);
   // StreamCronRunLogs streams the output of one run (follow while running).
   rpc StreamCronRunLogs(StreamCronRunLogsRequest) returns (stream LogQueryResponse);
@@ -164,7 +168,7 @@ message GetCronRunRequest {
 
 message RunCronJobNowRequest {
   string job_id = 1;
-  SignedChange change = 2;
+  SignedPlan plan = 2;
 }
 
 message RunCronJobNowResponse {

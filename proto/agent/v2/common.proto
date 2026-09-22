@@ -13,56 +13,43 @@ import "google/protobuf/timestamp.proto";
 // (agent.v1.AgentService, agent dials the hosted control plane) is untouched.
 // See docs/contracts/agent-protocol.md for transport, auth and limits.
 
-// Signature is one detached signature over SignedPlan.plan_jcs (or
-// SignedStandingRule.rule_jcs). The signing input and hash are defined in
-// docs/contracts/signed-plan.md; the agent only verifies.
-message Signature {
-  // Trusted-key identifier as listed in the server's trusted-keys file.
-  string key_id = 1;
-  // Signature algorithm. Only "ES256-raw" (P-256, 64-byte r||s) is accepted.
-  string alg = 2;
-  // Raw signature bytes.
-  bytes sig = 3;
-  // Signer-asserted signing time. Checked against the plan validity window.
-  google.protobuf.Timestamp signed_at = 4;
-}
-
-// SignedPlan is the envelope for every mutating request. plan_jcs is the
-// RFC 8785 (JCS) canonical JSON plan; its internals (actions, nonce, expiry,
-// target server) are owned by signed-plan.md and are deliberately not
-// modelled in protobuf.
+// SignedPlan carries one signed-plan v1 envelope, exactly as defined in
+// docs/contracts/signed-plan.md section 3.3: the UTF-8 JSON text
+// {"plan": {...}, "signatures": [...]}. The agent parses it strictly (no
+// duplicate keys, no unknown or missing fields, integers only) and recomputes
+// the plan digest itself. No field in this protocol carries a digest, key or
+// signature that the agent trusts.
+//
+// Plan authority is either 1-4 ES256-raw signatures from keys in
+// /etc/permanu/trusted-keys.json (author.kind "user" or "agent-draft"), or,
+// for author.kind "rule", a RuleInvocation inside the plan. Rule plans are
+// built by the agent itself from authenticated webhooks; clients never
+// submit them.
+//
+// Action kinds are the strings in signed-plan.md section 3.2, verbatim:
+// deploy, rollback, restart, scale, env.set, secret.set, secret.unset,
+// domain.add, domain.remove, cron.create, cron.update, cron.delete, cron.run,
+// backup.run, backup.policy.set, backup.delete, restore, db.upgrade,
+// server.add, agent.update, shell.open, rule.create, rule.revoke, key.add,
+// key.revoke. Every string field named `actions` or `action` in v2 holds one
+// of these. Ids inside plans are lowercase UUIDv7 strings.
 message SignedPlan {
-  bytes plan_jcs = 1;
-  repeated Signature signatures = 2;
-}
-
-// SignedStandingRule carries a standing rule as signed JCS bytes. Same
-// verification rules as SignedPlan.
-message SignedStandingRule {
-  bytes rule_jcs = 1;
-  repeated Signature signatures = 2;
-}
-
-// SignedChange is the authorization attached to any mutating RPC. Either
-// plan.signatures verify against the trusted keys, or signatures are empty
-// and standing_rule_id names an installed rule the plan matches. Actions that
-// always require a direct signature (shell.open, trusted_key.*, secrets,
-// restores, agent changes) reject the standing-rule path.
-message SignedChange {
-  SignedPlan plan = 1;
-  string standing_rule_id = 2;
+  bytes envelope_json = 1;
 }
 
 // OperationRef identifies the asynchronous operation created by an accepted
 // signed change. Follow it with ChangeService.WatchOperation.
 message OperationRef {
   string operation_id = 1;
-  // Lowercase hex SHA-256 digest of plan_jcs (see signed-plan.md).
+  // "sha256:" + lowercase hex plan digest (signed-plan.md section 2.1),
+  // computed by the agent.
   string plan_digest = 2;
   google.protobuf.Timestamp accepted_at = 3;
-  // True when the same plan digest was already accepted; operation_id is the
-  // original operation and nothing was re-executed.
+  // True when the same plan id and digest were already admitted;
+  // operation_id is the original operation and nothing was re-executed.
   bool deduplicated = 4;
+  // plan.id of the admitted plan (UUIDv7).
+  string plan_id = 5;
 }
 
 // TimeRange is a half-open [start, end) interval. An unset start means
@@ -74,9 +61,9 @@ message TimeRange {
 
 // Scope narrows a query to Permanu identities. Empty fields match all.
 message Scope {
-  string project = 1;       // project slug
-  string service = 2;       // service slug within the project
-  string deployment_id = 3; // deployment UUID
+  string project = 1;       // project id (UUIDv7)
+  string service = 2;       // service id (UUIDv7)
+  string deployment_id = 3; // deployment id (UUIDv7)
   string app_id = 4;        // v1-compatible app UUID; kept for hosted-era data
 }
 
@@ -142,4 +129,16 @@ enum ErrorReason {
   ERROR_REASON_CLOCK_SKEW = 18;            // FAILED_PRECONDITION
   ERROR_REASON_AGENT_QUARANTINED = 19;     // FAILED_PRECONDITION
   ERROR_REASON_PROTOCOL_VERSION = 20;      // FAILED_PRECONDITION
+  // Reasons 21-29 mirror signed-plan.md section 6.1 codes that have no
+  // reason above. The exact code is always sent as well (see
+  // VerificationFailure.code and the "permanu-plan-error" trailer).
+  ERROR_REASON_PLAN_VERSION = 21;          // INVALID_ARGUMENT, E_VERSION
+  ERROR_REASON_PLAN_AUTHORITY = 22;        // PERMISSION_DENIED, E_AUTHOR
+  ERROR_REASON_BASE_MISMATCH = 23;         // ABORTED, E_BASE_MISMATCH
+  ERROR_REASON_FORCE_FORBIDDEN = 24;       // PERMISSION_DENIED, E_FORCE_FORBIDDEN
+  ERROR_REASON_TOUCH_ID_REQUIRED = 25;     // PERMISSION_DENIED, E_TOUCH_ID_REQUIRED
+  ERROR_REASON_RULE_REJECTED = 26;         // PERMISSION_DENIED, E_RULE_*
+  ERROR_REASON_BOOTSTRAP_REJECTED = 27;    // PERMISSION_DENIED, E_BOOTSTRAP
+  ERROR_REASON_EXEC_PRECONDITION = 28;     // FAILED_PRECONDITION, E_EXEC_PRECONDITION
+  ERROR_REASON_TRUST_STORE_INVALID = 29;   // FAILED_PRECONDITION, trust_store_invalid
 }

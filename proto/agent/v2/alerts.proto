@@ -10,9 +10,10 @@ import "agent/v2/common.proto";
 import "agent/v2/telemetry.proto";
 
 // AlertService exposes the on-server alert evaluator. Reads and channel tests
-// are unsigned. Rule/channel mutations are signed changes via
-// ChangeService.SubmitSignedPlan: "alert.rule.upsert", "alert.rule.delete",
-// "alert.channel.upsert", "alert.channel.delete", "alert.silence".
+// are unsigned. Rule, channel and silence mutations
+// will be signed plans via ChangeService.SubmitSignedPlan, but
+// signed-plan.md has no action kind for this yet (open issue 13.1), so it is
+// not signable in v1; the agent rejects it until a v1.1 kind exists.
 service AlertService {
   rpc ListAlertRules(ListAlertRulesRequest) returns (ListAlertRulesResponse);
   rpc GetAlertRule(GetAlertRuleRequest) returns (AlertRule);
@@ -102,7 +103,7 @@ message AlertRule {
   google.protobuf.Duration repeat_interval = 8;
   bool notify_on_resolve = 9;
   bool enabled = 10;
-  // Silenced until this time (signed "alert.silence").
+  // Silenced until this time (pending a signed-plan v1.1 kind).
   google.protobuf.Timestamp silenced_until = 11;
   AlertState state = 12;
   google.protobuf.Timestamp state_since = 13;

@@ -127,8 +127,10 @@ message ResourcePressureEvent {
 message TrustChangedEvent {
   string fingerprint = 1;
   uint64 generation = 2;
-  // "trusted_key.add" | "trusted_key.revoke" | "standing_rule.install" |
-  // "standing_rule.revoke"
+  // Admitted kind: "key.add" | "key.revoke" | "rule.create" |
+  // "rule.revoke" | "server.add" (bootstrap). "file_changed" when
+  // trusted-keys.json or plans.db changed outside an admitted plan
+  // (for example by root; signed-plan.md R1).
   string change = 3;
   string subject_id = 4;
 }

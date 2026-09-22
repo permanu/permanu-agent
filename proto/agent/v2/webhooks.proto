@@ -9,9 +9,11 @@ import "agent/v2/common.proto";
 
 // WebhookService exposes the queue of git-provider webhooks that Dwaar
 // forwards to the agent, and builds the agent ran on the server when no Mac
-// was online. All RPCs are read-only. A delivery only turns into a build
-// when it matches an installed standing rule (e.g. auto-deploy main ->
-// production); otherwise it waits for the engine.
+// was online. All RPCs are read-only. This is the webhook delivery store of
+// signed-plan.md 3.5 (plans.db deliveries): the agent authenticates each
+// delivery with the provider HMAC, records it, and builds one rule-backed
+// plan per matching standing rule (e.g. auto-deploy main -> production).
+// Admission consumes the delivery. Unmatched deliveries wait for the engine.
 service WebhookService {
   rpc ListWebhookDeliveries(ListWebhookDeliveriesRequest) returns (ListWebhookDeliveriesResponse);
   rpc GetWebhookDelivery(GetWebhookDeliveryRequest) returns (WebhookDelivery);
@@ -37,7 +39,9 @@ message WebhookDelivery {
   google.protobuf.Timestamp received_at = 2;
   string provider = 3;   // "github" | "gitlab" | "gitea" | "generic"
   string event = 4;      // e.g. "push", "pull_request"
-  string delivery_ref = 5; // provider delivery id (X-GitHub-Delivery)
+  // Provider delivery id (X-GitHub-Delivery); this is
+  // RuleInvocation.evidence.delivery_id.
+  string delivery_ref = 5;
   string repository = 6;
   string ref = 7;
   string commit_sha = 8;
@@ -51,9 +55,15 @@ message WebhookDelivery {
   string build_id = 15;
   uint32 attempts = 16;
   google.protobuf.Timestamp processed_at = 17;
-  // Body is not returned; only its digest and size.
+  // Body is not returned; only its digest ("sha256:" + hex) and size.
   string body_sha256 = 18;
   uint64 body_bytes = 19;
+  // When the provider HMAC verified; unset when signature_valid is false.
+  google.protobuf.Timestamp verified_at = 20;
+  // True once a rule-backed plan citing this delivery was admitted.
+  bool consumed = 21;
+  // plan.id of every admission that cited this delivery (one per rule).
+  repeated string consumed_by_plan_ids = 22;
 }
 
 message ListWebhookDeliveriesRequest {
