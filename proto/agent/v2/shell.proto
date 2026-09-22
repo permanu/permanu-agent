@@ -1,0 +1,80 @@
+syntax = "proto3";
+
+package permanu.agent.v2;
+
+option go_package = "github.com/permanu/permanu-ai/internal/agentpb/v2;agentv2";
+
+import "google/protobuf/timestamp.proto";
+import "agent/v2/common.proto";
+
+// ShellService provides the only interactive exec path in local mode. There
+// is no unsigned exec: the first client frame must be ShellOpen carrying a
+// SignedPlan with action "shell.open" for the requested target, directly
+// signed (standing rules never authorize shell.open). The session is audited
+// and bounded by the plan's validity window.
+service ShellService {
+  rpc Shell(stream ShellClientFrame) returns (stream ShellServerFrame);
+}
+
+message ShellTarget {
+  oneof target {
+    // Exec into a running service container.
+    string service = 1;
+    // Exec into a specific container by name or id.
+    string container = 2;
+    // Host login shell as the permanu user. Requires the "shell.host"
+    // capability and a plan action scoped to the host.
+    bool host = 3;
+  }
+}
+
+message TerminalSize {
+  uint32 cols = 1;
+  uint32 rows = 2;
+}
+
+message ShellOpen {
+  SignedPlan plan = 1;
+  ShellTarget target = 2;
+  // Command to run; empty = the target's default shell. Must equal the argv
+  // named in the signed plan when the plan pins one.
+  repeated string argv = 3;
+  bool tty = 4;
+  string term = 5; // e.g. "xterm-256color"
+  TerminalSize size = 6;
+}
+
+message ShellClientFrame {
+  oneof frame {
+    ShellOpen open = 1;   // must be first, exactly once
+    bytes stdin = 2;      // max 32 KiB per frame
+    TerminalSize resize = 3;
+    string signal = 4;    // "INT" | "TERM" | "HUP" | "QUIT" | "KILL"
+    bool close_stdin = 5; // EOF
+  }
+}
+
+message ShellOpened {
+  string session_id = 1;
+  string plan_digest = 2;
+  // Session is terminated at this time (plan expiry, max 1 h).
+  google.protobuf.Timestamp expires_at = 3;
+  // True when the session transcript is recorded in the agent audit log.
+  bool recorded = 4;
+}
+
+message ShellExit {
+  int32 exit_code = 1;
+  string signal = 2;
+  // "exited" | "expired" | "idle_timeout" | "client_closed" | "error"
+  string reason = 3;
+}
+
+message ShellServerFrame {
+  oneof frame {
+    ShellOpened opened = 1;
+    bytes stdout = 2; // max 32 KiB per frame
+    bytes stderr = 3; // only when tty=false
+    ShellExit exit = 4; // final frame
+  }
+}

@@ -1,0 +1,210 @@
+syntax = "proto3";
+
+package permanu.agent.v2;
+
+option go_package = "github.com/permanu/permanu-ai/internal/agentpb/v2;agentv2";
+
+import "google/protobuf/timestamp.proto";
+import "agent/v2/common.proto";
+
+// ChangeService is the only general write path in local mode. Every server
+// change is a SignedPlan (see signed-plan.md) whose signatures verify
+// against the trusted-keys file, or a plan matching an installed standing
+// rule. The agent verifies signature, key trust, target server, validity
+// window and replay (nonce) before creating an operation.
+service ChangeService {
+  // SubmitSignedPlan verifies and enqueues a plan. Returns once accepted;
+  // execution progress is observed with WatchOperation. Re-submitting the
+  // same plan digest returns the original operation (deduplicated=true).
+  rpc SubmitSignedPlan(SubmitSignedPlanRequest) returns (OperationRef);
+  // VerifySignedPlan runs every check SubmitSignedPlan would, without
+  // executing or consuming the nonce. Read-only.
+  rpc VerifySignedPlan(VerifySignedPlanRequest) returns (VerifySignedPlanResponse);
+  rpc GetOperation(GetOperationRequest) returns (Operation);
+  rpc ListOperations(ListOperationsRequest) returns (ListOperationsResponse);
+  // WatchOperation replays events after `after_seq`, then streams live
+  // events until the operation reaches a terminal state.
+  rpc WatchOperation(WatchOperationRequest) returns (stream OperationEvent);
+
+  // Standing rules. Install carries the rule's own signatures; revoke needs
+  // a SignedPlan with action "standing_rule.revoke". Neither can be
+  // authorized by a standing rule.
+  rpc ListStandingRules(ListStandingRulesRequest) returns (ListStandingRulesResponse);
+  rpc InstallStandingRule(InstallStandingRuleRequest) returns (StandingRuleInfo);
+  rpc RevokeStandingRule(RevokeStandingRuleRequest) returns (StandingRuleInfo);
+
+  // Trusted keys. Add/revoke need a SignedPlan with action
+  // "trusted_key.add" / "trusted_key.revoke" signed by a currently trusted
+  // key. The agent refuses to revoke the last remaining key.
+  rpc GetTrustedKeys(GetTrustedKeysRequest) returns (TrustedKeySet);
+  rpc AddTrustedKey(AddTrustedKeyRequest) returns (TrustedKeySet);
+  rpc RevokeTrustedKey(RevokeTrustedKeyRequest) returns (TrustedKeySet);
+}
+
+message SubmitSignedPlanRequest {
+  SignedChange change = 1;
+}
+
+message VerifySignedPlanRequest {
+  SignedChange change = 1;
+}
+
+message VerifySignedPlanResponse {
+  bool valid = 1;
+  string plan_digest = 2;
+  // key_ids whose signatures verified against trusted keys.
+  repeated string verified_key_ids = 3;
+  string matched_standing_rule_id = 4;
+  // Action kinds found in the plan (e.g. "deploy", "cron.upsert").
+  repeated string actions = 5;
+  google.protobuf.Timestamp not_before = 6;
+  google.protobuf.Timestamp expires_at = 7;
+  // Every failed check, in evaluation order. Empty when valid.
+  repeated VerificationFailure failures = 8;
+}
+
+message VerificationFailure {
+  ErrorReason reason = 1;
+  string detail = 2;
+}
+
+enum OperationState {
+  OPERATION_STATE_UNSPECIFIED = 0;
+  OPERATION_STATE_QUEUED = 1;
+  OPERATION_STATE_RUNNING = 2;
+  OPERATION_STATE_SUCCEEDED = 3;
+  OPERATION_STATE_FAILED = 4;
+  OPERATION_STATE_CANCELLED = 5;
+  OPERATION_STATE_ROLLED_BACK = 6;
+}
+
+message Operation {
+  string id = 1;
+  string plan_digest = 2;
+  repeated string actions = 3;
+  OperationState state = 4;
+  google.protobuf.Timestamp submitted_at = 5;
+  google.protobuf.Timestamp started_at = 6;
+  google.protobuf.Timestamp finished_at = 7;
+  // Who authorized it: verified key ids, or the standing rule id.
+  repeated string authorized_key_ids = 8;
+  string standing_rule_id = 9;
+  repeated OperationStep steps = 10;
+  string error = 11;
+  // "engine" | "webhook" | "scheduler" | "agent"
+  string initiator = 12;
+}
+
+message OperationStep {
+  uint32 index = 1;
+  string name = 2;
+  string action = 3;
+  OperationState state = 4;
+  google.protobuf.Timestamp started_at = 5;
+  google.protobuf.Timestamp finished_at = 6;
+  string error = 7;
+}
+
+message GetOperationRequest {
+  string operation_id = 1;
+}
+
+message ListOperationsRequest {
+  repeated OperationState states = 1;
+  TimeRange range = 2;
+  PageRequest page = 3; // newest first
+}
+
+message ListOperationsResponse {
+  repeated Operation operations = 1;
+  PageInfo page = 2;
+}
+
+message WatchOperationRequest {
+  string operation_id = 1;
+  // Resume after this event sequence number (0 = from the start).
+  uint64 after_seq = 2;
+}
+
+message OperationEvent {
+  string operation_id = 1;
+  // Per-operation, strictly increasing, starting at 1.
+  uint64 seq = 2;
+  google.protobuf.Timestamp timestamp = 3;
+  oneof event {
+    // Step state transition (started, succeeded, failed, ...).
+    OperationStep step = 4;
+    StepLog log = 5;
+    // Terminal snapshot; the stream closes after it.
+    Operation finished = 6;
+  }
+}
+
+message StepLog {
+  uint32 step_index = 1;
+  string stream = 2; // "stdout" | "stderr" | "agent"
+  // Redacted line, max 16 KiB.
+  string line = 3;
+}
+
+// StandingRuleInfo describes an installed standing rule. The rule body is
+// returned verbatim as signed so the engine can re-verify and render it.
+message StandingRuleInfo {
+  string rule_id = 1;
+  SignedStandingRule rule = 2;
+  string rule_digest = 3;
+  google.protobuf.Timestamp installed_at = 4;
+  bool revoked = 5;
+  google.protobuf.Timestamp revoked_at = 6;
+  uint64 match_count = 7;
+  google.protobuf.Timestamp last_matched_at = 8;
+}
+
+message ListStandingRulesRequest {
+  bool include_revoked = 1;
+  PageRequest page = 2;
+}
+
+message ListStandingRulesResponse {
+  repeated StandingRuleInfo rules = 1;
+  PageInfo page = 2;
+}
+
+message InstallStandingRuleRequest {
+  SignedStandingRule rule = 1;
+}
+
+message RevokeStandingRuleRequest {
+  string rule_id = 1;
+  SignedPlan plan = 2;
+}
+
+message TrustedKey {
+  string key_id = 1;
+  string alg = 2; // "ES256-raw"
+  // Uncompressed SEC1 P-256 public key (65 bytes).
+  bytes public_key = 3;
+  string label = 4; // e.g. "MacBook Pro (Secure Enclave)"
+  google.protobuf.Timestamp added_at = 5;
+  bool revoked = 6;
+  google.protobuf.Timestamp revoked_at = 7;
+}
+
+message TrustedKeySet {
+  repeated TrustedKey keys = 1;
+  // Same value as HelloResponse.trusted_keys.fingerprint.
+  string fingerprint = 2;
+  uint64 generation = 3;
+}
+
+message GetTrustedKeysRequest {
+  bool include_revoked = 1;
+}
+
+message AddTrustedKeyRequest {
+  SignedPlan plan = 1;
+}
+
+message RevokeTrustedKeyRequest {
+  SignedPlan plan = 1;
+}

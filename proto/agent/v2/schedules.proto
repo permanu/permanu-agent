@@ -1,0 +1,179 @@
+syntax = "proto3";
+
+package permanu.agent.v2;
+
+option go_package = "github.com/permanu/permanu-ai/internal/agentpb/v2;agentv2";
+
+import "google/protobuf/duration.proto";
+import "google/protobuf/timestamp.proto";
+import "agent/v2/common.proto";
+import "agent/v2/telemetry.proto";
+
+// ScheduleService exposes the agent's cron scheduler. Reads are unsigned.
+// Create/update/delete are signed changes submitted via
+// ChangeService.SubmitSignedPlan (actions "cron.upsert", "cron.delete",
+// "cron.pause", "cron.resume"). RunCronJobNow carries its own SignedChange.
+service ScheduleService {
+  rpc ListCronJobs(ListCronJobsRequest) returns (ListCronJobsResponse);
+  rpc GetCronJob(GetCronJobRequest) returns (CronJob);
+  rpc ListCronRuns(ListCronRunsRequest) returns (ListCronRunsResponse);
+  rpc GetCronRun(GetCronRunRequest) returns (CronRun);
+  // RunCronJobNow triggers one out-of-schedule run. Requires a SignedChange
+  // whose plan contains action "cron.run" for job_id (a standing rule may
+  // authorize it). Overlap policy still applies.
+  rpc RunCronJobNow(RunCronJobNowRequest) returns (RunCronJobNowResponse);
+  // StreamCronRunLogs streams the output of one run (follow while running).
+  rpc StreamCronRunLogs(StreamCronRunLogsRequest) returns (stream LogQueryResponse);
+}
+
+enum OverlapPolicy {
+  OVERLAP_POLICY_UNSPECIFIED = 0; // treated as SKIP
+  OVERLAP_POLICY_SKIP = 1;        // skip the new run while one is active
+  OVERLAP_POLICY_ALLOW = 2;       // run concurrently
+  OVERLAP_POLICY_QUEUE_ONE = 3;   // queue at most one pending run
+  OVERLAP_POLICY_REPLACE = 4;     // cancel the active run, start the new one
+}
+
+message RetryPolicy {
+  // Total attempts including the first. 0 or 1 = no retries; max 10.
+  uint32 max_attempts = 1;
+  google.protobuf.Duration initial_backoff = 2;
+  google.protobuf.Duration max_backoff = 3;
+  double backoff_multiplier = 4;
+}
+
+// HeartbeatPolicy raises alerts for failed or missed runs.
+message HeartbeatPolicy {
+  bool alert_on_failure = 1;
+  // Alert when no run started within schedule time + missed_grace.
+  bool alert_on_missed = 2;
+  google.protobuf.Duration missed_grace = 3;
+  // Alert only after this many consecutive failures. 0 = 1.
+  uint32 failure_threshold = 4;
+  // NotificationChannel ids.
+  repeated string channel_ids = 5;
+}
+
+message CronTarget {
+  oneof target {
+    // Exec argv inside a running service container.
+    ServiceExec service_exec = 1;
+    // Start an ephemeral container from the service image (or image).
+    OneOffContainer one_off = 2;
+  }
+}
+
+message ServiceExec {
+  string service = 1;
+  repeated string argv = 2;
+}
+
+message OneOffContainer {
+  string service = 1; // reuse this service's image, env and networks
+  string image = 2;   // or an explicit image reference (digest preferred)
+  repeated string argv = 3;
+  // Secret names only; values are resolved on the server, never returned.
+  repeated string secret_refs = 4;
+}
+
+enum CronRunStatus {
+  CRON_RUN_STATUS_UNSPECIFIED = 0;
+  CRON_RUN_STATUS_PENDING = 1;
+  CRON_RUN_STATUS_RUNNING = 2;
+  CRON_RUN_STATUS_SUCCEEDED = 3;
+  CRON_RUN_STATUS_FAILED = 4;
+  CRON_RUN_STATUS_TIMED_OUT = 5;
+  CRON_RUN_STATUS_SKIPPED_OVERLAP = 6;
+  CRON_RUN_STATUS_CANCELLED = 7;
+  CRON_RUN_STATUS_MISSED = 8; // agent was down at schedule time
+}
+
+enum CronTrigger {
+  CRON_TRIGGER_UNSPECIFIED = 0;
+  CRON_TRIGGER_SCHEDULE = 1;
+  CRON_TRIGGER_MANUAL = 2;
+  CRON_TRIGGER_RETRY = 3;
+}
+
+message CronJob {
+  string id = 1;
+  string name = 2;
+  Scope scope = 3;
+  // 5-field cron expression or "@every <duration>" / "@hourly" etc.
+  string schedule = 4;
+  string timezone = 5; // IANA; "" = UTC
+  CronTarget target = 6;
+  OverlapPolicy overlap = 7;
+  RetryPolicy retry = 8;
+  google.protobuf.Duration timeout = 9;
+  HeartbeatPolicy heartbeat = 10;
+  bool enabled = 11;
+  google.protobuf.Timestamp next_run_at = 12;
+  CronRun last_run = 13;
+  google.protobuf.Timestamp created_at = 14;
+  google.protobuf.Timestamp updated_at = 15;
+  // Digest of the signed plan that last changed this job.
+  string plan_digest = 16;
+}
+
+message CronRun {
+  string id = 1;
+  string job_id = 2;
+  uint32 attempt = 3;
+  CronTrigger trigger = 4;
+  CronRunStatus status = 5;
+  google.protobuf.Timestamp scheduled_for = 6;
+  google.protobuf.Timestamp started_at = 7;
+  google.protobuf.Timestamp finished_at = 8;
+  int32 exit_code = 9;
+  string error = 10;
+  uint64 output_bytes = 11;
+  // Set for manual runs.
+  string operation_id = 12;
+}
+
+message ListCronJobsRequest {
+  Scope scope = 1;
+  PageRequest page = 2;
+}
+
+message ListCronJobsResponse {
+  repeated CronJob jobs = 1;
+  PageInfo page = 2;
+}
+
+message GetCronJobRequest {
+  string job_id = 1;
+}
+
+message ListCronRunsRequest {
+  string job_id = 1; // "" = all jobs
+  repeated CronRunStatus statuses = 2;
+  TimeRange range = 3;
+  PageRequest page = 4; // newest first
+}
+
+message ListCronRunsResponse {
+  repeated CronRun runs = 1;
+  PageInfo page = 2;
+}
+
+message GetCronRunRequest {
+  string run_id = 1;
+}
+
+message RunCronJobNowRequest {
+  string job_id = 1;
+  SignedChange change = 2;
+}
+
+message RunCronJobNowResponse {
+  OperationRef operation = 1;
+  string run_id = 2;
+}
+
+message StreamCronRunLogsRequest {
+  string run_id = 1;
+  bool follow = 2;
+  string cursor = 3;
+}

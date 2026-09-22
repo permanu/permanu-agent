@@ -1,0 +1,142 @@
+syntax = "proto3";
+
+package permanu.agent.v2;
+
+option go_package = "github.com/permanu/permanu-ai/internal/agentpb/v2;agentv2";
+
+import "google/protobuf/timestamp.proto";
+import "agent/v2/alerts.proto";
+import "agent/v2/backups.proto";
+import "agent/v2/changes.proto";
+import "agent/v2/common.proto";
+import "agent/v2/schedules.proto";
+import "agent/v2/webhooks.proto";
+
+// EventService is a single read-only push stream of server state changes.
+// The engine keeps one Subscribe open per server and resumes with the last
+// resume_token after reconnecting.
+service EventService {
+  rpc Subscribe(SubscribeRequest) returns (stream Event);
+}
+
+enum EventKind {
+  EVENT_KIND_UNSPECIFIED = 0;
+  EVENT_KIND_DEPLOY_STATUS = 1;
+  EVENT_KIND_HEALTH = 2;
+  EVENT_KIND_ALERT = 3;
+  EVENT_KIND_CRON_RUN = 4;
+  EVENT_KIND_BACKUP_RUN = 5;
+  EVENT_KIND_WEBHOOK_RECEIVED = 6;
+  EVENT_KIND_RESOURCE_PRESSURE = 7;
+  EVENT_KIND_OPERATION = 8;
+  EVENT_KIND_TRUST_CHANGED = 9;
+  EVENT_KIND_KEEPALIVE = 10;
+  EVENT_KIND_RESYNC_REQUIRED = 11;
+}
+
+message SubscribeRequest {
+  // Empty = all kinds. KEEPALIVE and RESYNC_REQUIRED are always delivered.
+  repeated EventKind kinds = 1;
+  Scope scope = 2;
+  // Resume after this token. "" = live events only. If the token is older
+  // than the retained window, the agent sends RESYNC_REQUIRED first and
+  // continues live; the client must refetch state with List*/Get* RPCs.
+  string resume_token = 3;
+}
+
+message Event {
+  // Opaque; pass back in SubscribeRequest.resume_token.
+  string resume_token = 1;
+  // Agent-wide, strictly increasing.
+  uint64 seq = 2;
+  google.protobuf.Timestamp timestamp = 3;
+  EventKind kind = 4;
+  Scope scope = 5;
+  oneof payload {
+    DeployStatusEvent deploy = 10;
+    HealthEvent health = 11;
+    AlertEvent alert = 12;
+    CronRun cron_run = 13;
+    BackupRun backup_run = 14;
+    WebhookDelivery webhook = 15;
+    ResourcePressureEvent resource_pressure = 16;
+    Operation operation = 17;
+    TrustChangedEvent trust_changed = 18;
+    Keepalive keepalive = 19;
+    ResyncRequired resync_required = 20;
+  }
+}
+
+message DeployStatusEvent {
+  string deployment_id = 1;
+  string project = 2;
+  string service = 3;
+  string commit_sha = 4;
+  enum Phase {
+    PHASE_UNSPECIFIED = 0;
+    PHASE_QUEUED = 1;
+    PHASE_BUILDING = 2;
+    PHASE_STARTING = 3;
+    PHASE_HEALTH_CHECKING = 4;
+    PHASE_LIVE = 5;
+    PHASE_FAILED = 6;
+    PHASE_ROLLING_BACK = 7;
+    PHASE_ROLLED_BACK = 8;
+    PHASE_STOPPED = 9;
+  }
+  Phase phase = 5;
+  string message = 6;
+  string operation_id = 7;
+}
+
+message HealthEvent {
+  string check_id = 1;
+  string project = 2;
+  string service = 3;
+  string container_name = 4;
+  enum Status {
+    STATUS_UNSPECIFIED = 0;
+    STATUS_HEALTHY = 1;
+    STATUS_UNHEALTHY = 2;
+    STATUS_STARTING = 3;
+    STATUS_UNKNOWN = 4;
+  }
+  Status status = 5;
+  Status previous = 6;
+  string detail = 7;
+  int64 latency_ms = 8;
+}
+
+message ResourcePressureEvent {
+  enum Resource {
+    RESOURCE_UNSPECIFIED = 0;
+    RESOURCE_CPU = 1;
+    RESOURCE_MEMORY = 2;
+    RESOURCE_DISK = 3;
+    RESOURCE_INODES = 4;
+    RESOURCE_TELEMETRY_STORE = 5;
+  }
+  Resource resource = 1;
+  // Mount point for DISK/INODES, container name for container-level.
+  string target = 2;
+  double used_ratio = 3; // 0..1
+  double threshold = 4;
+  bool resolved = 5;
+}
+
+message TrustChangedEvent {
+  string fingerprint = 1;
+  uint64 generation = 2;
+  // "trusted_key.add" | "trusted_key.revoke" | "standing_rule.install" |
+  // "standing_rule.revoke"
+  string change = 3;
+  string subject_id = 4;
+}
+
+message Keepalive {
+  google.protobuf.Timestamp agent_time = 1;
+}
+
+message ResyncRequired {
+  string reason = 1;
+}

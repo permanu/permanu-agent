@@ -1,0 +1,169 @@
+syntax = "proto3";
+
+package permanu.agent.v2;
+
+option go_package = "github.com/permanu/permanu-ai/internal/agentpb/v2;agentv2";
+
+import "google/protobuf/duration.proto";
+import "google/protobuf/timestamp.proto";
+
+// InfoService is the handshake and server-facts surface. All RPCs are
+// read-only. Clients call Hello first on every new SSH channel.
+service InfoService {
+  // Hello negotiates the protocol version and returns agent identity,
+  // capabilities, server facts, trust-set fingerprint and clock.
+  rpc Hello(HelloRequest) returns (HelloResponse);
+  // GetServerFacts re-probes host facts (docker/swarm/dwaar state may change).
+  rpc GetServerFacts(GetServerFactsRequest) returns (ServerFacts);
+  // Ping measures round trip and clock skew.
+  rpc Ping(PingRequest) returns (PingResponse);
+}
+
+message HelloRequest {
+  // Client identity, e.g. "permanu-engine".
+  string client_name = 1;
+  string client_version = 2;
+  // Protocol versions the client speaks, e.g. ["2.0"]. The agent picks the
+  // highest common one or fails with FAILED_PRECONDITION/PROTOCOL_VERSION.
+  repeated string protocol_versions = 3;
+  google.protobuf.Timestamp client_time = 4;
+}
+
+message HelloResponse {
+  // Selected protocol version, "<major>.<minor>".
+  string protocol_version = 1;
+  AgentInfo agent = 2;
+  // Capability ids, e.g. "telemetry.logs", "telemetry.traces",
+  // "telemetry.metrics", "telemetry.analytics", "schedules.cron", "backups",
+  // "alerts", "webhooks", "builds.server", "shell", "swarm". Clients must
+  // gate UI and calls on these; missing ones return UNIMPLEMENTED.
+  repeated string capabilities = 3;
+  ServerFacts server = 4;
+  TrustedKeysSummary trusted_keys = 5;
+  ClockInfo clock = 6;
+  // Per-connection id for audit correlation.
+  string session_id = 7;
+}
+
+message AgentInfo {
+  string version = 1;
+  // Lowercase hex SHA-256 of the running binary.
+  string binary_sha256 = 2;
+  // All protocol versions this agent can serve.
+  repeated string protocol_versions = 3;
+  enum Mode {
+    MODE_UNSPECIFIED = 0;
+    MODE_LOCAL = 1;  // v2 socket only
+    MODE_HOSTED = 2; // v1 control-plane dial-out only (v2 not served)
+    MODE_BOTH = 3;
+  }
+  Mode mode = 4;
+  google.protobuf.Timestamp started_at = 5;
+  // Mirrors v1 HeartbeatRequest.agent_quarantined / quarantine_reason. While
+  // quarantined every mutating RPC fails with AGENT_QUARANTINED.
+  bool quarantined = 6;
+  string quarantine_reason = 7;
+  // Stable server identity (machine-id derived). Signed plans must name it.
+  string server_id = 8;
+}
+
+message TrustedKeysSummary {
+  // Lowercase hex SHA-256 over the canonical trusted-keys file.
+  string fingerprint = 1;
+  uint32 key_count = 2;
+  // Monotonic generation, bumped on every add/revoke.
+  uint64 generation = 3;
+}
+
+message ClockInfo {
+  google.protobuf.Timestamp agent_time = 1;
+  bool ntp_synchronized = 2;
+  // Agent-estimated skew versus HelloRequest.client_time (agent - client).
+  google.protobuf.Duration estimated_skew = 3;
+  string timezone = 4; // IANA name of the host timezone
+}
+
+message GetServerFactsRequest {}
+
+message ServerFacts {
+  string hostname = 1;
+  string machine_id = 2;
+  OsInfo os = 3;
+  string arch = 4; // "amd64" | "arm64"
+  CpuInfo cpu = 5;
+  uint64 memory_total_bytes = 6;
+  uint64 memory_available_bytes = 7;
+  repeated DiskInfo disks = 8;
+  DockerInfo docker = 9;
+  DwaarInfo dwaar = 10;
+  string public_ipv4 = 11;
+  string public_ipv6 = 12;
+  google.protobuf.Timestamp boot_time = 13;
+  // Same values as v1 HeartbeatRequest.buildx_status.
+  string buildx_status = 14;
+  google.protobuf.Timestamp probed_at = 15;
+}
+
+message OsInfo {
+  string name = 1;    // e.g. "ubuntu"
+  string version = 2; // e.g. "24.04"
+  string kernel = 3;
+}
+
+message CpuInfo {
+  string model = 1;
+  uint32 cores = 2;
+}
+
+message DiskInfo {
+  string mount = 1;
+  string filesystem = 2;
+  uint64 total_bytes = 3;
+  uint64 used_bytes = 4;
+}
+
+message DockerInfo {
+  bool installed = 1;
+  bool reachable = 2;
+  string version = 3;
+  string storage_driver = 4;
+  SwarmInfo swarm = 5;
+}
+
+message SwarmInfo {
+  enum State {
+    STATE_UNSPECIFIED = 0;
+    STATE_INACTIVE = 1;
+    STATE_PENDING = 2;
+    STATE_ACTIVE = 3;
+    STATE_ERROR = 4;
+    STATE_LOCKED = 5;
+  }
+  State state = 1;
+  enum Role {
+    ROLE_UNSPECIFIED = 0;
+    ROLE_MANAGER = 1;
+    ROLE_WORKER = 2;
+  }
+  Role role = 2;
+  string node_id = 3;
+  string cluster_id = 4;
+  uint32 managers = 5;
+  uint32 nodes = 6;
+}
+
+message DwaarInfo {
+  bool installed = 1;
+  bool running = 2;
+  string version = 3;
+  bool admin_socket_reachable = 4;
+}
+
+message PingRequest {
+  google.protobuf.Timestamp client_time = 1;
+}
+
+message PingResponse {
+  google.protobuf.Timestamp client_time = 1; // echoed
+  google.protobuf.Timestamp agent_time = 2;
+}

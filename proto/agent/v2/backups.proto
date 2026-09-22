@@ -1,0 +1,210 @@
+syntax = "proto3";
+
+package permanu.agent.v2;
+
+option go_package = "github.com/permanu/permanu-ai/internal/agentpb/v2;agentv2";
+
+import "google/protobuf/duration.proto";
+import "google/protobuf/timestamp.proto";
+import "agent/v2/common.proto";
+
+// BackupService exposes backup policies, runs, verify-restore results and
+// artifacts. All RPCs are read-only. Mutations are signed changes via
+// ChangeService.SubmitSignedPlan: "backup.policy.upsert",
+// "backup.policy.delete", "backup.run", "backup.verify" and
+// "backup.restore" (restore always needs a direct signature, never a
+// standing rule).
+service BackupService {
+  rpc ListBackupPolicies(ListBackupPoliciesRequest) returns (ListBackupPoliciesResponse);
+  rpc GetBackupPolicy(GetBackupPolicyRequest) returns (BackupPolicy);
+  rpc ListBackupRuns(ListBackupRunsRequest) returns (ListBackupRunsResponse);
+  rpc GetBackupRun(GetBackupRunRequest) returns (BackupRun);
+  rpc ListRestoreVerifications(ListRestoreVerificationsRequest) returns (ListRestoreVerificationsResponse);
+  rpc ListBackupArtifacts(ListBackupArtifactsRequest) returns (ListBackupArtifactsResponse);
+}
+
+message BackupSource {
+  enum Kind {
+    KIND_UNSPECIFIED = 0;
+    KIND_POSTGRES = 1; // pg_dump custom format
+    KIND_MYSQL = 2;
+    KIND_REDIS = 3;
+    KIND_VOLUME = 4;   // tar of a docker volume
+  }
+  Kind kind = 1;
+  string service = 2;
+  string database = 3;
+  string volume = 4;
+}
+
+message BackupDestination {
+  enum Kind {
+    KIND_UNSPECIFIED = 0;
+    KIND_LOCAL = 1;
+    KIND_S3 = 2;
+    KIND_R2 = 3;
+    KIND_B2 = 4;
+    KIND_SFTP = 5;
+  }
+  Kind kind = 1;
+  string bucket = 2;
+  string prefix = 3;
+  string endpoint = 4;
+  string region = 5;
+  // Name of the server-side credential; the value is never returned.
+  string credential_ref = 6;
+}
+
+message BackupRetention {
+  uint32 keep_last = 1;
+  uint32 keep_daily = 2;
+  uint32 keep_weekly = 3;
+  uint32 keep_monthly = 4;
+}
+
+message BackupPolicy {
+  string id = 1;
+  string name = 2;
+  Scope scope = 3;
+  BackupSource source = 4;
+  BackupDestination destination = 5;
+  string schedule = 6; // cron expression
+  string timezone = 7;
+  BackupRetention retention = 8;
+  // age recipient fingerprints the artifact is encrypted to.
+  repeated string age_recipients = 9;
+  // Verify-restore schedule (default weekly). "" = disabled.
+  string verify_schedule = 10;
+  google.protobuf.Duration timeout = 11;
+  bool enabled = 12;
+  // NotificationChannel ids for failure alerts.
+  repeated string channel_ids = 13;
+  google.protobuf.Timestamp next_run_at = 14;
+  BackupRun last_run = 15;
+  RestoreVerification last_verification = 16;
+  string plan_digest = 17;
+}
+
+enum BackupRunStatus {
+  BACKUP_RUN_STATUS_UNSPECIFIED = 0;
+  BACKUP_RUN_STATUS_PENDING = 1;
+  BACKUP_RUN_STATUS_DUMPING = 2;
+  BACKUP_RUN_STATUS_ENCRYPTING = 3;
+  BACKUP_RUN_STATUS_UPLOADING = 4;
+  BACKUP_RUN_STATUS_SUCCEEDED = 5;
+  BACKUP_RUN_STATUS_FAILED = 6;
+  BACKUP_RUN_STATUS_CANCELLED = 7;
+}
+
+message BackupRun {
+  string id = 1;
+  string policy_id = 2;
+  BackupRunStatus status = 3;
+  enum Trigger {
+    TRIGGER_UNSPECIFIED = 0;
+    TRIGGER_SCHEDULE = 1;
+    TRIGGER_MANUAL = 2;
+    TRIGGER_PRE_CHANGE = 3; // taken automatically before a migration/restore/upgrade
+  }
+  Trigger trigger = 4;
+  google.protobuf.Timestamp started_at = 5;
+  google.protobuf.Timestamp finished_at = 6;
+  uint64 size_bytes = 7;
+  string artifact_id = 8;
+  string error = 9;
+  string operation_id = 10;
+}
+
+enum RestoreVerificationStatus {
+  RESTORE_VERIFICATION_STATUS_UNSPECIFIED = 0;
+  RESTORE_VERIFICATION_STATUS_RUNNING = 1;
+  RESTORE_VERIFICATION_STATUS_PASSED = 2;
+  RESTORE_VERIFICATION_STATUS_FAILED = 3;
+}
+
+// RestoreVerification is the result of restoring an artifact into a
+// throwaway container and running sanity checks.
+message RestoreVerification {
+  string id = 1;
+  string policy_id = 2;
+  string artifact_id = 3;
+  RestoreVerificationStatus status = 4;
+  google.protobuf.Timestamp started_at = 5;
+  google.protobuf.Timestamp finished_at = 6;
+  repeated VerificationCheck checks = 7;
+  string error = 8;
+}
+
+message VerificationCheck {
+  string name = 1; // e.g. "tables_present", "row_count:public.users"
+  bool passed = 2;
+  string detail = 3;
+}
+
+message BackupArtifact {
+  string id = 1;
+  string policy_id = 2;
+  string run_id = 3;
+  // Destination URI with credentials stripped.
+  string location = 4;
+  uint64 size_bytes = 5;
+  string sha256 = 6;
+  bool encrypted = 7;
+  repeated string age_recipients = 8;
+  google.protobuf.Timestamp created_at = 9;
+  // When retention will delete it; unset while a keep_* rule holds it.
+  google.protobuf.Timestamp expires_at = 10;
+  RestoreVerificationStatus last_verification = 11;
+}
+
+message ListBackupPoliciesRequest {
+  Scope scope = 1;
+  PageRequest page = 2;
+}
+
+message ListBackupPoliciesResponse {
+  repeated BackupPolicy policies = 1;
+  PageInfo page = 2;
+}
+
+message GetBackupPolicyRequest {
+  string policy_id = 1;
+}
+
+message ListBackupRunsRequest {
+  string policy_id = 1;
+  repeated BackupRunStatus statuses = 2;
+  TimeRange range = 3;
+  PageRequest page = 4; // newest first
+}
+
+message ListBackupRunsResponse {
+  repeated BackupRun runs = 1;
+  PageInfo page = 2;
+}
+
+message GetBackupRunRequest {
+  string run_id = 1;
+}
+
+message ListRestoreVerificationsRequest {
+  string policy_id = 1;
+  string artifact_id = 2;
+  PageRequest page = 3;
+}
+
+message ListRestoreVerificationsResponse {
+  repeated RestoreVerification verifications = 1;
+  PageInfo page = 2;
+}
+
+message ListBackupArtifactsRequest {
+  string policy_id = 1;
+  TimeRange range = 2;
+  PageRequest page = 3;
+}
+
+message ListBackupArtifactsResponse {
+  repeated BackupArtifact artifacts = 1;
+  PageInfo page = 2;
+}

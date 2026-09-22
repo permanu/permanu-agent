@@ -1,0 +1,215 @@
+syntax = "proto3";
+
+package permanu.agent.v2;
+
+option go_package = "github.com/permanu/permanu-ai/internal/agentpb/v2;agentv2";
+
+import "google/protobuf/duration.proto";
+import "google/protobuf/timestamp.proto";
+import "agent/v2/common.proto";
+import "agent/v2/telemetry.proto";
+
+// AlertService exposes the on-server alert evaluator. Reads and channel tests
+// are unsigned. Rule/channel mutations are signed changes via
+// ChangeService.SubmitSignedPlan: "alert.rule.upsert", "alert.rule.delete",
+// "alert.channel.upsert", "alert.channel.delete", "alert.silence".
+service AlertService {
+  rpc ListAlertRules(ListAlertRulesRequest) returns (ListAlertRulesResponse);
+  rpc GetAlertRule(GetAlertRuleRequest) returns (AlertRule);
+  rpc ListNotificationChannels(ListNotificationChannelsRequest) returns (ListNotificationChannelsResponse);
+  // TestNotificationChannel sends a fixed test message. Rate limited to one
+  // test per channel per 10 s. No user-supplied content is sent.
+  rpc TestNotificationChannel(TestNotificationChannelRequest) returns (TestNotificationChannelResponse);
+  // ListAlertEvents streams alert history in ascending time order, then
+  // live events when follow=true.
+  rpc ListAlertEvents(ListAlertEventsRequest) returns (stream AlertEventsResponse);
+}
+
+enum AlertSeverity {
+  ALERT_SEVERITY_UNSPECIFIED = 0;
+  ALERT_SEVERITY_INFO = 1;
+  ALERT_SEVERITY_WARNING = 2;
+  ALERT_SEVERITY_CRITICAL = 3;
+}
+
+enum ComparisonOp {
+  COMPARISON_OP_UNSPECIFIED = 0;
+  COMPARISON_OP_GT = 1;
+  COMPARISON_OP_GTE = 2;
+  COMPARISON_OP_LT = 3;
+  COMPARISON_OP_LTE = 4;
+  COMPARISON_OP_EQ = 5;
+  COMPARISON_OP_NEQ = 6;
+}
+
+// MetricCondition fires when the aggregated metric crosses threshold for
+// the whole for_duration.
+message MetricCondition {
+  string metric = 1;
+  repeated LabelMatcher matchers = 2;
+  MetricAggregation aggregation = 3;
+  google.protobuf.Duration window = 4;
+  ComparisonOp op = 5;
+  double threshold = 6;
+  google.protobuf.Duration for_duration = 7;
+}
+
+// LogCondition fires when more than `count` matching records arrive in window.
+message LogCondition {
+  Scope scope = 1;
+  LogLevel min_level = 2;
+  string contains = 3;
+  string regex = 4;
+  google.protobuf.Duration window = 5;
+  uint32 count = 6;
+}
+
+// EventCondition fires on built-in events.
+message EventCondition {
+  enum Kind {
+    KIND_UNSPECIFIED = 0;
+    KIND_DEPLOY_FAILED = 1;
+    KIND_ROLLBACK = 2;
+    KIND_HEALTH_CHECK_FAILING = 3;
+    KIND_CONTAINER_OOM = 4;
+    KIND_CONTAINER_RESTART_LOOP = 5;
+    KIND_CRON_FAILED = 6;
+    KIND_CRON_MISSED = 7;
+    KIND_BACKUP_FAILED = 8;
+    KIND_RESTORE_VERIFICATION_FAILED = 9;
+    KIND_CERT_EXPIRING = 10;
+    KIND_DISK_PRESSURE = 11;
+    KIND_MEMORY_PRESSURE = 12;
+    KIND_WEBHOOK_BUILD_FAILED = 13;
+    KIND_TELEMETRY_DROPPING = 14;
+  }
+  Kind kind = 1;
+  Scope scope = 2;
+}
+
+message AlertRule {
+  string id = 1;
+  string name = 2;
+  AlertSeverity severity = 3;
+  oneof condition {
+    MetricCondition metric = 4;
+    LogCondition log = 5;
+    EventCondition event = 6;
+  }
+  // NotificationChannel ids.
+  repeated string channel_ids = 7;
+  // Minimum gap between repeated notifications while firing.
+  google.protobuf.Duration repeat_interval = 8;
+  bool notify_on_resolve = 9;
+  bool enabled = 10;
+  // Silenced until this time (signed "alert.silence").
+  google.protobuf.Timestamp silenced_until = 11;
+  AlertState state = 12;
+  google.protobuf.Timestamp state_since = 13;
+  string plan_digest = 14;
+}
+
+enum AlertState {
+  ALERT_STATE_UNSPECIFIED = 0;
+  ALERT_STATE_OK = 1;
+  ALERT_STATE_PENDING = 2; // condition true, for_duration not yet elapsed
+  ALERT_STATE_FIRING = 3;
+  ALERT_STATE_RESOLVED = 4;
+  ALERT_STATE_NO_DATA = 5;
+}
+
+message NotificationChannel {
+  string id = 1;
+  string name = 2;
+  enum Kind {
+    KIND_UNSPECIFIED = 0;
+    KIND_SLACK = 1;   // incoming webhook
+    KIND_DISCORD = 2; // webhook
+    KIND_WEBHOOK = 3; // generic HTTPS POST, HMAC-signed body
+  }
+  Kind kind = 3;
+  // Redacted target for display, e.g. "hooks.slack.com/services/T0…/…".
+  // The full URL/secret lives server-side under credential_ref.
+  string target_display = 4;
+  string credential_ref = 5;
+  bool enabled = 6;
+  DeliveryResult last_delivery = 7;
+  string plan_digest = 8;
+}
+
+message DeliveryResult {
+  string channel_id = 1;
+  bool ok = 2;
+  int32 http_status = 3;
+  string error = 4;
+  google.protobuf.Timestamp attempted_at = 5;
+  uint32 attempts = 6;
+}
+
+message AlertEvent {
+  string id = 1;
+  string rule_id = 2;
+  string rule_name = 3;
+  AlertSeverity severity = 4;
+  AlertState state = 5; // FIRING or RESOLVED
+  string summary = 6;
+  map<string, string> labels = 7;
+  double value = 8;
+  google.protobuf.Timestamp started_at = 9;
+  google.protobuf.Timestamp resolved_at = 10;
+  repeated DeliveryResult deliveries = 11;
+  // Opaque cursor for resuming ListAlertEvents.
+  string cursor = 12;
+}
+
+message ListAlertRulesRequest {
+  repeated AlertState states = 1;
+  PageRequest page = 2;
+}
+
+message ListAlertRulesResponse {
+  repeated AlertRule rules = 1;
+  PageInfo page = 2;
+}
+
+message GetAlertRuleRequest {
+  string rule_id = 1;
+}
+
+message ListNotificationChannelsRequest {
+  PageRequest page = 1;
+}
+
+message ListNotificationChannelsResponse {
+  repeated NotificationChannel channels = 1;
+  PageInfo page = 2;
+}
+
+message TestNotificationChannelRequest {
+  string channel_id = 1;
+}
+
+message TestNotificationChannelResponse {
+  DeliveryResult result = 1;
+}
+
+message ListAlertEventsRequest {
+  string rule_id = 1;
+  repeated AlertSeverity severities = 2;
+  TimeRange range = 3;
+  // 0 = 200; max 2000.
+  uint32 limit = 4;
+  string cursor = 5;
+  bool follow = 6;
+}
+
+message AlertEventBatch {
+  repeated AlertEvent events = 1;
+}
+
+message AlertEventsResponse {
+  oneof frame {
+    AlertEventBatch batch = 1;
+    StreamStatus status = 2;
+  }
+}

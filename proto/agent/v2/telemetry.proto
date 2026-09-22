@@ -1,0 +1,457 @@
+syntax = "proto3";
+
+package permanu.agent.v2;
+
+option go_package = "github.com/permanu/permanu-ai/internal/agentpb/v2;agentv2";
+
+import "google/protobuf/duration.proto";
+import "google/protobuf/timestamp.proto";
+import "agent/v2/common.proto";
+
+// TelemetryService queries the server-local telemetry store (logs, traces,
+// metrics, Dwaar analytics). All RPCs are read-only. Retention changes are
+// signed changes (plan action "telemetry.retention.set") submitted through
+// ChangeService.SubmitSignedPlan.
+//
+// Records are redacted before they are written to the store, so nothing
+// returned here contains secret values.
+service TelemetryService {
+  // QueryLogs streams matching log records in ascending time order, then
+  // (follow=true) continues with live records until the client cancels.
+  rpc QueryLogs(LogQuery) returns (stream LogQueryResponse);
+  // SearchTraces streams trace summaries matching the search.
+  rpc SearchTraces(TraceSearch) returns (stream TraceSearchResponse);
+  // GetTrace returns one trace with its spans (capped, see truncated).
+  rpc GetTrace(GetTraceRequest) returns (Trace);
+  // QueryMetrics streams series for a metric query; follow=true appends
+  // new points every step.
+  rpc QueryMetrics(MetricQuery) returns (stream MetricQueryResponse);
+  // ListMetrics enumerates known metric names and their label keys.
+  rpc ListMetrics(ListMetricsRequest) returns (ListMetricsResponse);
+  // QueryAnalytics streams Dwaar analytics rows grouped by the requested
+  // dimensions; follow=true appends new time buckets as they close.
+  rpc QueryAnalytics(AnalyticsQuery) returns (stream AnalyticsQueryResponse);
+  // GetTelemetryUsage reports retention config and storage usage per kind.
+  rpc GetTelemetryUsage(GetTelemetryUsageRequest) returns (GetTelemetryUsageResponse);
+}
+
+// ---------------------------------------------------------------- Logs
+
+enum LogLevel {
+  LOG_LEVEL_UNSPECIFIED = 0;
+  LOG_LEVEL_TRACE = 1;
+  LOG_LEVEL_DEBUG = 2;
+  LOG_LEVEL_INFO = 3;
+  LOG_LEVEL_WARN = 4;
+  LOG_LEVEL_ERROR = 5;
+  LOG_LEVEL_FATAL = 6;
+}
+
+enum LogSourceType {
+  LOG_SOURCE_TYPE_UNSPECIFIED = 0;
+  LOG_SOURCE_TYPE_APP = 1;     // app container stdout/stderr
+  LOG_SOURCE_TYPE_SERVICE = 2; // managed service container (postgres, redis, ...)
+  LOG_SOURCE_TYPE_DWAAR = 3;   // proxy access/error logs
+  LOG_SOURCE_TYPE_AGENT = 4;   // the agent's own logs
+  LOG_SOURCE_TYPE_BUILD = 5;   // on-server build and deploy phases
+  LOG_SOURCE_TYPE_CRON = 6;    // cron run output
+  LOG_SOURCE_TYPE_BACKUP = 7;  // backup and verify-restore runs
+  LOG_SOURCE_TYPE_HOST = 8;    // allowlisted host diagnostics (journald units)
+}
+
+message LogQuery {
+  Scope scope = 1;
+  // Empty means all source types.
+  repeated LogSourceType source_types = 2;
+  // Minimum level; UNSPECIFIED matches all, including records without level.
+  LogLevel min_level = 3;
+  // Substring match on message (case-insensitive when case_insensitive).
+  string contains = 4;
+  // RE2 regex on message, max 512 bytes. Combined with contains by AND.
+  string regex = 5;
+  bool case_insensitive = 6;
+  // since = range.start, until = range.end.
+  TimeRange range = 7;
+  // When > 0, first return the last `tail` matching records before
+  // range.end (or now), still in ascending order. Max 10000.
+  uint32 tail = 8;
+  // Keep the stream open and deliver new matching records.
+  bool follow = 9;
+  // Max historical records (not counting follow). 0 = 1000; max 10000.
+  uint32 limit = 10;
+  // Resume after this cursor (from LogRecord.cursor or StreamStatus.cursor).
+  // Takes precedence over range.start and tail.
+  string cursor = 11;
+  // Match exact trace id (lowercase hex).
+  string trace_id = 12;
+  // Match container name or id.
+  string container = 13;
+}
+
+message LogRecord {
+  // Opaque, monotonically ordered cursor for this record.
+  string cursor = 1;
+  google.protobuf.Timestamp timestamp = 2;
+  LogLevel level = 3;
+  string message = 4;
+  LogSourceType source_type = 5;
+  // v1-compatible source string ("dwaar", "app:{slug}", "service:{name}").
+  string source = 6;
+  // Source identity (AGENTS.md logging contract).
+  string container_id = 7;
+  string container_name = 8;
+  string image = 9;
+  string compose_project = 10;
+  string host = 11;
+  string project = 12;
+  string service = 13;
+  string app_id = 14;
+  string deployment_id = 15;
+  string stream = 16; // "stdout" | "stderr" | ""
+  string trace_id = 17;
+  string span_id = 18;
+  map<string, string> fields = 19;
+  // True when redaction altered this record.
+  bool redacted = 20;
+}
+
+message LogBatch {
+  repeated LogRecord records = 1;
+}
+
+message LogQueryResponse {
+  oneof frame {
+    LogBatch batch = 1;
+    StreamStatus status = 2;
+  }
+}
+
+// ---------------------------------------------------------------- Traces
+
+enum SpanStatusCode {
+  SPAN_STATUS_CODE_UNSPECIFIED = 0; // OTLP UNSET
+  SPAN_STATUS_CODE_OK = 1;
+  SPAN_STATUS_CODE_ERROR = 2;
+}
+
+enum SpanKind {
+  SPAN_KIND_UNSPECIFIED = 0;
+  SPAN_KIND_INTERNAL = 1;
+  SPAN_KIND_SERVER = 2;
+  SPAN_KIND_CLIENT = 3;
+  SPAN_KIND_PRODUCER = 4;
+  SPAN_KIND_CONSUMER = 5;
+}
+
+message AttributeFilter {
+  string key = 1;
+  enum Op {
+    OP_UNSPECIFIED = 0; // treated as EQ
+    OP_EQ = 1;
+    OP_NEQ = 2;
+    OP_EXISTS = 3;
+    OP_REGEX = 4;
+  }
+  Op op = 2;
+  string value = 3;
+}
+
+message TraceSearch {
+  Scope scope = 1;
+  // OTel service.name of any span in the trace.
+  string service_name = 2;
+  // Root or any span name (exact).
+  string span_name = 3;
+  google.protobuf.Duration min_duration = 4;
+  google.protobuf.Duration max_duration = 5;
+  // UNSPECIFIED = any; ERROR = trace contains an error span.
+  SpanStatusCode status = 6;
+  repeated AttributeFilter attributes = 7;
+  TimeRange range = 8;
+  // 0 = 100; max 1000.
+  uint32 limit = 9;
+  string cursor = 10;
+  bool follow = 11;
+}
+
+message TraceSummary {
+  string trace_id = 1;
+  string root_service = 2;
+  string root_span_name = 3;
+  google.protobuf.Timestamp start_time = 4;
+  google.protobuf.Duration duration = 5;
+  uint32 span_count = 6;
+  uint32 error_span_count = 7;
+  repeated string services = 8;
+  // HTTP status of the root span when present.
+  int32 http_status = 9;
+  string deployment_id = 10;
+  string cursor = 11;
+}
+
+message TraceSummaryBatch {
+  repeated TraceSummary traces = 1;
+}
+
+message TraceSearchResponse {
+  oneof frame {
+    TraceSummaryBatch batch = 1;
+    StreamStatus status = 2;
+  }
+}
+
+message GetTraceRequest {
+  string trace_id = 1;
+}
+
+message Trace {
+  string trace_id = 1;
+  repeated Span spans = 2;
+  // True when span_count exceeded the cap (10000 spans or 4 MiB).
+  bool truncated = 3;
+}
+
+message Span {
+  string trace_id = 1;
+  string span_id = 2;
+  string parent_span_id = 3;
+  string name = 4;
+  SpanKind kind = 5;
+  string service_name = 6;
+  google.protobuf.Timestamp start_time = 7;
+  google.protobuf.Duration duration = 8;
+  SpanStatusCode status = 9;
+  string status_message = 10;
+  // OTLP attributes rendered as strings (arrays/maps as JSON). Redacted.
+  map<string, string> attributes = 11;
+  map<string, string> resource_attributes = 12;
+  repeated SpanEvent events = 13;
+}
+
+message SpanEvent {
+  string name = 1;
+  google.protobuf.Timestamp time = 2;
+  map<string, string> attributes = 3;
+}
+
+// ---------------------------------------------------------------- Metrics
+
+message LabelMatcher {
+  string name = 1;
+  enum Op {
+    OP_UNSPECIFIED = 0; // treated as EQ
+    OP_EQ = 1;
+    OP_NEQ = 2;
+    OP_REGEX = 3;
+    OP_NOT_REGEX = 4;
+  }
+  Op op = 2;
+  string value = 3;
+}
+
+enum MetricAggregation {
+  METRIC_AGGREGATION_UNSPECIFIED = 0; // raw (last value per step)
+  METRIC_AGGREGATION_AVG = 1;
+  METRIC_AGGREGATION_SUM = 2;
+  METRIC_AGGREGATION_MIN = 3;
+  METRIC_AGGREGATION_MAX = 4;
+  METRIC_AGGREGATION_RATE = 5; // per-second rate for counters
+  METRIC_AGGREGATION_P50 = 6;  // histograms only
+  METRIC_AGGREGATION_P95 = 7;
+  METRIC_AGGREGATION_P99 = 8;
+}
+
+enum MetricSource {
+  METRIC_SOURCE_UNSPECIFIED = 0;
+  METRIC_SOURCE_HOST = 1;      // host.* (cpu, memory, disk, net, load)
+  METRIC_SOURCE_CONTAINER = 2; // container.* (labels: container, project, service)
+  METRIC_SOURCE_SERVICE = 3;   // managed-service gauges/counters (postgres, redis)
+  METRIC_SOURCE_PROXY = 4;     // dwaar.* per-route request metrics
+  METRIC_SOURCE_APP = 5;       // app-emitted (statsd / OTLP metrics)
+}
+
+message MetricQuery {
+  // Metric name, e.g. "host.cpu.percent", "container.memory.used_bytes".
+  string name = 1;
+  repeated LabelMatcher matchers = 2;
+  TimeRange range = 3;
+  // Resolution. 0 = auto (range / 300, min 10 s).
+  google.protobuf.Duration step = 4;
+  MetricAggregation aggregation = 5;
+  // Labels kept when aggregating; others are aggregated away.
+  repeated string group_by = 6;
+  bool follow = 7;
+  // 0 = 100; max 500 series.
+  uint32 max_series = 8;
+}
+
+message MetricPoint {
+  google.protobuf.Timestamp timestamp = 1;
+  double value = 2;
+}
+
+message MetricSeries {
+  string name = 1;
+  map<string, string> labels = 2;
+  string unit = 3;
+  // Max 11000 points per series per frame.
+  repeated MetricPoint points = 4;
+}
+
+message MetricSeriesBatch {
+  repeated MetricSeries series = 1;
+}
+
+message MetricQueryResponse {
+  oneof frame {
+    MetricSeriesBatch batch = 1;
+    StreamStatus status = 2;
+  }
+}
+
+message ListMetricsRequest {
+  MetricSource source = 1; // UNSPECIFIED = all
+  string name_prefix = 2;
+  PageRequest page = 3;
+}
+
+message MetricDescriptor {
+  string name = 1;
+  enum Kind {
+    KIND_UNSPECIFIED = 0;
+    KIND_GAUGE = 1;
+    KIND_COUNTER = 2;
+    KIND_HISTOGRAM = 3;
+  }
+  Kind kind = 2;
+  MetricSource source = 3;
+  string unit = 4;
+  string description = 5;
+  repeated string label_keys = 6;
+}
+
+message ListMetricsResponse {
+  repeated MetricDescriptor metrics = 1;
+  PageInfo page = 2;
+}
+
+// ---------------------------------------------------------------- Analytics
+
+enum AnalyticsDimension {
+  ANALYTICS_DIMENSION_UNSPECIFIED = 0;
+  ANALYTICS_DIMENSION_DOMAIN = 1;
+  ANALYTICS_DIMENSION_PATH = 2;
+  ANALYTICS_DIMENSION_STATUS_CLASS = 3; // 1xx..5xx
+  ANALYTICS_DIMENSION_COUNTRY = 4;      // ISO 3166-1 alpha-2
+  ANALYTICS_DIMENSION_REFERRER = 5;     // referrer domain
+  ANALYTICS_DIMENSION_DEVICE = 6;       // mobile|desktop|tablet|bot|unknown
+  ANALYTICS_DIMENSION_BOT = 7;          // human|bot
+  ANALYTICS_DIMENSION_UTM_SOURCE = 8;
+  ANALYTICS_DIMENSION_UTM_MEDIUM = 9;
+  ANALYTICS_DIMENSION_UTM_CAMPAIGN = 10;
+  ANALYTICS_DIMENSION_UTM_TERM = 11;
+  ANALYTICS_DIMENSION_UTM_CONTENT = 12;
+  ANALYTICS_DIMENSION_LATENCY_BUCKET = 13; // Dwaar "le" labels
+}
+
+enum AnalyticsMeasure {
+  ANALYTICS_MEASURE_UNSPECIFIED = 0;
+  ANALYTICS_MEASURE_REQUESTS = 1;
+  ANALYTICS_MEASURE_PAGE_VIEWS = 2;
+  ANALYTICS_MEASURE_UNIQUE_VISITORS = 3;
+  ANALYTICS_MEASURE_BYTES_SENT = 4;
+  ANALYTICS_MEASURE_LATENCY_P50_MS = 5;
+  ANALYTICS_MEASURE_LATENCY_P95_MS = 6;
+  ANALYTICS_MEASURE_LATENCY_P99_MS = 7;
+  ANALYTICS_MEASURE_ERROR_RATE = 8; // 5xx / requests
+  ANALYTICS_MEASURE_BOT_REQUESTS = 9;
+  ANALYTICS_MEASURE_LCP_P75_MS = 10;
+  ANALYTICS_MEASURE_CLS_P75 = 11;
+  ANALYTICS_MEASURE_INP_P75_MS = 12;
+  ANALYTICS_MEASURE_CACHE_HIT_RATIO = 13;
+}
+
+message AnalyticsQuery {
+  // Empty = all domains routed by this server's Dwaar.
+  repeated string domains = 1;
+  TimeRange range = 2;
+  // Time bucket width. 0 = a single bucket covering the whole range.
+  // Minimum 60 s (Dwaar flush window).
+  google.protobuf.Duration bucket = 3;
+  // Max 2 dimensions.
+  repeated AnalyticsDimension group_by = 4;
+  // Empty = REQUESTS, PAGE_VIEWS, UNIQUE_VISITORS.
+  repeated AnalyticsMeasure measures = 5;
+  string path_prefix = 6;
+  bool exclude_bots = 7;
+  // Top-N rows per bucket by the first measure. 0 = 50; max 500.
+  uint32 limit = 8;
+  bool follow = 9;
+}
+
+message AnalyticsDimensionValue {
+  AnalyticsDimension dimension = 1;
+  string value = 2;
+}
+
+message AnalyticsMeasureValue {
+  AnalyticsMeasure measure = 1;
+  double value = 2;
+}
+
+message AnalyticsRow {
+  google.protobuf.Timestamp bucket_start = 1;
+  repeated AnalyticsDimensionValue dimensions = 2;
+  repeated AnalyticsMeasureValue values = 3;
+}
+
+message AnalyticsRowBatch {
+  repeated AnalyticsRow rows = 1;
+}
+
+message AnalyticsQueryResponse {
+  oneof frame {
+    AnalyticsRowBatch batch = 1;
+    StreamStatus status = 2;
+  }
+}
+
+// ---------------------------------------------------------------- Usage
+
+enum TelemetryKind {
+  TELEMETRY_KIND_UNSPECIFIED = 0;
+  TELEMETRY_KIND_LOGS = 1;
+  TELEMETRY_KIND_TRACES = 2;
+  TELEMETRY_KIND_METRICS = 3;
+  TELEMETRY_KIND_ANALYTICS = 4;
+}
+
+// RetentionPolicy is enforced per kind; whichever limit hits first evicts
+// the oldest data. Changed only via signed action "telemetry.retention.set".
+message RetentionPolicy {
+  google.protobuf.Duration max_age = 1;
+  uint64 max_bytes = 2;
+}
+
+message GetTelemetryUsageRequest {}
+
+message TelemetryUsage {
+  TelemetryKind kind = 1;
+  RetentionPolicy retention = 2;
+  uint64 bytes_used = 3;
+  uint64 records = 4;
+  google.protobuf.Timestamp oldest = 5;
+  google.protobuf.Timestamp newest = 6;
+  // Records dropped by spool/backpressure limits since agent start.
+  uint64 dropped_total = 7;
+  // Records evicted by retention since agent start.
+  uint64 evicted_total = 8;
+  double ingest_per_second = 9;
+}
+
+message GetTelemetryUsageResponse {
+  repeated TelemetryUsage kinds = 1;
+  uint64 disk_free_bytes = 2;
+  // Plan digest of the last applied retention change ("" = defaults).
+  string retention_plan_digest = 3;
+}

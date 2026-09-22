@@ -1,0 +1,132 @@
+syntax = "proto3";
+
+package permanu.agent.v2;
+
+option go_package = "github.com/permanu/permanu-ai/internal/agentpb/v2;agentv2";
+
+import "google/protobuf/timestamp.proto";
+import "agent/v2/common.proto";
+
+// WebhookService exposes the queue of git-provider webhooks that Dwaar
+// forwards to the agent, and builds the agent ran on the server when no Mac
+// was online. All RPCs are read-only. A delivery only turns into a build
+// when it matches an installed standing rule (e.g. auto-deploy main ->
+// production); otherwise it waits for the engine.
+service WebhookService {
+  rpc ListWebhookDeliveries(ListWebhookDeliveriesRequest) returns (ListWebhookDeliveriesResponse);
+  rpc GetWebhookDelivery(GetWebhookDeliveryRequest) returns (WebhookDelivery);
+  rpc GetWebhookQueueStatus(GetWebhookQueueStatusRequest) returns (WebhookQueueStatus);
+  rpc ListServerBuilds(ListServerBuildsRequest) returns (ListServerBuildsResponse);
+  rpc GetServerBuild(GetServerBuildRequest) returns (ServerBuild);
+}
+
+enum WebhookDeliveryStatus {
+  WEBHOOK_DELIVERY_STATUS_UNSPECIFIED = 0;
+  WEBHOOK_DELIVERY_STATUS_PENDING = 1;          // queued, waiting for engine or rule
+  WEBHOOK_DELIVERY_STATUS_CLAIMED_BY_ENGINE = 2; // a Mac engine took it
+  WEBHOOK_DELIVERY_STATUS_BUILDING = 3;         // on-server build in progress
+  WEBHOOK_DELIVERY_STATUS_DEPLOYED = 4;
+  WEBHOOK_DELIVERY_STATUS_IGNORED = 5;          // no matching project/branch/rule
+  WEBHOOK_DELIVERY_STATUS_REJECTED = 6;         // bad signature or malformed
+  WEBHOOK_DELIVERY_STATUS_FAILED = 7;
+  WEBHOOK_DELIVERY_STATUS_EXPIRED = 8;
+}
+
+message WebhookDelivery {
+  string id = 1;
+  google.protobuf.Timestamp received_at = 2;
+  string provider = 3;   // "github" | "gitlab" | "gitea" | "generic"
+  string event = 4;      // e.g. "push", "pull_request"
+  string delivery_ref = 5; // provider delivery id (X-GitHub-Delivery)
+  string repository = 6;
+  string ref = 7;
+  string commit_sha = 8;
+  string project = 9;
+  bool signature_valid = 10;
+  WebhookDeliveryStatus status = 11;
+  string status_reason = 12;
+  // Standing rule that authorized an on-server build, if any.
+  string standing_rule_id = 13;
+  string operation_id = 14;
+  string build_id = 15;
+  uint32 attempts = 16;
+  google.protobuf.Timestamp processed_at = 17;
+  // Body is not returned; only its digest and size.
+  string body_sha256 = 18;
+  uint64 body_bytes = 19;
+}
+
+message ListWebhookDeliveriesRequest {
+  repeated WebhookDeliveryStatus statuses = 1;
+  string project = 2;
+  TimeRange range = 3;
+  PageRequest page = 4; // newest first
+}
+
+message ListWebhookDeliveriesResponse {
+  repeated WebhookDelivery deliveries = 1;
+  PageInfo page = 2;
+}
+
+message GetWebhookDeliveryRequest {
+  string delivery_id = 1;
+}
+
+message GetWebhookQueueStatusRequest {}
+
+message WebhookQueueStatus {
+  uint32 pending = 1;
+  uint32 building = 2;
+  google.protobuf.Timestamp oldest_pending_at = 3;
+  uint32 processed_24h = 4;
+  uint32 failed_24h = 5;
+  // Whether an engine session is currently connected over v2.
+  bool engine_connected = 6;
+  google.protobuf.Timestamp engine_last_seen_at = 7;
+  // Whether on-server builds are possible (BuildKit present, capability on).
+  bool server_builds_enabled = 8;
+}
+
+enum ServerBuildStatus {
+  SERVER_BUILD_STATUS_UNSPECIFIED = 0;
+  SERVER_BUILD_STATUS_QUEUED = 1;
+  SERVER_BUILD_STATUS_CLONING = 2;
+  SERVER_BUILD_STATUS_BUILDING = 3;
+  SERVER_BUILD_STATUS_DEPLOYING = 4;
+  SERVER_BUILD_STATUS_SUCCEEDED = 5;
+  SERVER_BUILD_STATUS_FAILED = 6;
+  SERVER_BUILD_STATUS_ROLLED_BACK = 7;
+  SERVER_BUILD_STATUS_CANCELLED = 8;
+}
+
+message ServerBuild {
+  string id = 1;
+  string delivery_id = 2;
+  string project = 3;
+  string service = 4;
+  string commit_sha = 5;
+  string ref = 6;
+  ServerBuildStatus status = 7;
+  google.protobuf.Timestamp started_at = 8;
+  google.protobuf.Timestamp finished_at = 9;
+  string image_digest = 10;
+  string deployment_id = 11;
+  string operation_id = 12;
+  string standing_rule_id = 13;
+  string error = 14;
+}
+
+message ListServerBuildsRequest {
+  string project = 1;
+  repeated ServerBuildStatus statuses = 2;
+  PageRequest page = 3; // newest first
+}
+
+message ListServerBuildsResponse {
+  repeated ServerBuild builds = 1;
+  PageInfo page = 2;
+}
+
+message GetServerBuildRequest {
+  string build_id = 1;
+}
