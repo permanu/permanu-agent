@@ -44,6 +44,13 @@ For release artifacts:
 scripts/build-release.sh
 ```
 
+Linux binaries from a Mac (Docker required; output in `dist/`, gitignored):
+
+```bash
+scripts/build-linux.sh          # linux amd64 + arm64 (musl)
+scripts/build-linux.sh --test   # run cargo test in Linux first
+```
+
 Release tags are patch-line guarded. For now, publish `v0.1.x` tags only, and
 the tag must match the `Cargo.toml` package version exactly. The first public
 release is `v0.1.0`; the next patch is `v0.1.1`.
@@ -58,7 +65,21 @@ cargo clippy --all-targets -- -D warnings
 
 ## Runtime
 
-Required environment:
+`PERMANU_AGENT_MODE` selects what the agent serves (default `hosted`):
+
+- `hosted`: v1 only; the agent dials the hosted control plane (unchanged).
+- `local`: v2 only; the agent serves agent protocol v2 on a unix socket
+  (`PERMANU_AGENT_SOCKET`, default `/run/permanu/agent.sock`, `root:permanu`
+  0660, directory 0750) and needs none of the variables below. This slice serves
+  `InfoService` and `StateService.ListContainers`; every other v2 RPC returns
+  `UNIMPLEMENTED`.
+- `both`: v1 and v2.
+
+Once `/etc/permanu/trusted-keys.json` exists, the agent refuses every mutating
+v1 command (`EXEC`, deploys and other state changes) with
+`signed_plans_required`; read-only v1 commands keep working.
+
+Required environment (hosted and both):
 
 - `BACKEND_GRPC_ADDR`: control-plane gRPC endpoint.
 - `SERVER_ID`: Permanu server identifier.

@@ -28,6 +28,8 @@ pub struct Config {
     pub dwaar_cf_token_path: PathBuf,
     pub dwaar_cf_token_drop_in_dir: PathBuf,
     pub internal_apex: String,
+    /// S8: once this file exists, mutating v1 commands are refused.
+    pub trusted_keys_path: PathBuf,
 }
 
 impl Config {
@@ -74,6 +76,7 @@ impl Config {
                 .map(PathBuf::from)
                 .unwrap_or_else(|_| PathBuf::from("/etc/systemd/system/dwaar.service.d")),
             internal_apex: env::var("INTERNAL_APEX").unwrap_or_default(),
+            trusted_keys_path: PathBuf::from(crate::trusted_keys::TRUSTED_KEYS_PATH),
         })
     }
 
@@ -110,6 +113,7 @@ impl Config {
                 "/tmp/permanu-agent-probe/systemd/dwaar.service.d",
             ),
             internal_apex: env::var("INTERNAL_APEX").unwrap_or_default(),
+            trusted_keys_path: PathBuf::from(crate::trusted_keys::TRUSTED_KEYS_PATH),
         }
     }
 
@@ -195,4 +199,125 @@ fn env_bool(name: &str, default: bool) -> bool {
         .ok()
         .map(|v| v.eq_ignore_ascii_case("true") || v == "1")
         .unwrap_or(default)
+}
+
+/// Which protocols the agent serves (agent-protocol.md section 1).
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum AgentMode {
+    /// v1 only: dial out to the hosted control plane (default, unchanged).
+    Hosted,
+    /// v2 only: serve the local unix socket; no control-plane connection.
+    Local,
+    /// Both of the above.
+    Both,
+}
+
+impl AgentMode {
+    pub const ENV: &'static str = "PERMANU_AGENT_MODE";
+
+    pub fn from_env() -> Result<Self> {
+        Self::parse(env::var(Self::ENV).ok().as_deref())
+    }
+
+    pub fn parse(value: Option<&str>) -> Result<Self> {
+        let value = value.map(str::trim).unwrap_or_default();
+        if value.is_empty() || value.eq_ignore_ascii_case("hosted") {
+            Ok(Self::Hosted)
+        } else if value.eq_ignore_ascii_case("local") {
+            Ok(Self::Local)
+        } else if value.eq_ignore_ascii_case("both") {
+            Ok(Self::Both)
+        } else {
+            Err(anyhow!(
+                "{} must be hosted, local or both (got {value:?})",
+                Self::ENV
+            ))
+        }
+    }
+
+    pub fn runs_hosted(self) -> bool {
+        matches!(self, Self::Hosted | Self::Both)
+    }
+
+    pub fn serves_local(self) -> bool {
+        matches!(self, Self::Local | Self::Both)
+    }
+}
+
+/// Local-mode (v2 unix socket) settings.
+#[derive(Clone, Debug)]
+pub struct LocalConfig {
+    pub socket_path: PathBuf,
+    /// Group that owns the socket (mode 0660). `None` skips the chown; only
+    /// tests use that.
+    pub socket_group: Option<String>,
+    pub trusted_keys_path: PathBuf,
+}
+
+pub const DEFAULT_LOCAL_SOCKET_PATH: &str = "/run/permanu/agent.sock";
+pub const DEFAULT_LOCAL_SOCKET_GROUP: &str = "permanu";
+
+impl LocalConfig {
+    pub fn from_env() -> Self {
+        Self::from_lookup(|name| env::var(name).ok())
+    }
+
+    fn from_lookup(lookup: impl Fn(&str) -> Option<String>) -> Self {
+        let socket_path = lookup("PERMANU_AGENT_SOCKET")
+            .filter(|v| !v.trim().is_empty())
+            .unwrap_or_else(|| DEFAULT_LOCAL_SOCKET_PATH.to_string());
+        Self {
+            socket_path: PathBuf::from(socket_path),
+            socket_group: Some(DEFAULT_LOCAL_SOCKET_GROUP.to_string()),
+            trusted_keys_path: PathBuf::from(crate::trusted_keys::TRUSTED_KEYS_PATH),
+        }
+    }
+}
+
+#[cfg(test)]
+mod mode_tests {
+    use super::*;
+
+    #[test]
+    fn mode_defaults_to_hosted() {
+        assert_eq!(AgentMode::parse(None).unwrap(), AgentMode::Hosted);
+        assert_eq!(AgentMode::parse(Some("  ")).unwrap(), AgentMode::Hosted);
+    }
+
+    #[test]
+    fn mode_parses_all_values_case_insensitively() {
+        assert_eq!(AgentMode::parse(Some("hosted")).unwrap(), AgentMode::Hosted);
+        assert_eq!(AgentMode::parse(Some("Local")).unwrap(), AgentMode::Local);
+        assert_eq!(AgentMode::parse(Some("BOTH")).unwrap(), AgentMode::Both);
+    }
+
+    #[test]
+    fn mode_rejects_unknown_values() {
+        let err = AgentMode::parse(Some("remote")).unwrap_err();
+        assert!(err.to_string().contains("PERMANU_AGENT_MODE"));
+    }
+
+    #[test]
+    fn mode_flags() {
+        assert!(AgentMode::Hosted.runs_hosted() && !AgentMode::Hosted.serves_local());
+        assert!(!AgentMode::Local.runs_hosted() && AgentMode::Local.serves_local());
+        assert!(AgentMode::Both.runs_hosted() && AgentMode::Both.serves_local());
+    }
+
+    #[test]
+    fn local_config_defaults_and_overrides() {
+        let cfg = LocalConfig::from_lookup(|_| None);
+        assert_eq!(cfg.socket_path, PathBuf::from("/run/permanu/agent.sock"));
+        assert_eq!(cfg.socket_group.as_deref(), Some("permanu"));
+        assert_eq!(
+            cfg.trusted_keys_path,
+            PathBuf::from("/etc/permanu/trusted-keys.json")
+        );
+
+        let cfg = LocalConfig::from_lookup(|name| match name {
+            "PERMANU_AGENT_SOCKET" => Some("/tmp/x.sock".to_string()),
+            _ => None,
+        });
+        assert_eq!(cfg.socket_path, PathBuf::from("/tmp/x.sock"));
+    }
 }

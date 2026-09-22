@@ -16,6 +16,7 @@ mod dwaar_routes;
 mod heartbeat;
 mod host_admin;
 mod job_deployment;
+mod local;
 mod log_forwarder;
 mod monitoring;
 mod probe;
@@ -28,6 +29,8 @@ mod sre_tools;
 mod system;
 mod systemd;
 mod timeutil;
+mod trusted_keys;
+mod v1_guard;
 
 use std::{collections::HashMap, sync::Arc};
 
@@ -37,7 +40,10 @@ use tokio::sync::watch;
 use tracing::{error, info, warn};
 use tracing_subscriber::EnvFilter;
 
-use crate::{config::Config, proto::agent::v1::agent_service_client::AgentServiceClient};
+use crate::{
+    config::{AgentMode, Config, LocalConfig},
+    proto::agent::v1::agent_service_client::AgentServiceClient,
+};
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -49,6 +55,11 @@ async fn main() -> Result<()> {
 
     if let Some(duration) = probe::probe_duration_from_env() {
         return probe::run(duration).await;
+    }
+
+    let mode = AgentMode::from_env()?;
+    if !mode.runs_hosted() {
+        return run_local_only(mode).await;
     }
 
     let cfg = Arc::new(Config::from_env()?);
@@ -69,6 +80,9 @@ async fn main() -> Result<()> {
     systemd::notify_ready();
     let (shutdown_tx, shutdown_rx) = watch::channel(false);
     let watchdog_task = systemd::spawn_watchdog(shutdown_rx.clone());
+    let local_task = mode
+        .serves_local()
+        .then(|| tokio::spawn(run_local(mode, shutdown_rx.clone())));
 
     let channel = connect_channel_with_retry(&cfg).await;
     let client = AgentServiceClient::new(channel)
@@ -159,7 +173,53 @@ async fn main() -> Result<()> {
     }
     monitoring_task.abort();
     route_metrics_task.abort();
+    if let Some(task) = local_task {
+        task.abort();
+    }
     Ok(())
+}
+
+/// Serves agent protocol v2 on the local socket until shutdown.
+async fn run_local(mode: AgentMode, mut shutdown: watch::Receiver<bool>) -> Result<()> {
+    let result = local::run(LocalConfig::from_env(), mode, async move {
+        let _ = shutdown.wait_for(|stop| *stop).await;
+    })
+    .await;
+    if let Err(err) = &result {
+        error!(error = ?err, "local v2 server failed");
+    }
+    result
+}
+
+/// `PERMANU_AGENT_MODE=local`: no control-plane connection, v2 socket only.
+async fn run_local_only(mode: AgentMode) -> Result<()> {
+    info!(version = %config::agent_version(), "starting permanu-agent in local mode");
+    systemd::notify_ready();
+    let (shutdown_tx, shutdown_rx) = watch::channel(false);
+    let watchdog_task = systemd::spawn_watchdog(shutdown_rx.clone());
+    let mut local_task = tokio::spawn(run_local(mode, shutdown_rx));
+
+    let result = tokio::select! {
+        signal = tokio::signal::ctrl_c() => {
+            if let Err(err) = signal {
+                error!(error = ?err, "failed waiting for shutdown signal");
+            }
+            info!("shutdown signal received");
+            let _ = shutdown_tx.send(true);
+            match (&mut local_task).await {
+                Ok(result) => result,
+                Err(err) => Err(anyhow!("local server task failed: {err}")),
+            }
+        }
+        joined = &mut local_task => match joined {
+            Ok(result) => result,
+            Err(err) => Err(anyhow!("local server task failed: {err}")),
+        },
+    };
+    if let Some(task) = watchdog_task {
+        task.abort();
+    }
+    result
 }
 
 async fn connect_channel_with_retry(cfg: &Config) -> tonic::transport::Channel {

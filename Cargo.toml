@@ -22,13 +22,17 @@ serde_yaml = "0.9"
 sha2 = "0.10"
 thiserror = "1"
 tokio = { version = "1", features = ["fs", "io-util", "macros", "net", "process", "rt-multi-thread", "signal", "sync", "time"] }
-tokio-stream = "0.1"
-tonic = { version = "0.14", default-features = false, features = ["channel", "codegen", "tls-native-roots", "tls-ring"] }
+tokio-stream = { version = "0.1", features = ["net"] }
+tonic = { version = "0.14", default-features = false, features = ["channel", "codegen", "router", "server", "tls-native-roots", "tls-ring"] }
 tonic-prost = "0.14"
+tower = { version = "0.5", features = ["util"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt", "json"] }
 x25519-dalek = { version = "2", features = ["static_secrets"] }
 zip = { version = "2", default-features = false, features = ["deflate"] }
+
+[dev-dependencies]
+hyper-util = { version = "0.1", features = ["tokio"] }
 
 [build-dependencies]
 protoc-bin-vendored = "3"

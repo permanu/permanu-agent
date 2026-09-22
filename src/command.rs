@@ -44,6 +44,7 @@ use crate::{
     route_metrics::RouteAggregator,
     self_update, service_lifecycle, sre_tools,
     timeutil::{now_timestamp, now_unix_nanos},
+    v1_guard,
 };
 
 const COMMAND_TYPE_UPDATE_AGENT: i32 = 4;
@@ -370,6 +371,19 @@ async fn handle_command(
         command_requires_ack(command.r#type),
     )
     .await?;
+
+    if let Some(refusal) = signing_refusal(&ctx.cfg.trusted_keys_path, &command) {
+        let message = String::from_utf8_lossy(&refusal.output).into_owned();
+        warn!(id = %command.id, kind = command.r#type, "{message}");
+        let mut fields = std::collections::HashMap::new();
+        fields.insert("command_id".to_string(), command.id.clone());
+        fields.insert("command_type".to_string(), command.r#type.to_string());
+        let _ = ctx
+            .log_forwarder
+            .push(crate::log_forwarder::agent_log("warn", message, fields));
+        tx.send(refusal).await.context("send command result")?;
+        return Ok(());
+    }
 
     let result = match command.r#type {
         COMMAND_TYPE_CACHE_PURGE => handle_cache_purge_command(&command.id, &command.payload).await,
@@ -2087,6 +2101,12 @@ fn completed_text(command_id: &str, text: &str) -> CommandResult {
     }
 }
 
+/// S8: the failed result for a mutating v1 command once signing is enabled.
+fn signing_refusal(trusted_keys_path: &Path, command: &Command) -> Option<CommandResult> {
+    v1_guard::refusal_message(command.r#type, trusted_keys_path)
+        .map(|message| failed_text(&command.id, &message))
+}
+
 fn failed_text(command_id: &str, text: &str) -> CommandResult {
     CommandResult {
         command_id: command_id.to_string(),
@@ -2128,6 +2148,39 @@ async fn docker_reachable() -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn signing_refusal_fails_exec_once_trusted_keys_exist() {
+        let dir = std::env::temp_dir().join(format!(
+            "permanu-cmd-s8-{}-{}",
+            std::process::id(),
+            now_unix_nanos()
+        ));
+        fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("trusted-keys.json");
+        let exec = Command {
+            id: "cmd-1".to_string(),
+            r#type: COMMAND_TYPE_EXEC,
+            ..Default::default()
+        };
+        assert!(signing_refusal(&path, &exec).is_none());
+
+        fs::write(&path, b"{}").unwrap();
+        let result = signing_refusal(&path, &exec).expect("EXEC must be refused");
+        assert_eq!(result.command_id, "cmd-1");
+        assert_eq!(result.status, "failed");
+        assert!(result.is_final);
+        let text = String::from_utf8(result.output).unwrap();
+        assert!(text.starts_with("signed_plans_required: COMMAND_TYPE_EXEC refused"));
+
+        let logs = Command {
+            id: "cmd-2".to_string(),
+            r#type: COMMAND_TYPE_AGENT_LOGS,
+            ..Default::default()
+        };
+        assert!(signing_refusal(&path, &logs).is_none());
+        fs::remove_dir_all(dir).unwrap();
+    }
 
     #[test]
     fn reconnect_delay_backs_off_until_cap() {
