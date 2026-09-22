@@ -11,10 +11,9 @@ import "agent/v2/common.proto";
 // BackupService exposes backup policies, runs, verify-restore results and
 // artifacts. All RPCs are read-only. Mutations are signed changes via
 // ChangeService.SubmitSignedPlan with kinds "backup.policy.set",
-// "backup.run", "backup.delete" (owner only) and "restore" (always-fresh
-// Touch ID, never a standing rule). Backup verify and policy delete:
-// signed-plan.md has no action kind for this yet (open issue 13.1), so it is
-// not signable in v1; the agent rejects it until a v1.1 kind exists.
+// "backup.run", "backup.verify", "backup.policy.delete" (owner only),
+// "backup.delete" and "restore" (both owner only, always-fresh Touch ID,
+// never a standing rule).
 service BackupService {
   rpc ListBackupPolicies(ListBackupPoliciesRequest) returns (ListBackupPoliciesResponse);
   rpc GetBackupPolicy(GetBackupPolicyRequest) returns (BackupPolicy);

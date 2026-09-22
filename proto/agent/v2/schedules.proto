@@ -12,9 +12,7 @@ import "agent/v2/telemetry.proto";
 // ScheduleService exposes the agent's cron scheduler. Reads are unsigned.
 // Create/update/delete are signed plans submitted via
 // ChangeService.SubmitSignedPlan (kinds "cron.create", "cron.update",
-// "cron.delete"). Pause and resume: signed-plan.md has no action kind for
-// them yet (open issue 13.1), so they are not signable in v1; the agent
-// rejects them until a v1.1 kind exists.
+// "cron.delete", "cron.pause", "cron.resume").
 // RunCronJobNow carries its own SignedPlan.
 service ScheduleService {
   rpc ListCronJobs(ListCronJobsRequest) returns (ListCronJobsResponse);

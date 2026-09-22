@@ -28,11 +28,19 @@ import "google/protobuf/timestamp.proto";
 //
 // Action kinds are the strings in signed-plan.md section 3.2, verbatim:
 // deploy, rollback, restart, scale, env.set, secret.set, secret.unset,
-// domain.add, domain.remove, cron.create, cron.update, cron.delete, cron.run,
-// backup.run, backup.policy.set, backup.delete, restore, db.upgrade,
-// server.add, agent.update, shell.open, rule.create, rule.revoke, key.add,
+// service.delete, environment.delete, project.delete, volume.create,
+// volume.resize, volume.delete, bucket.create, bucket.delete,
+// bucket.credentials.rotate, domain.add, domain.remove, domain.switch,
+// edge.rule.set, edge.rule.delete, cron.create, cron.update, cron.delete,
+// cron.run, cron.pause, cron.resume, backup.run, backup.verify,
+// backup.policy.set, backup.policy.delete, backup.delete, restore, db.upgrade,
+// alert.rule.create, alert.rule.update, alert.rule.delete, alert.silence,
+// alert.channel.create, alert.channel.update, alert.channel.delete,
+// telemetry.retention.set, server.add, server.remove, agent.update,
+// component.update, shell.open, rule.create, rule.revoke, key.add,
 // key.revoke. Every string field named `actions` or `action` in v2 holds one
-// of these. Ids inside plans are lowercase UUIDv7 strings.
+// of these; an unknown kind is PLAN_MALFORMED. Ids inside plans are lowercase
+// UUIDv7 strings.
 message SignedPlan {
   bytes envelope_json = 1;
 }
