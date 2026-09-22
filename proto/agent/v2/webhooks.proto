@@ -10,7 +10,7 @@ import "agent/v2/common.proto";
 // WebhookService exposes the queue of git-provider webhooks that Dwaar
 // forwards to the agent, and builds the agent ran on the server when no Mac
 // was online. All RPCs are read-only. This is the webhook delivery store of
-// signed-plan.md 3.5 (plans.db deliveries): the agent authenticates each
+// signed-plan.md 3.5 (admissions.db deliveries): the agent authenticates each
 // delivery with the provider HMAC, records it, and builds one rule-backed
 // plan per matching standing rule (e.g. auto-deploy main -> production).
 // Admission consumes the delivery once per rule. Unmatched deliveries wait

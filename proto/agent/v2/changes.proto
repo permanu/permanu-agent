@@ -10,17 +10,19 @@ import "agent/v2/common.proto";
 // ChangeService is the only general write path in local mode. Every server
 // change is a SignedPlan (docs/contracts/signed-plan.md) that the agent admits
 // with the ordered verification of signed-plan.md section 6.1. The agent is
-// the single admitter on a server (D-017): the runner never admits, it checks
-// the admission token the agent returns. Standing rules, trusted keys and
-// shells are changed by plans too: rule.create, rule.revoke, key.add and
-// key.revoke go through SubmitSignedPlan, and shell.open through ShellService.
+// the single admitter on a server (D-017): the runner never admits, it binds
+// to the agent's admission row by plan id, digest and action index and takes
+// every executable parameter from that row (D-022). Standing rules, trusted
+// keys and shells are changed by plans too: rule.create, rule.revoke, key.add
+// and key.revoke go through SubmitSignedPlan, and shell.open through
+// ShellService.
 service ChangeService {
   // SubmitSignedPlan verifies, admits and enqueues a plan. Returns once
   // admitted; execution progress is observed with WatchOperation.
   // Re-submitting an admitted plan (same id and digest) is an idempotent
-  // success: the original operation and admission token with
-  // deduplicated=true. Rule-backed plans are refused (PLAN_AUTHORITY): only
-  // the agent's internal webhook path admits them.
+  // success: the original plan_id and operation_id with deduplicated=true.
+  // Nothing returned is a secret. Rule-backed plans are refused
+  // (PLAN_AUTHORITY): only the agent's internal webhook path admits them.
   rpc SubmitSignedPlan(SubmitSignedPlanRequest) returns (OperationRef);
   // VerifySignedPlan runs every check SubmitSignedPlan would, without
   // admitting, executing or reserving the nonce. Read-only.
@@ -41,7 +43,7 @@ service ChangeService {
   // Server-level plans use project_id = "" and environment = "".
   rpc GetStateHead(GetStateHeadRequest) returns (StateHead);
 
-  // ListAdmissions syncs the admission log (plans.db admissions) to the
+  // ListAdmissions syncs the admission log (admissions.db admissions) to the
   // engine in ascending admission order, paged with PageRequest. It covers
   // user, agent-draft and rule plans, so the engine can record approval
   // receipts for rule-backed plans and reconcile its own replay view.
@@ -195,7 +197,7 @@ message StateHead {
   // Plan that last advanced the head; empty at genesis.
   string last_plan_id = 5;
   google.protobuf.Timestamp updated_at = 6;
-  // True during the 1200 s (20-minute) quarantine after plans.db was
+  // True during the 1200 s (20-minute) quarantine after admissions.db was
   // recreated (signed-plan.md 6.3); admissions fail STORE_QUARANTINED until
   // quarantine_ends_at.
   bool quarantined = 7;
@@ -229,7 +231,9 @@ message Admission {
   string plan_digest_hex = 3;
   google.protobuf.Timestamp admitted_at = 4;
   google.protobuf.Timestamp finished_at = 5;
-  // "" while running; then "succeeded" | "failed" | "rolled_back" | "expired".
+  // "" while running; then "succeeded" | "failed" | "rolled_back" |
+  // "cancelled" | "expired". Reconciled by the agent from the runner's
+  // consumed log (signed-plan.md 14.5).
   string outcome = 6;
   // "user" | "agent-draft" | "rule".
   string author_kind = 7;

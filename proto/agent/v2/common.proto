@@ -62,15 +62,16 @@ message OperationRef {
   string plan_digest_hex = 2;
   google.protobuf.Timestamp accepted_at = 3;
   // True when the same plan id and digest were already admitted;
-  // operation_id and admission_token are the original ones and nothing was
+  // plan_id and operation_id are the original ones and nothing was
   // re-executed (idempotent success, signed-plan.md 6.1 step 8).
   bool deduplicated = 4;
   // plan.id of the admitted plan (UUIDv7).
   string plan_id = 5;
-  // Admission token (base64url, 32 bytes) the engine passes to the runner's
-  // bind_plan and bound ops (signed-plan.md 6.2, 14). The agent stores only
-  // its SHA-256.
-  string admission_token = 6;
+  // Field 6 was a bearer admission token. It is removed (D-022): the runner
+  // binds to the agent's admission row by plan_id, plan_digest_hex and
+  // action_index (signed-plan.md 6.2, 14), so OperationRef carries no secret.
+  reserved 6;
+  reserved "admission_token";
 }
 
 // TimeRange is a half-open [start, end) interval. An unset start means
@@ -168,7 +169,7 @@ enum ErrorReason {
   ERROR_REASON_TRUST_STORE_INVALID = 29;   // FAILED_PRECONDITION, trust_store_invalid
   ERROR_REASON_KEY_SCOPE = 30;             // PERMISSION_DENIED, E_KEY_SCOPE
   ERROR_REASON_SPEC_MISMATCH = 31;         // INVALID_ARGUMENT, E_SPEC_MISMATCH
-  // plans.db was recreated and the 1200 s quarantine is running
+  // admissions.db was recreated and the 1200 s quarantine is running
   // (signed-plan.md 6.3).
   ERROR_REASON_STORE_QUARANTINED = 32;     // FAILED_PRECONDITION
 }

@@ -136,9 +136,10 @@ message TrustChangedEvent {
   uint64 generation = 2;
   // Admitted kind: "key.add" | "key.revoke" | "rule.create" |
   // "rule.revoke" | "server.add" (bootstrap). "file_changed" when
-  // trusted-keys.json or plans.db changed outside an admitted plan
+  // trusted-keys.json or admissions.db changed outside an admitted plan
   // (for example by root; signed-plan.md R1). "store_recreated" when
-  // plans.db was lost and the re-seed quarantine began (signed-plan.md 6.3).
+  // admissions.db was lost and the re-seed quarantine began
+  // (signed-plan.md 6.3).
   string change = 3;
   string subject_id = 4;
 }
