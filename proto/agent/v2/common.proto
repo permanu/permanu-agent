@@ -15,10 +15,11 @@ import "google/protobuf/timestamp.proto";
 
 // SignedPlan carries one signed-plan v1 envelope, exactly as defined in
 // docs/contracts/signed-plan.md section 3.3: the UTF-8 JSON text
-// {"plan": {...}, "signatures": [...]}. The agent parses it strictly (no
+// {"plan": {...}, "signatures": [...]}, plus the ServiceSpecs the plan names
+// by spec_digest_hex (signed-plan.md 3.7). The agent parses both strictly (no
 // duplicate keys, no unknown or missing fields, integers only) and recomputes
-// the plan digest itself. No field in this protocol carries a digest, key or
-// signature that the agent trusts.
+// the plan and spec digests itself. No field in this protocol carries a
+// digest, key or signature that the agent trusts.
 //
 // Plan authority is either 1-4 ES256-raw signatures from keys in
 // /etc/permanu/trusted-keys.json (author.kind "user" or "agent-draft"), or,
@@ -26,8 +27,11 @@ import "google/protobuf/timestamp.proto";
 // built by the agent itself from authenticated webhooks; clients never
 // submit them.
 //
+// Rule-backed plans (author.kind "rule") are admitted only from the agent's
+// own webhook path; a client that submits one gets PLAN_AUTHORITY (E_AUTHOR).
+//
 // Action kinds are the strings in signed-plan.md section 3.2, verbatim:
-// deploy, rollback, restart, scale, env.set, secret.set, secret.unset,
+// deploy, rollback, restart, scale, service.elevate, operation.cancel, env.set, secret.set, secret.unset,
 // service.delete, environment.delete, project.delete, volume.create,
 // volume.resize, volume.delete, bucket.create, bucket.delete,
 // bucket.credentials.rotate, domain.add, domain.remove, domain.switch,
@@ -43,21 +47,30 @@ import "google/protobuf/timestamp.proto";
 // UUIDv7 strings.
 message SignedPlan {
   bytes envelope_json = 1;
+  // JCS text of each ServiceSpec the plan names by spec_digest_hex, each
+  // <= 16 KiB, at most 64. Missing, extra or mismatched specs fail
+  // SPEC_MISMATCH (E_SPEC_MISMATCH).
+  repeated bytes specs_jcs = 2;
 }
 
 // OperationRef identifies the asynchronous operation created by an accepted
 // signed change. Follow it with ChangeService.WatchOperation.
 message OperationRef {
   string operation_id = 1;
-  // "sha256:" + lowercase hex plan digest (signed-plan.md section 2.1),
-  // computed by the agent.
-  string plan_digest = 2;
+  // 64 lowercase hex plan digest (signed-plan.md section 2.1), computed by
+  // the agent.
+  string plan_digest_hex = 2;
   google.protobuf.Timestamp accepted_at = 3;
   // True when the same plan id and digest were already admitted;
-  // operation_id is the original operation and nothing was re-executed.
+  // operation_id and admission_token are the original ones and nothing was
+  // re-executed (idempotent success, signed-plan.md 6.1 step 8).
   bool deduplicated = 4;
   // plan.id of the admitted plan (UUIDv7).
   string plan_id = 5;
+  // Admission token (base64url, 32 bytes) the engine passes to the runner's
+  // bind_plan and bound ops (signed-plan.md 6.2, 14). The agent stores only
+  // its SHA-256.
+  string admission_token = 6;
 }
 
 // TimeRange is a half-open [start, end) interval. An unset start means
@@ -68,14 +81,18 @@ message TimeRange {
 }
 
 // Scope narrows a query to Permanu identities. Empty fields match all.
+// Every id field in v2 ends in _id and holds a lowercase UUIDv7 (D-020);
+// environment is the plan's environment name (REF).
 message Scope {
-  string project = 1;       // project id (UUIDv7)
-  string service = 2;       // service id (UUIDv7)
-  string deployment_id = 3; // deployment id (UUIDv7)
-  string app_id = 4;        // v1-compatible app UUID; kept for hosted-era data
+  string project_id = 1;
+  string service_id = 2;
+  string deployment_id = 3;
+  string app_id = 4;         // v1-compatible app UUID; kept for hosted-era data
+  string environment = 5;    // environment name, e.g. "production"
+  string environment_id = 6;
 }
 
-// PageRequest is used by every unary List* RPC.
+// PageRequest is used by every unary List* RPC, including ListAdmissions.
 message PageRequest {
   // Max items per page. 0 means the RPC default (50); capped at 500.
   uint32 page_size = 1;
@@ -149,4 +166,9 @@ enum ErrorReason {
   ERROR_REASON_BOOTSTRAP_REJECTED = 27;    // PERMISSION_DENIED, E_BOOTSTRAP
   ERROR_REASON_EXEC_PRECONDITION = 28;     // FAILED_PRECONDITION, E_EXEC_PRECONDITION
   ERROR_REASON_TRUST_STORE_INVALID = 29;   // FAILED_PRECONDITION, trust_store_invalid
+  ERROR_REASON_KEY_SCOPE = 30;             // PERMISSION_DENIED, E_KEY_SCOPE
+  ERROR_REASON_SPEC_MISMATCH = 31;         // INVALID_ARGUMENT, E_SPEC_MISMATCH
+  // plans.db was recreated and the 1200 s quarantine is running
+  // (signed-plan.md 6.3).
+  ERROR_REASON_STORE_QUARANTINED = 32;     // FAILED_PRECONDITION
 }

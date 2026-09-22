@@ -40,7 +40,8 @@ message SubscribeRequest {
   Scope scope = 2;
   // Resume after this token. "" = live events only. If the token is older
   // than the retained window, the agent sends RESYNC_REQUIRED first and
-  // continues live; the client must refetch state with List*/Get* RPCs.
+  // continues live; the client refetches state with
+  // StateService.GetStateSnapshot and resumes from its resume_token.
   string resume_token = 3;
 }
 
@@ -67,10 +68,15 @@ message Event {
   }
 }
 
+// Phase maps to Engine API DeploymentState (agent-protocol.md section 6):
+// QUEUED=shipping, BUILDING=building, STARTING=starting,
+// HEALTH_CHECKING=verifying, LIVE=healthy, FAILED=failed,
+// ROLLING_BACK=rolling_back, ROLLED_BACK=rolled_back, CANCELLED=cancelled.
+// STOPPED has no deployment state (service Health "stopped").
 message DeployStatusEvent {
   string deployment_id = 1;
-  string project = 2;
-  string service = 3;
+  string project_id = 2;
+  string service_id = 3;
   string commit_sha = 4;
   enum Phase {
     PHASE_UNSPECIFIED = 0;
@@ -83,6 +89,7 @@ message DeployStatusEvent {
     PHASE_ROLLING_BACK = 7;
     PHASE_ROLLED_BACK = 8;
     PHASE_STOPPED = 9;
+    PHASE_CANCELLED = 10; // stopped by an admitted operation.cancel
   }
   Phase phase = 5;
   string message = 6;
@@ -91,8 +98,8 @@ message DeployStatusEvent {
 
 message HealthEvent {
   string check_id = 1;
-  string project = 2;
-  string service = 3;
+  string project_id = 2;
+  string service_id = 3;
   string container_name = 4;
   enum Status {
     STATUS_UNSPECIFIED = 0;
@@ -125,12 +132,13 @@ message ResourcePressureEvent {
 }
 
 message TrustChangedEvent {
-  string fingerprint = 1;
+  string fingerprint_digest_hex = 1;
   uint64 generation = 2;
   // Admitted kind: "key.add" | "key.revoke" | "rule.create" |
   // "rule.revoke" | "server.add" (bootstrap). "file_changed" when
   // trusted-keys.json or plans.db changed outside an admitted plan
-  // (for example by root; signed-plan.md R1).
+  // (for example by root; signed-plan.md R1). "store_recreated" when
+  // plans.db was lost and the re-seed quarantine began (signed-plan.md 6.3).
   string change = 3;
   string subject_id = 4;
 }

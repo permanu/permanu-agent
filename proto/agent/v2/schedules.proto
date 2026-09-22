@@ -4,7 +4,6 @@ package permanu.agent.v2;
 
 option go_package = "github.com/permanu/permanu-ai/internal/agentpb/v2;agentv2";
 
-import "google/protobuf/duration.proto";
 import "google/protobuf/timestamp.proto";
 import "agent/v2/common.proto";
 import "agent/v2/telemetry.proto";
@@ -12,15 +11,19 @@ import "agent/v2/telemetry.proto";
 // ScheduleService exposes the agent's cron scheduler. Reads are unsigned.
 // Create/update/delete are signed plans submitted via
 // ChangeService.SubmitSignedPlan (kinds "cron.create", "cron.update",
-// "cron.delete", "cron.pause", "cron.resume").
-// RunCronJobNow carries its own SignedPlan.
+// "cron.delete", "cron.pause", "cron.resume"). CronJob mirrors the
+// cron.create/update params exactly (signed-plan.md 3.2): service_id,
+// schedule, timezone, command (argv), timeout_seconds, retries, overlap,
+// heartbeat_alert. RunCronJobNow carries its own SignedPlan.
 service ScheduleService {
   rpc ListCronJobs(ListCronJobsRequest) returns (ListCronJobsResponse);
   rpc GetCronJob(GetCronJobRequest) returns (CronJob);
   rpc ListCronRuns(ListCronRunsRequest) returns (ListCronRunsResponse);
   rpc GetCronRun(GetCronRunRequest) returns (CronRun);
   // RunCronJobNow triggers one out-of-schedule run. Requires a user-signed
-  // SignedPlan whose only action is "cron.run" with cron_id = job_id.
+  // SignedPlan whose only action is "cron.run" whose params.cron_id equals
+  // RunCronJobNowRequest.cron_id exactly; otherwise FAILED_PRECONDITION /
+  // EXEC_PRECONDITION (E_EXEC_PRECONDITION) and nothing runs.
   // Standing rules never authorize it (v1 rules allow deploy only).
   // Overlap policy still applies.
   rpc RunCronJobNow(RunCronJobNowRequest) returns (RunCronJobNowResponse);
@@ -28,54 +31,14 @@ service ScheduleService {
   rpc StreamCronRunLogs(StreamCronRunLogsRequest) returns (stream LogQueryResponse);
 }
 
+// OverlapPolicy is the plan's overlap param: "skip" | "queue" | "allow".
 enum OverlapPolicy {
   OVERLAP_POLICY_UNSPECIFIED = 0; // treated as SKIP
-  OVERLAP_POLICY_SKIP = 1;        // skip the new run while one is active
-  OVERLAP_POLICY_ALLOW = 2;       // run concurrently
-  OVERLAP_POLICY_QUEUE_ONE = 3;   // queue at most one pending run
-  OVERLAP_POLICY_REPLACE = 4;     // cancel the active run, start the new one
-}
-
-message RetryPolicy {
-  // Total attempts including the first. 0 or 1 = no retries; max 10.
-  uint32 max_attempts = 1;
-  google.protobuf.Duration initial_backoff = 2;
-  google.protobuf.Duration max_backoff = 3;
-  double backoff_multiplier = 4;
-}
-
-// HeartbeatPolicy raises alerts for failed or missed runs.
-message HeartbeatPolicy {
-  bool alert_on_failure = 1;
-  // Alert when no run started within schedule time + missed_grace.
-  bool alert_on_missed = 2;
-  google.protobuf.Duration missed_grace = 3;
-  // Alert only after this many consecutive failures. 0 = 1.
-  uint32 failure_threshold = 4;
-  // NotificationChannel ids.
-  repeated string channel_ids = 5;
-}
-
-message CronTarget {
-  oneof target {
-    // Exec argv inside a running service container.
-    ServiceExec service_exec = 1;
-    // Start an ephemeral container from the service image (or image).
-    OneOffContainer one_off = 2;
-  }
-}
-
-message ServiceExec {
-  string service = 1;
-  repeated string argv = 2;
-}
-
-message OneOffContainer {
-  string service = 1; // reuse this service's image, env and networks
-  string image = 2;   // or an explicit image reference (digest preferred)
-  repeated string argv = 3;
-  // Secret names only; values are resolved on the server, never returned.
-  repeated string secret_refs = 4;
+  OVERLAP_POLICY_SKIP = 1;        // "skip": skip the new run while one is active
+  OVERLAP_POLICY_ALLOW = 2;       // "allow": run concurrently
+  OVERLAP_POLICY_QUEUE = 3;       // "queue": queue at most one pending run
+  reserved 4;
+  reserved "OVERLAP_POLICY_REPLACE";
 }
 
 enum CronRunStatus {
@@ -98,29 +61,40 @@ enum CronTrigger {
 }
 
 message CronJob {
+  // cron_id of the signed plan (UUIDv7).
   string id = 1;
   string name = 2;
   Scope scope = 3;
-  // 5-field cron expression or "@every <duration>" / "@hourly" etc.
+  // 5-field cron expression (the only form a plan can carry).
   string schedule = 4;
-  string timezone = 5; // IANA; "" = UTC
-  CronTarget target = 6;
+  string timezone = 5; // IANA name or "UTC"
+  // Replaced by service_id + command; runs start a one-off container from
+  // the service's admitted ServiceSpec with command as argv.
+  reserved 6, 8, 9, 10;
+  reserved "target", "retry", "timeout", "heartbeat";
   OverlapPolicy overlap = 7;
-  RetryPolicy retry = 8;
-  google.protobuf.Duration timeout = 9;
-  HeartbeatPolicy heartbeat = 10;
   bool enabled = 11;
   google.protobuf.Timestamp next_run_at = 12;
   CronRun last_run = 13;
   google.protobuf.Timestamp created_at = 14;
   google.protobuf.Timestamp updated_at = 15;
-  // Digest of the signed plan that last changed this job.
-  string plan_digest = 16;
+  // Hex digest of the signed plan that last changed this job.
+  string plan_digest_hex = 16;
+  // Retries after the first attempt, 0-10 (exponential backoff from 10 s,
+  // capped at 10 min; agent defaults, not configurable in v2.0).
+  uint32 retries = 17;
+  // Alert on a failed or missed run (plan heartbeat_alert).
+  bool heartbeat_alert = 18;
+  string service_id = 19;
+  // argv, 1-64 entries of <= 1024 bytes.
+  repeated string command = 20;
+  // 1-86400.
+  uint32 timeout_seconds = 21;
 }
 
 message CronRun {
   string id = 1;
-  string job_id = 2;
+  string cron_id = 2;
   uint32 attempt = 3;
   CronTrigger trigger = 4;
   CronRunStatus status = 5;
@@ -145,11 +119,11 @@ message ListCronJobsResponse {
 }
 
 message GetCronJobRequest {
-  string job_id = 1;
+  string cron_id = 1;
 }
 
 message ListCronRunsRequest {
-  string job_id = 1; // "" = all jobs
+  string cron_id = 1; // "" = all jobs
   repeated CronRunStatus statuses = 2;
   TimeRange range = 3;
   PageRequest page = 4; // newest first
@@ -165,7 +139,8 @@ message GetCronRunRequest {
 }
 
 message RunCronJobNowRequest {
-  string job_id = 1;
+  // Must equal the cron.run action's params.cron_id.
+  string cron_id = 1;
   SignedPlan plan = 2;
 }
 

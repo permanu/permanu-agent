@@ -16,8 +16,9 @@ import "agent/v2/common.proto";
 // Records are redacted before they are written to the store, so nothing
 // returned here contains secret values.
 service TelemetryService {
-  // QueryLogs streams matching log records in ascending time order, then
-  // (follow=true) continues with live records until the client cancels.
+  // QueryLogs streams matching log records in the query's direction
+  // (ascending by default, descending for BACKWARD), then (follow=true,
+  // FORWARD only) continues with live records until the client cancels.
   rpc QueryLogs(LogQuery) returns (stream LogQueryResponse);
   // SearchTraces streams trace summaries matching the search.
   rpc SearchTraces(TraceSearch) returns (stream TraceSearchResponse);
@@ -47,24 +48,39 @@ enum LogLevel {
   LOG_LEVEL_FATAL = 6;
 }
 
+// LogSourceType maps to Engine API LogKind (agent-protocol.md section 6):
+// APP and SERVICE = app, DWAAR = http, BUILD = build, DEPLOY = deploy,
+// CRON = cron, BACKUP = backup, AGENT and HOST = system.
 enum LogSourceType {
   LOG_SOURCE_TYPE_UNSPECIFIED = 0;
   LOG_SOURCE_TYPE_APP = 1;     // app container stdout/stderr
   LOG_SOURCE_TYPE_SERVICE = 2; // managed service container (postgres, redis, ...)
   LOG_SOURCE_TYPE_DWAAR = 3;   // proxy access/error logs
   LOG_SOURCE_TYPE_AGENT = 4;   // the agent's own logs
-  LOG_SOURCE_TYPE_BUILD = 5;   // on-server build and deploy phases
+  LOG_SOURCE_TYPE_BUILD = 5;   // on-server image builds
   LOG_SOURCE_TYPE_CRON = 6;    // cron run output
   LOG_SOURCE_TYPE_BACKUP = 7;  // backup and verify-restore runs
   LOG_SOURCE_TYPE_HOST = 8;    // allowlisted host diagnostics (journald units)
+  LOG_SOURCE_TYPE_DEPLOY = 9;  // deploy phases (start, health check, switch, rollback)
+}
+
+// QueryDirection orders a log query. Cursors work in both directions: a
+// cursor from a record or StreamStatus resumes strictly after it in the
+// query's direction, so a backward page's last cursor fetches older records
+// and the same cursor with FORWARD fetches newer ones.
+enum QueryDirection {
+  QUERY_DIRECTION_UNSPECIFIED = 0; // treated as FORWARD
+  QUERY_DIRECTION_FORWARD = 1;     // ascending time; required for follow
+  QUERY_DIRECTION_BACKWARD = 2;    // descending time from range.end (or now)
 }
 
 message LogQuery {
   Scope scope = 1;
   // Empty means all source types.
   repeated LogSourceType source_types = 2;
-  // Minimum level; UNSPECIFIED matches all, including records without level.
-  LogLevel min_level = 3;
+  // Replaced by levels (a list, as in the Engine API).
+  reserved 3;
+  reserved "min_level";
   // Substring match on message (case-insensitive when case_insensitive).
   string contains = 4;
   // RE2 regex on message, max 512 bytes. Combined with contains by AND.
@@ -86,6 +102,10 @@ message LogQuery {
   string trace_id = 12;
   // Match container name or id.
   string container = 13;
+  // Levels to match; empty matches all, including records without level.
+  repeated LogLevel levels = 14;
+  // FORWARD (default) or BACKWARD. follow=true requires FORWARD.
+  QueryDirection direction = 15;
 }
 
 message LogRecord {
@@ -103,8 +123,8 @@ message LogRecord {
   string image = 9;
   string compose_project = 10;
   string host = 11;
-  string project = 12;
-  string service = 13;
+  string project_id = 12;
+  string service_id = 13;
   string app_id = 14;
   string deployment_id = 15;
   string stream = 16; // "stdout" | "stderr" | ""
@@ -424,13 +444,18 @@ enum TelemetryKind {
   TELEMETRY_KIND_TRACES = 2;
   TELEMETRY_KIND_METRICS = 3;
   TELEMETRY_KIND_ANALYTICS = 4;
+  // Dwaar access logs (the Engine API "http" kind).
+  TELEMETRY_KIND_HTTP = 5;
 }
 
 // RetentionPolicy is enforced per kind; whichever limit hits first evicts
-// the oldest data. Changed only by a signed "telemetry.retention.set" plan.
+// the oldest data. Changed only by a signed "telemetry.retention.set" plan
+// with the same field names (max_age_days, max_bytes).
 message RetentionPolicy {
-  google.protobuf.Duration max_age = 1;
+  reserved 1;
+  reserved "max_age";
   uint64 max_bytes = 2;
+  uint32 max_age_days = 3; // 1-3650
 }
 
 message GetTelemetryUsageRequest {}
@@ -452,6 +477,6 @@ message TelemetryUsage {
 message GetTelemetryUsageResponse {
   repeated TelemetryUsage kinds = 1;
   uint64 disk_free_bytes = 2;
-  // Plan digest of the last applied retention change ("" = defaults).
-  string retention_plan_digest = 3;
+  // Hex plan digest of the last applied retention change ("" = defaults).
+  string retention_plan_digest_hex = 3;
 }

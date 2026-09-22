@@ -9,6 +9,7 @@ const V2_PROTOS: &[&str] = &[
     "proto/agent/v2/changes.proto",
     "proto/agent/v2/events.proto",
     "proto/agent/v2/shell.proto",
+    "proto/agent/v2/state.proto",
 ];
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {

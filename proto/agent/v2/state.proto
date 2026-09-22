@@ -1,0 +1,107 @@
+syntax = "proto3";
+
+package permanu.agent.v2;
+
+option go_package = "github.com/permanu/permanu-ai/internal/agentpb/v2;agentv2";
+
+import "google/protobuf/timestamp.proto";
+import "agent/v2/common.proto";
+import "agent/v2/events.proto";
+
+// StateService returns the server's current runtime state. All RPCs are
+// read-only. GetStateSnapshot is what a client calls after
+// EventService.Subscribe delivers RESYNC_REQUIRED: it returns health,
+// deployments and services for a scope plus a resume_token to subscribe from,
+// so no event between the snapshot and the subscription is lost.
+service StateService {
+  // ListContainers lists Permanu-managed containers on this server, filtered
+  // by scope (project_id, environment/environment_id, service_id).
+  rpc ListContainers(ListContainersRequest) returns (ListContainersResponse);
+  // GetStateSnapshot returns a consistent snapshot for one scope.
+  rpc GetStateSnapshot(GetStateSnapshotRequest) returns (StateSnapshot);
+}
+
+message ListContainersRequest {
+  // Empty fields match all. server filtering is implicit: this agent only
+  // reports its own server (StateSnapshot.server_id).
+  Scope scope = 1;
+  // Include stopped and exited containers.
+  bool include_stopped = 2;
+  PageRequest page = 3;
+}
+
+message Container {
+  string container_id = 1;
+  string name = 2;
+  string server_id = 3;
+  string project_id = 4;
+  string environment = 5;
+  string environment_id = 6;
+  string service_id = 7;
+  // Hex digest of the admitted ServiceSpec the container was started from
+  // (signed-plan.md 3.7); empty for containers Permanu did not start.
+  string spec_digest_hex = 8;
+  // image_repository@sha256:<hex> as run.
+  string image = 9;
+  string image_digest_hex = 10;
+  // "created" | "running" | "restarting" | "exited" | "paused" | "dead"
+  string state = 11;
+  HealthEvent.Status health = 12;
+  google.protobuf.Timestamp started_at = 13;
+  uint32 restart_count = 14;
+  // Resource usage at the last sample.
+  uint32 cpu_millis = 15;
+  uint64 memory_bytes = 16;
+}
+
+message ListContainersResponse {
+  repeated Container containers = 1;
+  PageInfo page = 2;
+}
+
+message GetStateSnapshotRequest {
+  // Empty fields match all (the whole server).
+  Scope scope = 1;
+}
+
+// ServiceState is one service's admitted spec and live state on this server.
+message ServiceState {
+  string service_id = 1;
+  string project_id = 2;
+  string environment = 3;
+  string environment_id = 4;
+  // Last admitted spec digest and the release it runs.
+  string spec_digest_hex = 5;
+  string release_id = 6;
+  uint32 replicas_desired = 7;
+  uint32 replicas_healthy = 8;
+  HealthEvent.Status health = 9;
+  // Currently deployed commit on its branch, if known.
+  string commit_sha = 10;
+}
+
+message DeploymentState {
+  string deployment_id = 1;
+  string project_id = 2;
+  string service_id = 3;
+  string plan_id = 4;
+  string operation_id = 5;
+  DeployStatusEvent.Phase phase = 6;
+  string commit_sha = 7;
+  string spec_digest_hex = 8;
+  google.protobuf.Timestamp started_at = 9;
+  google.protobuf.Timestamp finished_at = 10;
+}
+
+message StateSnapshot {
+  string server_id = 1;
+  google.protobuf.Timestamp taken_at = 2;
+  // Pass to EventService.Subscribe to receive every event after this
+  // snapshot.
+  string resume_token = 3;
+  repeated ServiceState services = 4;
+  // In-flight deployments plus the latest finished one per service.
+  repeated DeploymentState deployments = 5;
+  // Latest health per check in scope.
+  repeated HealthEvent health = 6;
+}

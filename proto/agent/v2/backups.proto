@@ -4,12 +4,13 @@ package permanu.agent.v2;
 
 option go_package = "github.com/permanu/permanu-ai/internal/agentpb/v2;agentv2";
 
-import "google/protobuf/duration.proto";
 import "google/protobuf/timestamp.proto";
 import "agent/v2/common.proto";
 
 // BackupService exposes backup policies, runs, verify-restore results and
-// artifacts. All RPCs are read-only. Mutations are signed changes via
+// artifacts. All RPCs are read-only. One retention model everywhere
+// (signed-plan.md backup.policy.set, Engine API BackupPolicy): keep_daily,
+// keep_weekly, keep_monthly and verify_schedule. Mutations are signed changes via
 // ChangeService.SubmitSignedPlan with kinds "backup.policy.set",
 // "backup.run", "backup.verify", "backup.policy.delete" (owner only),
 // "backup.delete" and "restore" (both owner only, always-fresh Touch ID,
@@ -32,7 +33,7 @@ message BackupSource {
     KIND_VOLUME = 4;   // tar of a docker volume
   }
   Kind kind = 1;
-  string service = 2;
+  string service_id = 2;
   string database = 3;
   string volume = 4;
 }
@@ -56,10 +57,11 @@ message BackupDestination {
 }
 
 message BackupRetention {
-  uint32 keep_last = 1;
-  uint32 keep_daily = 2;
-  uint32 keep_weekly = 3;
-  uint32 keep_monthly = 4;
+  reserved 1;
+  reserved "keep_last";
+  uint32 keep_daily = 2;   // 0-366
+  uint32 keep_weekly = 3;  // 0-260
+  uint32 keep_monthly = 4; // 0-120; at least one keep_* > 0
 }
 
 message BackupPolicy {
@@ -73,16 +75,20 @@ message BackupPolicy {
   BackupRetention retention = 8;
   // age recipient fingerprints the artifact is encrypted to.
   repeated string age_recipients = 9;
-  // Verify-restore schedule (default weekly). "" = disabled.
+  // Verify-restore schedule, 5-field cron (the app defaults to weekly,
+  // "0 4 * * 0"). "" = disabled (plan verify_schedule null).
   string verify_schedule = 10;
-  google.protobuf.Duration timeout = 11;
+  reserved 11;
+  reserved "timeout";
   bool enabled = 12;
   // NotificationChannel ids for failure alerts.
   repeated string channel_ids = 13;
   google.protobuf.Timestamp next_run_at = 14;
   BackupRun last_run = 15;
   RestoreVerification last_verification = 16;
-  string plan_digest = 17;
+  string plan_digest_hex = 17;
+  // Per-run timeout (agent default 6 h; not a plan field in v2.0).
+  uint32 timeout_seconds = 18;
 }
 
 enum BackupRunStatus {
@@ -148,7 +154,8 @@ message BackupArtifact {
   // Destination URI with credentials stripped.
   string location = 4;
   uint64 size_bytes = 5;
-  string sha256 = 6;
+  // Hex SHA-256 of the encrypted artifact (plan restore.backup_digest_hex).
+  string content_digest_hex = 6;
   bool encrypted = 7;
   repeated string age_recipients = 8;
   google.protobuf.Timestamp created_at = 9;

@@ -13,7 +13,14 @@ import "agent/v2/common.proto";
 // signed-plan.md 3.5 (plans.db deliveries): the agent authenticates each
 // delivery with the provider HMAC, records it, and builds one rule-backed
 // plan per matching standing rule (e.g. auto-deploy main -> production).
-// Admission consumes the delivery. Unmatched deliveries wait for the engine.
+// Admission consumes the delivery once per rule. Unmatched deliveries wait
+// for the engine.
+//
+// Intake rules (signed-plan.md 3.5): body capped at 1 MiB; the provider HMAC
+// or GitLab token is checked in constant time before the body is parsed;
+// body_digest_hex is unique (duplicates are DUPLICATE); a delivery older than
+// 15 minutes (received_at) never backs a plan (STALE); a commit that is not
+// newer than the branch's deployed commit is IGNORED.
 service WebhookService {
   rpc ListWebhookDeliveries(ListWebhookDeliveriesRequest) returns (ListWebhookDeliveriesResponse);
   rpc GetWebhookDelivery(GetWebhookDeliveryRequest) returns (WebhookDelivery);
@@ -32,6 +39,8 @@ enum WebhookDeliveryStatus {
   WEBHOOK_DELIVERY_STATUS_REJECTED = 6;         // bad signature or malformed
   WEBHOOK_DELIVERY_STATUS_FAILED = 7;
   WEBHOOK_DELIVERY_STATUS_EXPIRED = 8;
+  WEBHOOK_DELIVERY_STATUS_DUPLICATE = 9;        // same body_digest_hex seen before
+  WEBHOOK_DELIVERY_STATUS_STALE = 10;           // received_at older than 15 min at admission
 }
 
 message WebhookDelivery {
@@ -45,7 +54,7 @@ message WebhookDelivery {
   string repository = 6;
   string ref = 7;
   string commit_sha = 8;
-  string project = 9;
+  string project_id = 9;
   bool signature_valid = 10;
   WebhookDeliveryStatus status = 11;
   string status_reason = 12;
@@ -55,8 +64,8 @@ message WebhookDelivery {
   string build_id = 15;
   uint32 attempts = 16;
   google.protobuf.Timestamp processed_at = 17;
-  // Body is not returned; only its digest ("sha256:" + hex) and size.
-  string body_sha256 = 18;
+  // Body is not returned; only its digest (hex, unique) and size.
+  string body_digest_hex = 18;
   uint64 body_bytes = 19;
   // When the provider HMAC verified; unset when signature_valid is false.
   google.protobuf.Timestamp verified_at = 20;
@@ -64,11 +73,15 @@ message WebhookDelivery {
   bool consumed = 21;
   // plan.id of every admission that cited this delivery (one per rule).
   repeated string consumed_by_plan_ids = 22;
+  // Rules that consumed it; a delivery is consumed per (delivery, rule).
+  repeated string consumed_by_rule_ids = 23;
+  // Commit timestamp from the push payload (RuleInvocation.evidence.commit_time).
+  google.protobuf.Timestamp commit_time = 24;
 }
 
 message ListWebhookDeliveriesRequest {
   repeated WebhookDeliveryStatus statuses = 1;
-  string project = 2;
+  string project_id = 2;
   TimeRange range = 3;
   PageRequest page = 4; // newest first
 }
@@ -112,14 +125,16 @@ enum ServerBuildStatus {
 message ServerBuild {
   string id = 1;
   string delivery_id = 2;
-  string project = 3;
-  string service = 4;
+  string project_id = 3;
+  string service_id = 4;
   string commit_sha = 5;
   string ref = 6;
   ServerBuildStatus status = 7;
   google.protobuf.Timestamp started_at = 8;
   google.protobuf.Timestamp finished_at = 9;
-  string image_digest = 10;
+  // Hex manifest digest of the image the agent built; a rule deploy's
+  // ServiceSpec.image_digest_hex must equal it (signed-plan.md 3.7).
+  string image_digest_hex = 10;
   string deployment_id = 11;
   string operation_id = 12;
   string standing_rule_id = 13;
@@ -127,7 +142,7 @@ message ServerBuild {
 }
 
 message ListServerBuildsRequest {
-  string project = 1;
+  string project_id = 1;
   repeated ServerBuildStatus statuses = 2;
   PageRequest page = 3; // newest first
 }

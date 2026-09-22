@@ -48,7 +48,7 @@ message HelloResponse {
 message AgentInfo {
   string version = 1;
   // Lowercase hex SHA-256 of the running binary.
-  string binary_sha256 = 2;
+  string binary_digest_hex = 2;
   // All protocol versions this agent can serve.
   repeated string protocol_versions = 3;
   enum Mode {
@@ -65,11 +65,14 @@ message AgentInfo {
   string quarantine_reason = 7;
   // Stable server identity (machine-id derived). Signed plans must name it.
   string server_id = 8;
+  // Hex SHA-256 of each SSH host public key blob (/etc/ssh/ssh_host_*_key.pub).
+  // A server.add plan's ssh_host_key_digest_hex must be one of them.
+  repeated string ssh_host_key_digests_hex = 9;
 }
 
 message TrustedKeysSummary {
   // Lowercase hex SHA-256 over the canonical trusted-keys file.
-  string fingerprint = 1;
+  string fingerprint_digest_hex = 1;
   uint32 key_count = 2;
   // Monotonic generation, bumped on every add/revoke.
   uint64 generation = 3;

@@ -43,6 +43,9 @@ enum ComparisonOp {
   COMPARISON_OP_LTE = 4;
   COMPARISON_OP_EQ = 5;
   COMPARISON_OP_NEQ = 6;
+  // No data point for the metric during the whole for_duration (threshold
+  // ignored). Engine API op "absent".
+  COMPARISON_OP_ABSENT = 7;
 }
 
 // MetricCondition fires when the aggregated metric crosses threshold for
@@ -109,7 +112,7 @@ message AlertRule {
   google.protobuf.Timestamp silenced_until = 11;
   AlertState state = 12;
   google.protobuf.Timestamp state_since = 13;
-  string plan_digest = 14;
+  string plan_digest_hex = 14;
 }
 
 enum AlertState {
@@ -119,6 +122,9 @@ enum AlertState {
   ALERT_STATE_FIRING = 3;
   ALERT_STATE_RESOLVED = 4;
   ALERT_STATE_NO_DATA = 5;
+  // Silenced by an admitted alert.silence plan until silenced_until.
+  // Engine API state "muted".
+  ALERT_STATE_MUTED = 6;
 }
 
 message NotificationChannel {
@@ -137,7 +143,7 @@ message NotificationChannel {
   string credential_ref = 5;
   bool enabled = 6;
   DeliveryResult last_delivery = 7;
-  string plan_digest = 8;
+  string plan_digest_hex = 8;
 }
 
 message DeliveryResult {

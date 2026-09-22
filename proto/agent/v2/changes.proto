@@ -9,15 +9,18 @@ import "agent/v2/common.proto";
 
 // ChangeService is the only general write path in local mode. Every server
 // change is a SignedPlan (docs/contracts/signed-plan.md) that the agent admits
-// with the ordered verification of signed-plan.md section 6.1. Standing
-// rules, trusted keys and shells are changed by plans too: rule.create,
-// rule.revoke, key.add and key.revoke go through SubmitSignedPlan, and
-// shell.open through ShellService.
+// with the ordered verification of signed-plan.md section 6.1. The agent is
+// the single admitter on a server (D-017): the runner never admits, it checks
+// the admission token the agent returns. Standing rules, trusted keys and
+// shells are changed by plans too: rule.create, rule.revoke, key.add and
+// key.revoke go through SubmitSignedPlan, and shell.open through ShellService.
 service ChangeService {
   // SubmitSignedPlan verifies, admits and enqueues a plan. Returns once
   // admitted; execution progress is observed with WatchOperation.
-  // Re-submitting an admitted plan (same id and digest) returns the original
-  // operation with deduplicated=true.
+  // Re-submitting an admitted plan (same id and digest) is an idempotent
+  // success: the original operation and admission token with
+  // deduplicated=true. Rule-backed plans are refused (PLAN_AUTHORITY): only
+  // the agent's internal webhook path admits them.
   rpc SubmitSignedPlan(SubmitSignedPlanRequest) returns (OperationRef);
   // VerifySignedPlan runs every check SubmitSignedPlan would, without
   // admitting, executing or reserving the nonce. Read-only.
@@ -27,6 +30,11 @@ service ChangeService {
   // WatchOperation replays events after `after_seq`, then streams live
   // events until the operation reaches a terminal state.
   rpc WatchOperation(WatchOperationRequest) returns (stream OperationEvent);
+  // CancelOperation stops an operation before its next step. It carries a
+  // user-signed plan whose only action is "operation.cancel" with plan_id and
+  // plan_digest_hex of the operation's plan (presence; owner, deployer, or
+  // the ci key that signed that plan). Admitted like any plan.
+  rpc CancelOperation(CancelOperationRequest) returns (Operation);
 
   // GetStateHead returns the current state head for one scope, which the
   // engine copies into plan.base.heads[server_id] (signed-plan.md 3.6).
@@ -34,9 +42,10 @@ service ChangeService {
   rpc GetStateHead(GetStateHeadRequest) returns (StateHead);
 
   // ListAdmissions syncs the admission log (plans.db admissions) to the
-  // engine in admission order, after an opaque cursor. It covers user,
-  // agent-draft and rule plans, so the engine can record approval receipts
-  // for rule-backed plans and reconcile its own replay view. Read-only.
+  // engine in ascending admission order, paged with PageRequest. It covers
+  // user, agent-draft and rule plans, so the engine can record approval
+  // receipts for rule-backed plans and reconcile its own replay view.
+  // Read-only.
   rpc ListAdmissions(ListAdmissionsRequest) returns (ListAdmissionsResponse);
 
   // Standing rules and trusted keys, read-only. Changes are plans with
@@ -53,10 +62,16 @@ message VerifySignedPlanRequest {
   SignedPlan plan = 1;
 }
 
+message CancelOperationRequest {
+  // Must be the operation of the plan named by the operation.cancel action.
+  string operation_id = 1;
+  SignedPlan plan = 2;
+}
+
 message VerifySignedPlanResponse {
   bool valid = 1;
-  // "sha256:" + hex plan digest, computed by the agent.
-  string plan_digest = 2;
+  // Hex plan digest, computed by the agent.
+  string plan_digest_hex = 2;
   // key_ids whose signatures verified against trusted keys.
   repeated string verified_key_ids = 3;
   // rule_id from plan.invocation, for rule plans.
@@ -89,8 +104,8 @@ enum OperationState {
 
 message Operation {
   string id = 1;
-  // "sha256:" + hex plan digest.
-  string plan_digest = 2;
+  // Hex plan digest.
+  string plan_digest_hex = 2;
   // Action kinds, in plan order.
   repeated string actions = 3;
   OperationState state = 4;
@@ -173,42 +188,45 @@ message GetStateHeadRequest {
 message StateHead {
   string project_id = 1;
   string environment = 2;
-  // "sha256:" + 64 hex. The genesis head is "sha256:" + 64 x "0".
-  string head = 3;
+  // 64 lowercase hex. The genesis head is 64 x "0".
+  string head_digest_hex = 3;
   // This agent's server id (UUIDv7): the key for plan.base.heads.
   string server_id = 4;
   // Plan that last advanced the head; empty at genesis.
   string last_plan_id = 5;
   google.protobuf.Timestamp updated_at = 6;
-  // True during the 17-minute quarantine after plans.db was recreated
-  // (signed-plan.md 6.3); admissions are refused until it ends.
+  // True during the 1200 s (20-minute) quarantine after plans.db was
+  // recreated (signed-plan.md 6.3); admissions fail STORE_QUARANTINED until
+  // quarantine_ends_at.
   bool quarantined = 7;
+  google.protobuf.Timestamp quarantine_ends_at = 8;
 }
 
 message ListAdmissionsRequest {
-  // Opaque cursor from a previous next_cursor; empty = from the oldest
-  // retained admission.
-  string cursor = 1;
-  // Max admissions per page. 0 means 100; capped at 500.
-  uint32 limit = 2;
+  reserved 1, 2;
+  reserved "cursor", "limit";
   // Include the full signed plan JSON in each record.
   bool include_signed_plan = 3;
+  // page_token empty = from the oldest retained admission.
+  PageRequest page = 4;
 }
 
 message ListAdmissionsResponse {
   // Ascending admission order.
   repeated Admission admissions = 1;
-  // Pass back as cursor. Never empty; equals the request cursor when there
-  // is nothing new.
-  string next_cursor = 2;
+  // Unlike other List* RPCs, next_page_token here is a durable position
+  // (it never expires) and is set even on the last page, so the engine can
+  // poll for new admissions from it. It is empty only when no admission
+  // exists yet.
+  PageInfo page = 2;
 }
 
 message Admission {
   // plan.id (UUIDv7) and plan.nonce, as reserved in the replay store.
   string plan_id = 1;
   string nonce = 2;
-  // "sha256:" + hex plan digest.
-  string plan_digest = 3;
+  // Hex plan digest.
+  string plan_digest_hex = 3;
   google.protobuf.Timestamp admitted_at = 4;
   google.protobuf.Timestamp finished_at = 5;
   // "" while running; then "succeeded" | "failed" | "rolled_back" | "expired".
@@ -221,12 +239,15 @@ message Admission {
   repeated string actions = 10;
   string project_id = 11;
   string environment = 12;
-  // Head of the scope after this admission.
-  string head_after = 13;
+  // Head of the scope after this admission (hex).
+  string head_after_digest_hex = 13;
   // signed-plan.md 3.3 envelope; set only when include_signed_plan.
   bytes signed_plan_json = 14;
   // plan.expires_at, for replay-window bookkeeping.
   google.protobuf.Timestamp expires_at = 15;
+  // "client" (SubmitSignedPlan) or "agent_webhook" (rule plans).
+  string submitter = 16;
+  string operation_id = 17;
 }
 
 // StandingRuleInfo describes an installed standing rule. The rule is returned
@@ -235,8 +256,8 @@ message StandingRuleInfo {
   string rule_id = 1;
   // JCS of the StandingRule object (signed-plan.md 3.4).
   bytes rule_jcs = 2;
-  // "sha256:" + hex rule digest.
-  string rule_digest = 3;
+  // Hex rule digest.
+  string rule_digest_hex = 3;
   google.protobuf.Timestamp installed_at = 4;
   bool revoked = 5;
   google.protobuf.Timestamp revoked_at = 6;
@@ -264,7 +285,7 @@ message ListStandingRulesResponse {
 // (signed-plan.md 7.2), plus its effective revocation state.
 message TrustedKey {
   string key_id = 1;
-  string alg = 2; // "ES256"
+  string alg = 2; // "ES256-raw"
   // 91-byte SubjectPublicKeyInfo DER of the P-256 key.
   bytes spki_der = 3;
   string label = 4; // e.g. "MacBook Pro (Secure Enclave)"
@@ -278,12 +299,17 @@ message TrustedKey {
   string added_by_key_id = 10;
   // "lost" | "compromised" | "rotated" | "other" | "cascade"; empty if active.
   string revocation_reason = 11;
+  // Key scope (signed-plan.md 7.2). Empty for owner keys; deployer and ci
+  // keys always carry project_ids and environments.
+  repeated string scope_project_ids = 12;
+  repeated string scope_environments = 13;
+  bool scope_server_level = 14;
 }
 
 message TrustedKeySet {
   repeated TrustedKey keys = 1;
-  // Same value as HelloResponse.trusted_keys.fingerprint.
-  string fingerprint = 2;
+  // Same value as HelloResponse.trusted_keys.fingerprint_digest_hex.
+  string fingerprint_digest_hex = 2;
   uint64 generation = 3;
   // The file bytes as stored, so the engine can re-validate the chain.
   bytes trusted_keys_json = 4;
