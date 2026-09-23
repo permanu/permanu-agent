@@ -269,3 +269,73 @@ impl Schedulers {
         [CAPABILITY_CRON, CAPABILITY_BACKUPS, CAPABILITY_ALERTS]
     }
 }
+
+/// Resolves the runner's `run_id` of a cron attempt (a log line's
+/// `cron_run_id`, contracts v1.1.3, D-061) to the agent's `CronRun.id`:
+/// the runner's consumed-log `run` line of that `run_id` names the plan,
+/// fire time and attempt, which identify the `CronRun` of the job.
+/// Resolved ids are cached; an unknown id is looked up again later.
+pub struct CronRunIndex {
+    ops: Arc<ops_store::OpsStore>,
+    consumed: ConsumedLogRef,
+    cache: std::sync::Mutex<std::collections::HashMap<String, String>>,
+}
+
+impl CronRunIndex {
+    pub fn from_parts(ops: Arc<OpsStore>, consumed: ConsumedLogRef) -> Self {
+        Self {
+            ops,
+            consumed,
+            cache: std::sync::Mutex::new(std::collections::HashMap::new()),
+        }
+    }
+}
+
+impl crate::local::telemetry::ingest::CronRuns for CronRunIndex {
+    fn cron_run(&self, runner_run_id: &str, cron_id: &str) -> Option<String> {
+        let key = format!("{cron_id}\n{runner_run_id}");
+        if let Some(found) = self
+            .cache
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .get(&key)
+        {
+            return Some(found.clone());
+        }
+        let line =
+            crate::admissions::event_lines(&self.consumed.path, self.consumed.owner_uid, "run")
+                .into_iter()
+                .rev()
+                .find(|line| line["op"] == "run_cron" && line["run_id"] == runner_run_id)?;
+        let plan_id = line["plan_id"].as_str()?;
+        let attempt = u32::try_from(line["attempt"].as_u64()?).ok()?;
+        let scheduled_for = match &line["scheduled_for"] {
+            serde_json::Value::Null => None,
+            value => Some(parse_rfc(value.as_str()?)?),
+        };
+        let found = self
+            .ops
+            .list(
+                ops_store::RecordKind::CronRun,
+                &ops_store::Listing {
+                    subject: Some(cron_id),
+                    limit: 1_000,
+                    ..Default::default()
+                },
+            )
+            .into_iter()
+            .filter_map(|row| row.decode::<crate::proto::agent::v2::CronRun>())
+            .find(|run| {
+                run.plan_id == plan_id
+                    && run.attempt == attempt
+                    && run.scheduled_for.map(|t| t.seconds) == scheduled_for
+            })?
+            .id;
+        let mut cache = self.cache.lock().unwrap_or_else(|p| p.into_inner());
+        if cache.len() >= 10_000 {
+            cache.clear();
+        }
+        cache.insert(key, found.clone());
+        Some(found)
+    }
+}

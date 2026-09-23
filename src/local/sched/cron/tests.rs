@@ -436,3 +436,71 @@ fn backoff_doubles_from_ten_seconds_up_to_ten_minutes() {
         [10, 20, 40, 80, 160, 320, 600, 600]
     );
 }
+
+/// contracts v1.1.3 (D-061, agent-protocol.md 9.4): a cron line's
+/// `cron_run_id` (the runner's `run_id`) resolves through the runner's
+/// `run` line to the agent's `CronRun` of that plan, fire time and attempt.
+#[test]
+fn runner_run_ids_resolve_to_cron_runs() {
+    use crate::local::telemetry::ingest::CronRuns;
+    let f = Fixture::new("cron-run-ids", "2026-09-23T10:00:00Z");
+    let definition = "01a0cdb5-3500-7001-8000-0000000000d1";
+    let manual_plan = "01a0cdb5-3500-7001-8000-0000000000d2";
+    let fire = at("2026-09-23T09:00:00Z");
+    let put = |run: &CronRun| {
+        f.deps
+            .ops
+            .put(
+                RecordKind::CronRun,
+                &run.id,
+                &run.cron_id,
+                "",
+                run.status,
+                0,
+                run,
+            )
+            .unwrap();
+    };
+    for (id, attempt) in [("run-a1", 1), ("run-a2", 2)] {
+        put(&CronRun {
+            id: id.to_owned(),
+            cron_id: CRON.to_owned(),
+            attempt,
+            scheduled_for: Some(pts(fire)),
+            plan_id: definition.to_owned(),
+            ..Default::default()
+        });
+    }
+    put(&CronRun {
+        id: "run-manual".to_owned(),
+        cron_id: CRON.to_owned(),
+        attempt: 1,
+        plan_id: manual_plan.to_owned(),
+        ..Default::default()
+    });
+    let run_line = |seq: u64, plan: &str, scheduled_for: Value, attempt: u32, run_id: &str| {
+        json!({"v": 1, "seq": seq, "at": "2026-09-23T09:00:01Z", "event": "run",
+               "plan_id": plan, "plan_digest_hex": "ab".repeat(32), "action_index": 0,
+               "op": "run_cron", "scheduled_for": scheduled_for, "attempt": attempt,
+               "run_id": run_id})
+    };
+    f.append_consumed(&run_line(
+        1,
+        definition,
+        json!("2026-09-23T09:00:00Z"),
+        2,
+        "rr-sched",
+    ));
+    f.append_consumed(&run_line(2, manual_plan, Value::Null, 1, "rr-manual"));
+    let index = super::super::CronRunIndex::from_parts(
+        f.deps.ops.clone(),
+        f.deps.consumed_log.clone().unwrap(),
+    );
+    assert_eq!(index.cron_run("rr-sched", CRON).as_deref(), Some("run-a2"));
+    assert_eq!(
+        index.cron_run("rr-manual", CRON).as_deref(),
+        Some("run-manual")
+    );
+    assert_eq!(index.cron_run("rr-sched", "other-cron"), None);
+    assert_eq!(index.cron_run("rr-unknown", CRON), None);
+}
