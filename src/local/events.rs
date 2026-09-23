@@ -74,6 +74,11 @@ impl EventBus {
         }
     }
 
+    /// Every event published from now on (the away summary's feed).
+    pub fn live(&self) -> broadcast::Receiver<Event> {
+        self.live.subscribe()
+    }
+
     pub fn publish(&self, kind: EventKind, scope: Scope, payload: event::Payload) {
         let mut ring = self.ring.lock().unwrap_or_else(|p| p.into_inner());
         let seq = ring.next_seq;
@@ -152,6 +157,8 @@ fn resync(reason: &str) -> Event {
 
 pub struct EventSvc {
     pub bus: EventBus,
+    /// An engine's open `Subscribe` keeps it online (agent-protocol.md 12.1).
+    pub presence: Option<Arc<super::presence::Presence>>,
 }
 
 type EventStream = Pin<Box<dyn Stream<Item = Result<Event, Status>> + Send>>;
@@ -164,11 +171,17 @@ impl EventService for EventSvc {
         &self,
         request: Request<SubscribeRequest>,
     ) -> Result<Response<Self::SubscribeStream>, Status> {
+        let guard = match (&self.presence, super::presence::connection_of(&request)) {
+            (Some(presence), Some(conn)) => Some(presence.subscribe_opened(conn)),
+            _ => None,
+        };
         let request = request.into_inner();
         let (replay, mut live) = self.bus.replay(&request.resume_token);
         let (tx, rx) = tokio::sync::mpsc::channel::<Result<Event, Status>>(256);
         let closed = self.bus.closed();
         tokio::spawn(async move {
+            // Held for the stream's life; dropping it ends the subscription.
+            let _guard = guard;
             tokio::pin!(closed);
             match replay {
                 None => {

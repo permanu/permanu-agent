@@ -1,0 +1,326 @@
+use serde_json::{json, Value};
+
+use super::super::test_support::{Fixture, PG};
+use super::*;
+use crate::proto::agent::v2::event_condition::Kind as Cond;
+
+const RECOVERY: &str = "age1ql3z7hjy54pw3hyww5ayyfg7zqgvc7w3j2elw8zmrj2kg5sfn9aqmcac8p";
+const SERVER_RECIPIENT: &str = "age1server";
+const BACKUP_A: &str = "01a0cdb5-3500-7e01-8000-000000000001";
+const BACKUP_B: &str = "01a0cdb5-3500-7e01-8000-000000000002";
+
+fn policy(resource: &str, schedule: &str, verify: Value) -> Value {
+    json!({"kind": "backup.policy.set", "params": {"resource_id": resource,
+        "schedule": schedule, "timezone": "UTC", "keep_daily": 7, "keep_weekly": 4,
+        "keep_monthly": 6, "verify_schedule": verify, "destination_ref": "local"}})
+}
+
+fn destination() -> Value {
+    json!({"kind": "backup.destination.set", "params": {"destination_ref": "local",
+        "destination_kind": "server_local", "endpoint": null, "region": null, "bucket": null,
+        "prefix": "", "credential_ciphertext_digest_hex": null}})
+}
+
+fn recovery() -> Value {
+    json!({"kind": "recovery_recipient.set", "params": {"recipient": RECOVERY}})
+}
+
+fn scheduler(f: &Fixture) -> Arc<BackupScheduler> {
+    f.record(100, &[destination(), recovery()], "succeeded");
+    BackupScheduler::new(f.deps.clone(), f.sink.clone(), SERVER_RECIPIENT.to_owned())
+}
+
+async fn tick_at(f: &Fixture, s: &Arc<BackupScheduler>, now: &str) {
+    f.clock.set(now);
+    s.tick();
+    s.settle().await;
+}
+
+fn backup_runs(f: &Fixture) -> Vec<BackupRun> {
+    f.deps
+        .ops
+        .list(
+            RecordKind::BackupRun,
+            &Listing {
+                limit: 100,
+                ascending: true,
+                ..Default::default()
+            },
+        )
+        .iter()
+        .filter_map(|row| row.decode())
+        .collect()
+}
+
+#[tokio::test]
+async fn a_scheduled_backup_records_its_artifact_then_prunes_under_the_same_binding() {
+    let f = Fixture::new("backup-run", "2026-09-23T02:00:00Z");
+    let plan = f.record(1, &[policy(PG, "0 3 * * *", Value::Null)], "succeeded");
+    let s = scheduler(&f);
+    tick_at(&f, &s, "2026-09-23T02:59:55Z").await;
+    f.runner.answer(
+        "backup_run",
+        json!({"outcome": "succeeded", "backup_id": BACKUP_B,
+               "backup_digest_hex": "ab".repeat(32), "size_bytes": 1234}),
+    );
+    f.runner
+        .answer("backup_prune", json!({"deleted": [BACKUP_A]}));
+    // An older artifact of this policy that prune removes.
+    s.put_artifact(&BackupArtifact {
+        id: BACKUP_A.to_owned(),
+        policy_id: PG.to_owned(),
+        created_at: Some(pts(1)),
+        ..Default::default()
+    });
+    tick_at(&f, &s, "2026-09-23T03:00:05Z").await;
+    let schedule = json!({"plan_id": plan, "plan_digest_hex": format!("{:064x}", 1),
+        "action_index": 0, "scheduled_for": "2026-09-23T03:00:00Z", "attempt": 1});
+    assert_eq!(
+        f.runner.ops("backup_run"),
+        [json!({"op": "backup_run", "schedule": schedule, "payload": {}})]
+    );
+    assert_eq!(
+        f.runner.ops("backup_prune"),
+        [json!({"op": "backup_prune", "schedule": schedule, "payload": {}})]
+    );
+    let runs = backup_runs(&f);
+    assert_eq!(runs.len(), 1);
+    assert_eq!(runs[0].status, BackupRunStatus::Succeeded as i32);
+    assert_eq!(runs[0].artifact_id, BACKUP_B);
+    assert_eq!(runs[0].content_digest_hex, "ab".repeat(32));
+    let artifact: BackupArtifact = f
+        .deps
+        .ops
+        .get(RecordKind::Artifact, BACKUP_B)
+        .unwrap()
+        .decode()
+        .unwrap();
+    assert_eq!(
+        artifact.location,
+        format!(
+            "/var/lib/permanu/backups/permanu/v1/{}/{PG}/{BACKUP_B}.age",
+            f.deps.server_id
+        )
+    );
+    assert_eq!(
+        artifact.age_recipients,
+        [fingerprint(SERVER_RECIPIENT), fingerprint(RECOVERY)]
+    );
+    assert!(artifact.expires_at.is_none());
+    let pruned: BackupArtifact = f
+        .deps
+        .ops
+        .get(RecordKind::Artifact, BACKUP_A)
+        .unwrap()
+        .decode()
+        .unwrap();
+    assert!(pruned.expires_at.is_some());
+    let defs = s.definitions();
+    let proto = s.policy_proto(&defs.policies[PG], &defs);
+    assert_eq!(
+        proto.destination.unwrap().kind,
+        backup_destination::Kind::Local as i32
+    );
+    assert_eq!(proto.age_recipients.len(), 2);
+    assert_eq!(
+        proto.last_run.unwrap().status,
+        BackupRunStatus::Succeeded as i32
+    );
+    assert_eq!(
+        proto.next_run_at.unwrap().seconds,
+        super::super::test_support::at("2026-09-24T03:00:00Z")
+    );
+}
+
+#[tokio::test]
+async fn failed_backups_get_three_attempts_then_report() {
+    let f = Fixture::new("backup-retry", "2026-09-23T02:00:00Z");
+    f.record(1, &[policy(PG, "0 3 * * *", Value::Null)], "succeeded");
+    let s = scheduler(&f);
+    tick_at(&f, &s, "2026-09-23T02:59:55Z").await;
+    f.runner.answer(
+        "backup_run",
+        json!({"outcome": "failed", "error": "pg_dump exited 1"}),
+    );
+    tick_at(&f, &s, "2026-09-23T03:00:05Z").await;
+    tick_at(&f, &s, "2026-09-23T03:00:15Z").await;
+    tick_at(&f, &s, "2026-09-23T03:00:35Z").await;
+    tick_at(&f, &s, "2026-09-23T03:05:00Z").await;
+    let attempts: Vec<Value> = f
+        .runner
+        .ops("backup_run")
+        .iter()
+        .map(|r| r["schedule"]["attempt"].clone())
+        .collect();
+    assert_eq!(attempts, [json!(1), json!(2), json!(3)]);
+    assert!(f.runner.ops("backup_prune").is_empty());
+    let events = f.sink.0.lock().unwrap().clone();
+    assert_eq!(events.len(), 1);
+    assert_eq!(events[0].kind, Cond::BackupFailed);
+    assert!(events[0].occurred);
+    assert!(backup_runs(&f)
+        .iter()
+        .all(|r| r.status == BackupRunStatus::Failed as i32));
+}
+
+#[tokio::test]
+async fn verify_restore_runs_on_its_own_schedule_and_reports_failures() {
+    let f = Fixture::new("backup-verify", "2026-09-27T03:00:00Z");
+    f.record(
+        1,
+        &[policy(PG, "0 3 * * *", json!("0 4 * * 0"))],
+        "succeeded",
+    );
+    let s = scheduler(&f);
+    s.put_artifact(&BackupArtifact {
+        id: BACKUP_A.to_owned(),
+        policy_id: PG.to_owned(),
+        ..Default::default()
+    });
+    tick_at(&f, &s, "2026-09-27T03:59:55Z").await;
+    f.runner.answer(
+        "backup_verify",
+        json!({"outcome": "failed", "backup_id": BACKUP_A, "checks": [
+            {"name": "plaintext_digest", "passed": true},
+            {"name": "tables_present", "passed": false, "detail": "no user tables"}]}),
+    );
+    tick_at(&f, &s, "2026-09-27T04:00:05Z").await;
+    let sent = f.runner.ops("backup_verify");
+    assert_eq!(sent.len(), 1);
+    assert_eq!(sent[0]["schedule"]["scheduled_for"], "2026-09-27T04:00:00Z");
+    let verifications: Vec<RestoreVerification> = f
+        .deps
+        .ops
+        .list(
+            RecordKind::Verification,
+            &Listing {
+                limit: 10,
+                ..Default::default()
+            },
+        )
+        .iter()
+        .filter_map(|row| row.decode())
+        .collect();
+    assert_eq!(verifications.len(), 1);
+    assert_eq!(
+        verifications[0].status,
+        RestoreVerificationStatus::Failed as i32
+    );
+    assert_eq!(verifications[0].error, "tables_present");
+    assert_eq!(verifications[0].checks.len(), 2);
+    let artifact: BackupArtifact = f
+        .deps
+        .ops
+        .get(RecordKind::Artifact, BACKUP_A)
+        .unwrap()
+        .decode()
+        .unwrap();
+    assert_eq!(
+        artifact.last_verification,
+        RestoreVerificationStatus::Failed as i32
+    );
+    let events = f.sink.0.lock().unwrap().clone();
+    assert_eq!(events[0].kind, Cond::RestoreVerificationFailed);
+    assert!(events[0].occurred);
+}
+
+#[tokio::test]
+async fn one_backup_runs_per_server_at_a_time() {
+    let f = Fixture::new("backup-serial", "2026-09-23T02:00:00Z");
+    let other = "01a0cdb5-3500-70d1-8000-000000000002";
+    f.record(
+        1,
+        &[
+            policy(PG, "0 3 * * *", Value::Null),
+            policy(other, "0 3 * * *", Value::Null),
+        ],
+        "succeeded",
+    );
+    let s = scheduler(&f);
+    tick_at(&f, &s, "2026-09-23T02:59:55Z").await;
+    f.runner.hold("backup_run");
+    f.runner
+        .answer("backup_run", json!({"outcome": "succeeded"}));
+    f.clock.set("2026-09-23T03:00:05Z");
+    s.tick();
+    for _ in 0..50 {
+        tokio::task::yield_now().await;
+    }
+    assert_eq!(f.runner.ops("backup_run").len(), 1);
+    f.runner.release("backup_run", 10);
+    s.settle().await;
+    assert_eq!(f.runner.ops("backup_run").len(), 2);
+}
+
+#[tokio::test]
+async fn after_downtime_a_recent_fire_time_runs_once_and_an_old_one_is_reported() {
+    let f = Fixture::new("backup-downtime", "2026-09-23T00:00:00Z");
+    f.record(1, &[policy(PG, "0 5 * * *", Value::Null)], "succeeded");
+    let s = scheduler(&f);
+    f.runner
+        .answer("backup_run", json!({"outcome": "succeeded"}));
+    tick_at(&f, &s, "2026-09-23T00:00:05Z").await;
+    // Down until 05:30: 05:00 is 30 min old and runs once.
+    tick_at(&f, &s, "2026-09-23T05:30:00Z").await;
+    let sent = f.runner.ops("backup_run");
+    assert_eq!(sent.len(), 1);
+    assert_eq!(sent[0]["schedule"]["scheduled_for"], "2026-09-23T05:00:00Z");
+    // Down again past the one-hour window of the next fire time.
+    tick_at(&f, &s, "2026-09-24T07:30:00Z").await;
+    assert_eq!(f.runner.ops("backup_run").len(), 1);
+    let runs = backup_runs(&f);
+    let missed = runs.last().unwrap();
+    assert_eq!(missed.status, BackupRunStatus::Failed as i32);
+    assert!(missed.error.starts_with("missed:"));
+    assert!(f
+        .sink
+        .0
+        .lock()
+        .unwrap()
+        .iter()
+        .any(|e| e.kind == Cond::BackupFailed && e.occurred));
+}
+
+#[tokio::test]
+async fn manual_backups_are_recorded_from_their_admission() {
+    let f = Fixture::new("backup-manual", "2026-09-23T10:00:00Z");
+    f.record(1, &[policy(PG, "0 3 * * *", Value::Null)], "succeeded");
+    let s = scheduler(&f);
+    let plan = f.record(
+        2,
+        &[json!({"kind": "backup.run", "params": {"resource_id": PG}})],
+        "",
+    );
+    tick_at(&f, &s, "2026-09-23T10:00:05Z").await;
+    let runs = backup_runs(&f);
+    assert_eq!(runs.len(), 1);
+    assert_eq!(runs[0].trigger, backup_run::Trigger::Manual as i32);
+    assert_eq!(runs[0].status, BackupRunStatus::Dumping as i32);
+    f.finish(&plan, "succeeded");
+    tick_at(&f, &s, "2026-09-23T10:00:25Z").await;
+    let runs = backup_runs(&f);
+    assert_eq!(runs.len(), 1);
+    assert_eq!(runs[0].status, BackupRunStatus::Succeeded as i32);
+    assert_eq!(
+        runs[0].operation_id, plan,
+        "the fixture uses the plan id as operation id"
+    );
+}
+
+#[test]
+fn locations_follow_the_section_3_8_layout() {
+    let dest = DestinationDef {
+        destination_ref: "d".to_owned(),
+        kind: "r2".to_owned(),
+        endpoint: "https://acct.r2.cloudflarestorage.com".to_owned(),
+        region: String::new(),
+        bucket: "backups".to_owned(),
+        prefix: "team/a".to_owned(),
+        credential_digest: String::new(),
+        plan_digest_hex: String::new(),
+    };
+    assert_eq!(
+        location(&dest, "srv", "res", "bid"),
+        "r2://backups/team/a/permanu/v1/srv/res/bid.age"
+    );
+}

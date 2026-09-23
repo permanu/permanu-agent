@@ -12,7 +12,7 @@ use super::crypto::{b64url_encode, prefixed_digest, PLAN_PREFIX};
 use super::jcs::canonicalize;
 use super::text;
 use super::trust::{validate_trust, TrustMode, TrustStore};
-use super::verify::{DeliveryRecord, PolicyContext, RuleRecord, GENESIS_HEAD};
+use super::verify::{DeliveryRecord, PolicyContext, RuleRecord, SignedScope, GENESIS_HEAD};
 use super::PlanCode;
 
 pub const SERVER_A: &str = "01a0cdb5-3500-70a1-8000-000000000001";
@@ -23,6 +23,7 @@ pub fn vector(name: &str) -> Value {
         "plans" => include_str!("../../tests/vectors/signed-plan/plans.json"),
         "policy-cases" => include_str!("../../tests/vectors/signed-plan/policy-cases.json"),
         "trusted-keys" => include_str!("../../tests/vectors/signed-plan/trusted-keys.json"),
+        "artifact-cases" => include_str!("../../tests/vectors/signed-plan/artifact-cases.json"),
         _ => panic!("unknown vector file {name}"),
     };
     serde_json::from_str(text).expect("vector json")
@@ -164,6 +165,12 @@ impl PolicyContext for VectorContext {
                 .iter()
                 .map(|id| id.as_str().unwrap().to_owned())
                 .collect(),
+            environments: d["environments"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|env| env.as_str().unwrap().to_owned())
+                .collect(),
         }))
     }
 
@@ -193,6 +200,53 @@ impl PolicyContext for VectorContext {
             )
         }))
     }
+
+    fn admission_scope(
+        &self,
+        plan_id: &str,
+        plan_digest_hex: &str,
+    ) -> Result<Option<SignedScope>, PlanCode> {
+        let field = |a: &Value, name: &str| a[name].as_str().unwrap_or_default().to_owned();
+        Ok(find(&self.context["admissions"], |a| {
+            a["plan_id"] == plan_id && a["plan_digest_hex"] == plan_digest_hex
+        })
+        .map(|a| {
+            (
+                field(a, "project_id"),
+                field(a, "environment"),
+                field(a, "environment_id"),
+            )
+        }))
+    }
+
+    fn service_scope(&self, service_id: &str) -> Result<Option<SignedScope>, PlanCode> {
+        Ok(scope_triple(&self.context["service_scopes"][service_id]))
+    }
+
+    fn cron_scope(&self, cron_id: &str) -> Result<Option<SignedScope>, PlanCode> {
+        Ok(scope_triple(&self.context["cron_scopes"][cron_id]))
+    }
+
+    fn backup_policies(&self, resource_id: &str) -> Result<Vec<Value>, PlanCode> {
+        Ok(self.context["backup_policies"]
+            .get(resource_id)
+            .cloned()
+            .into_iter()
+            .collect())
+    }
+
+    fn environment_protected(&self, project_id: &str, environment: &str) -> Result<bool, PlanCode> {
+        Ok(find(&self.context["protected_scopes"], |p| {
+            p["project_id"] == project_id && p["environment"] == environment
+        })
+        .is_some())
+    }
+}
+
+fn scope_triple(value: &Value) -> Option<SignedScope> {
+    let items = value.as_array()?;
+    let part = |i: usize| items.get(i).and_then(Value::as_str).map(str::to_owned);
+    Some((part(0)?, part(1)?, part(2)?))
 }
 
 pub fn case_specs(case: &Value) -> Vec<String> {

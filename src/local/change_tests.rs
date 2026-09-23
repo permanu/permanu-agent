@@ -351,12 +351,12 @@ async fn updates_without_an_artifact_trust_root_are_refused_before_admission() {
     };
     let refused = [
         json!({"kind": "agent.update", "params": {"version": "1.2.3",
-               "artifact_digest_hex": digest, "bundle_manifest_digest_hex": digest}}),
+               "artifact_digest_hex": digest, "bundle_manifest_digest_hex": digest, "allow_downgrade": false}}),
         json!({"kind": "component.update", "params": {"component": "runner", "version": "1.2.3",
-               "artifact_digest_hex": digest, "bundle_manifest_digest_hex": digest}}),
+               "artifact_digest_hex": digest, "bundle_manifest_digest_hex": digest, "allow_downgrade": false}}),
         json!({"kind": "component.update", "params": {"component": "permanu-env",
                "version": "1.2.3", "artifact_digest_hex": digest,
-               "bundle_manifest_digest_hex": digest}}),
+               "bundle_manifest_digest_hex": digest, "allow_downgrade": false}}),
     ];
     for (index, action) in refused.into_iter().enumerate() {
         let status = change
@@ -384,7 +384,7 @@ async fn updates_without_an_artifact_trust_root_are_refused_before_admission() {
     // Dwaar updates are built in M1 and pass this gate.
     let dwaar = json!({"kind": "component.update", "params": {"component": "dwaar",
                        "version": "0.3.24", "artifact_digest_hex": digest,
-                       "bundle_manifest_digest_hex": digest}});
+                       "bundle_manifest_digest_hex": digest, "allow_downgrade": false}});
     let admitted = change
         .submit_signed_plan(submit(plan_for("b0", dwaar)))
         .await

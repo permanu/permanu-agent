@@ -1,5 +1,5 @@
 //! The vendored signed-plan vectors must be byte-identical to the frozen
-//! contract (`docs` tag `contracts-v1.0.6`, `contracts/vectors/signed-plan`).
+//! contract (`docs` tag `contracts-v1.1.2`, `contracts/vectors/signed-plan`).
 //! `keys.json` (public TEST private keys) is deliberately not vendored.
 
 use std::collections::BTreeSet;
@@ -24,13 +24,13 @@ fn vendored_vectors_match_the_contract_tag_checksums() {
         assert_eq!(
             hex::encode(Sha256::digest(&bytes)),
             expected,
-            "{name} differs from contracts-v1.0.6"
+            "{name} differs from contracts-v1.1.2"
         );
         listed.insert(name.to_owned());
     }
     assert_eq!(
         header.as_deref(),
-        Some("contracts-v1.0.6 37691f9891a895539071b944273df72c5e5429e1 contracts/vectors/signed-plan")
+        Some("contracts-v1.1.2 099864c3fa94abce14c6d7333ad84fd4fdddabe3 contracts/vectors/signed-plan")
     );
     let present: BTreeSet<String> = std::fs::read_dir(&directory)
         .expect("vector directory")
@@ -77,7 +77,12 @@ fn admissions_schema_is_the_normative_ddl() {
     let contract = rusqlite::Connection::open_in_memory().unwrap();
     contract.execute_batch(ddl).unwrap();
     let ours = rusqlite::Connection::open_in_memory().unwrap();
-    for file in ["schema_v1.sql", "schema_v1_agent.sql", "schema_v2.sql"] {
+    for file in [
+        "schema_v1.sql",
+        "schema_v1_agent.sql",
+        "schema_v2.sql",
+        "schema_v3.sql",
+    ] {
         let sql = std::fs::read_to_string(manifest.join("src/admissions").join(file)).unwrap();
         ours.execute_batch(&sql).unwrap();
     }
@@ -88,7 +93,8 @@ fn admissions_schema_is_the_normative_ddl() {
         .unwrap()
         .collect::<Result<_, _>>()
         .unwrap();
-    assert_eq!(tables.len(), 13);
+    // v1.0.8 (stated in v1.0.10, D-060): `rejected_deliveries` is the 14th.
+    assert_eq!(tables.len(), 14);
     type Column = (String, String, i64, Option<String>, i64);
     let columns = |conn: &rusqlite::Connection, table: &str| -> Vec<Column> {
         conn.prepare(&format!("PRAGMA table_info({table})"))

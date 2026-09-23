@@ -13,6 +13,8 @@ use super::{
 const CRON_PARAMS: &[(&str, Shape)] = &[
     ("cron_id", UUID7),
     ("service_id", UUID7),
+    // contracts v1.1.0: the signed job name.
+    ("name", LABEL),
     ("schedule", CRON),
     ("timezone", TZ),
     ("command", ARGV),
@@ -142,6 +144,8 @@ fn params_for(kind: &str) -> Option<&'static [(&'static str, Shape)]> {
             ("resource_id", UUID7),
             ("backup_id", UUID7),
             ("backup_digest_hex", HEX64),
+            // contracts v1.1.0 (section 3.8): who wrote the object.
+            ("origin", Shape::Enum(&["server", "imported"])),
         ],
         "db.upgrade" => &[
             ("resource_id", UUID7),
@@ -180,6 +184,8 @@ fn params_for(kind: &str) -> Option<&'static [(&'static str, Shape)]> {
             ("version", Shape::Pattern(text::semver)),
             ("artifact_digest_hex", HEX64),
             ("bundle_manifest_digest_hex", HEX64),
+            // v1.0.8 (section 3.9 step 5b).
+            ("allow_downgrade", Shape::Bool),
         ],
         "component.update" => &[
             (
@@ -189,6 +195,7 @@ fn params_for(kind: &str) -> Option<&'static [(&'static str, Shape)]> {
             ("version", Shape::Text(1, 64)),
             ("artifact_digest_hex", Shape::Nullable(&HEX64)),
             ("bundle_manifest_digest_hex", Shape::Nullable(&HEX64)),
+            ("allow_downgrade", Shape::Bool),
         ],
         "shell.open" => &[
             ("service_id", Shape::Nullable(&UUID7)),
@@ -198,7 +205,7 @@ fn params_for(kind: &str) -> Option<&'static [(&'static str, Shape)]> {
         "rule.revoke" => &[("rule_id", UUID7), ("rule_digest_hex", HEX64)],
         "key.add" => &[("entry", KEY_ENTRY)],
         "key.revoke" => &[("revocation", REVOCATION)],
-        _ => return None,
+        _ => return super::actions_m2::params_for(kind),
     })
 }
 
@@ -208,6 +215,12 @@ fn params_for(kind: &str) -> Option<&'static [(&'static str, Shape)]> {
 fn params_of(kind: &str, params: Option<&Value>) -> Option<&'static [(&'static str, Shape)]> {
     if kind == "rollback" && params.is_some_and(|p| p.get("to_release_id").is_some()) {
         return Some(ROLLBACK_LEGACY);
+    }
+    // v1.0.10 (D-060): `recovery_recipient.set` may carry `fingerprint_hex`.
+    if kind == "recovery_recipient.set"
+        && params.is_some_and(|p| p.get("fingerprint_hex").is_some())
+    {
+        return super::actions_m2::params_for("recovery_recipient.set+fingerprint");
     }
     params_for(kind)
 }
@@ -240,6 +253,10 @@ const SERVER_KINDS: &[&str] = &[
     "telemetry.retention.set",
 ];
 const NEUTRAL_KIND: &str = "operation.cancel";
+
+fn server_kind(kind: &str) -> bool {
+    SERVER_KINDS.contains(&kind) || super::actions_m2::SERVER_KINDS_M2.contains(&kind)
+}
 
 fn nonce(value: &Value) -> bool {
     value
@@ -354,8 +371,8 @@ fn scope_rules_hold(plan: &Value, kinds: &[&str]) -> bool {
     let no_services = plan["service_ids"].as_array().is_some_and(Vec::is_empty);
     if kinds.contains(&NEUTRAL_KIND) {
         kinds.len() == 1 && no_services && has_project == has_environment
-    } else if kinds.iter().any(|kind| SERVER_KINDS.contains(kind)) {
-        kinds.iter().all(|kind| SERVER_KINDS.contains(kind))
+    } else if kinds.iter().any(|kind| server_kind(kind)) {
+        kinds.iter().all(|kind| server_kind(kind))
             && !has_project
             && !has_environment
             && no_services
@@ -403,9 +420,12 @@ fn action_rules_hold(plan: &Value, action: &Value) -> bool {
         "project.delete" => params["project_id"] == plan["project_id"],
         "environment.delete" => params["environment"] == plan["environment"],
         "domain.switch" => params["from_hostname"] != params["to_hostname"],
-        "backup.policy.set" => ["keep_daily", "keep_weekly", "keep_monthly"]
-            .iter()
-            .any(|keep| params[*keep].as_i64().unwrap_or(0) > 0),
-        _ => true,
+        "backup.policy.set" => {
+            ["keep_daily", "keep_weekly", "keep_monthly"]
+                .iter()
+                .any(|keep| params[*keep].as_i64().unwrap_or(0) > 0)
+                && super::actions_m2::action_rules_hold(plan, "backup.policy.set", params)
+        }
+        kind => super::actions_m2::action_rules_hold(plan, kind, params),
     }
 }

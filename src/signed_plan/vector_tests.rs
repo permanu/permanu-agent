@@ -1,4 +1,4 @@
-//! Contract vectors (contracts-v1.0.6): JCS, digests, signatures, the trust
+//! Contract vectors (contracts-v1.1.2): JCS, digests, signatures, the trust
 //! store, every policy case through the full ordered verifier (steps 1–12)
 //! and the bootstrap cases.
 
@@ -50,11 +50,18 @@ fn plan_vectors_match_jcs_digest_specs_and_signatures() {
 #[test]
 fn state_head_chain_matches_the_worked_vector() {
     let before = "4a98af3eeae054bf7585746ce20fa5907ec9c079ee1b049a7d01146d1c92ebfb";
-    let digest = "a878a86e93e31c3f2551ac3e8355a75efe24e7517580357b83960057bac55e1a";
-    let after = next_head(before, digest);
+    let plans = vector("plans");
+    assert_eq!(plans["extras"]["state_head_before_hex"], before);
+    let user_deploy = plans["vectors"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|case| case["name"] == "user-deploy")
+        .unwrap();
+    let after = next_head(before, user_deploy["digest_hex"].as_str().unwrap());
     assert_eq!(
         after,
-        "b896fd0b423eabc4f460209d90a216ab3df487eea383c0d5133ffbf6de9e6b30"
+        "46621faca524ff37eeb468903e0fb7faf0bfb27520fbb8b7521d9e7e7f05f766"
     );
     assert_eq!(
         vector("plans")["extras"]["state_head_after_user_deploy_hex"],
@@ -112,7 +119,8 @@ fn expected(expect: &str) -> Result<&'static str, PlanCode> {
 fn every_policy_case_returns_the_contract_code() {
     let cases = vector("policy-cases");
     let cases = cases["cases"].as_array().expect("cases");
-    assert_eq!(cases.len(), 78);
+    assert_eq!(cases.len(), 153);
+    let mut mismatches = Vec::new();
     for case in cases {
         let name = case["name"].as_str().unwrap();
         let context = VectorContext::new(case["mode"] == "production");
@@ -131,8 +139,12 @@ fn every_policy_case_returns_the_contract_code() {
             Verdict::Admit(_) => "OK",
             Verdict::Deduped { .. } => "DEDUPED",
         });
-        assert_eq!(actual, expected(case["expect"].as_str().unwrap()), "{name}");
+        let want = expected(case["expect"].as_str().unwrap());
+        if actual != want {
+            mismatches.push(format!("{name}: {actual:?} != {want:?}"));
+        }
     }
+    assert!(mismatches.is_empty(), "{mismatches:#?}");
 }
 
 #[test]

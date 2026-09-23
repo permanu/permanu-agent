@@ -25,8 +25,13 @@ pub struct ConsumedLine {
     pub seq: u64,
     pub at: String,
     pub event: String,
+    /// Empty on the v1.0.7+ lines that name no admission action (`run`,
+    /// `run_result`, `build`, `build_started`, `delivery`).
+    #[serde(default)]
     pub plan_id: String,
+    #[serde(default)]
     pub plan_digest_hex: String,
+    #[serde(default)]
     pub action_index: u32,
     #[serde(default)]
     pub op: Option<String>,
@@ -128,12 +133,7 @@ pub fn read_consumed_log(path: &Path, owner_uid: u32) -> LogRead {
                 continue;
             }
             match serde_json::from_slice::<ConsumedLine>(raw) {
-                Ok(line)
-                    if line.v == 1
-                        && matches!(line.event.as_str(), "consumed" | "op" | "result") =>
-                {
-                    read.lines.push(line);
-                }
+                Ok(line) if line.v == 1 && well_formed(raw, &line) => read.lines.push(line),
                 _ => read.problems.push("malformed consumed.log line".to_owned()),
             }
         }
@@ -143,6 +143,25 @@ pub fn read_consumed_log(path: &Path, owner_uid: u32) -> LogRead {
         }
     }
     read
+}
+
+/// The events that end or advance an admission action (section 14.5).
+const ACTION_EVENTS: &[&str] = &["consumed", "op", "result"];
+
+/// An action event names its plan, digest and action index; every other
+/// event (v1.0.7 `run`, `run_result`, `build`, v1.0.8 `delivery`, v1.0.9
+/// `build_started`, or one this agent does not know) only needs the common
+/// fields, and keeps the `seq` sequence gap-free.
+fn well_formed(raw: &[u8], line: &ConsumedLine) -> bool {
+    if !ACTION_EVENTS.contains(&line.event.as_str()) {
+        return !line.event.is_empty();
+    }
+    let Ok(value) = serde_json::from_slice::<serde_json::Value>(raw) else {
+        return false;
+    };
+    value["plan_id"].is_string()
+        && value["plan_digest_hex"].is_string()
+        && value["action_index"].is_u64()
 }
 
 const OUTCOMES: &[&str] = &["succeeded", "failed", "rolled_back", "cancelled", "expired"];
@@ -183,7 +202,9 @@ impl AdmissionStore {
                 });
             }
             last_seq = line.seq;
-            apply_line(&tx, line, &mut effects)?;
+            if ACTION_EVENTS.contains(&line.event.as_str()) {
+                apply_line(&tx, line, &mut effects)?;
+            }
         }
         tx.execute(
             "INSERT INTO consumed_reconciliation (id, last_seq, log_inode, log_offset, reconciled_at) \

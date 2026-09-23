@@ -106,7 +106,38 @@ enum Exec {
     Deploy,
     /// `bind_plan`, then these ops in order.
     Ops(&'static [&'static str]),
+    /// v1.0.7 definition kinds: `bind_plan` alone; the runner records the
+    /// definition (`consumed`, then `result succeeded`) and the schedulers
+    /// apply it once that result is reconciled (section 14.6).
+    Definition,
     NotImplemented,
+}
+
+/// Section 14.6 definition kinds (v1.0.7, v1.0.9).
+const DEFINITION_KINDS: &[&str] = &[
+    "cron.create",
+    "cron.update",
+    "cron.delete",
+    "cron.pause",
+    "cron.resume",
+    "backup.policy.set",
+    "backup.policy.delete",
+    "backup.destination.set",
+    "backup.destination.delete",
+    "recovery_recipient.set",
+    "env.protection.set",
+    "repo.credential.set",
+    "repo.credential.delete",
+];
+
+/// Why an `alert.rule.*` action cannot be applied (its signed `spec` is
+/// not a valid `AlertRule`), if so.
+fn alert_spec_error(kind: &str, params: &Value) -> Option<String> {
+    if !matches!(kind, "alert.rule.create" | "alert.rule.update") {
+        return None;
+    }
+    let text = |name: &str| params[name].as_str().unwrap_or_default();
+    super::sched::alert_spec::parse(text("alert_rule_id"), text("name"), text("spec")).err()
 }
 
 fn exec_of(kind: &str, params: &Value) -> Exec {
@@ -117,17 +148,29 @@ fn exec_of(kind: &str, params: &Value) -> Exec {
         "restart" => Exec::Ops(&["restart_release"]),
         "operation.cancel" => Exec::Ops(&["cancel_execution"]),
         // v1.0.4 (D-040): agent.update runs its own op; install_artifact
-        // serves component.update only.
-        "agent.update" => Exec::Ops(&["update_agent"]),
+        // serves component.update only. v1.0.7 (D-051): the runner's
+        // stage_artifact_verify copies and verifies the staged set first.
+        "agent.update" => Exec::Ops(&["stage_artifact_verify", "update_agent"]),
         "component.update"
             if matches!(
                 params["component"].as_str(),
                 Some("dwaar" | "runner" | "permanu-env")
             ) =>
         {
-            Exec::Ops(&["install_artifact"])
+            Exec::Ops(&["stage_artifact_verify", "install_artifact"])
         }
-        "key.add" | "key.revoke" => Exec::Ops(&["update_trusted_keys"]),
+        // v1.0.7 (D-051): release keys through the same trust-file op.
+        "key.add" | "key.revoke" | "release_key.add" | "release_key.revoke" => {
+            Exec::Ops(&["update_trusted_keys"])
+        }
+        // v1.0.7 plan-bound cron and backup ops (section 14.6).
+        "cron.run" => Exec::Ops(&["run_cron"]),
+        "backup.run" => Exec::Ops(&["backup_run"]),
+        "backup.verify" => Exec::Ops(&["backup_verify"]),
+        "backup.delete" => Exec::Ops(&["backup_delete"]),
+        "restore" => Exec::Ops(&["restore_backup"]),
+        kind if kind.starts_with("alert.") => Exec::Agent,
+        kind if DEFINITION_KINDS.contains(&kind) => Exec::Definition,
         kind if INPUT_KINDS.contains(&kind) => Exec::Input,
         _ => Exec::NotImplemented,
     }
@@ -317,6 +360,9 @@ pub struct ChangeCore {
     /// One reconciliation pass at a time, so a pass that returns has
     /// emitted every event of the lines it read.
     reconciling: tokio::sync::Mutex<()>,
+    /// Artifact staging (`artifacts.v1`, D-051): once set, updates are
+    /// admitted when their set is staged instead of refused (D-046).
+    pub staging: std::sync::OnceLock<Arc<super::artifacts::Artifacts>>,
 }
 
 /// (failure_code, error, error_code) of an action.
@@ -380,6 +426,7 @@ impl ChangeCore {
             failures: Mutex::new(HashMap::new()),
             held: Mutex::new(HashMap::new()),
             reconciling: tokio::sync::Mutex::new(()),
+            staging: std::sync::OnceLock::new(),
         })
     }
 
@@ -959,7 +1006,7 @@ impl ChangeCore {
                         action.kind
                     ),
                 )),
-                Exec::Input => self.bind(&record, &action).await.err(),
+                Exec::Input | Exec::Definition => self.bind(&record, &action).await.err(),
                 Exec::Deploy => Some(match self.bind(&record, &action).await {
                     Ok(()) => self.run_deploy(&record, &plan, &action, &done).await,
                     Err(outcome) => outcome,
@@ -1551,6 +1598,9 @@ impl ChangeCore {
     /// transaction already wrote rules; `server.add` adopted the server id
     /// at bootstrap; `service.elevate` only authorizes the named spec.
     fn apply_agent_action(&self, action: &ActionRecord, params: &Value) -> Outcome {
+        if let Some(error) = alert_spec_error(&action.kind, params) {
+            return Outcome::with("failed", "", format!("invalid alert rule spec: {error}"));
+        }
         if matches!(action.kind.as_str(), "rule.create" | "rule.revoke") {
             let subject = params["rule"]["id"]
                 .as_str()
@@ -1815,12 +1865,16 @@ mod tests {
             exec_of("operation.cancel", &none),
             Exec::Ops(&["cancel_execution"])
         );
-        // v1.0.4 (D-040): agent.update has its own op.
-        assert_eq!(exec_of("agent.update", &none), Exec::Ops(&["update_agent"]));
+        // v1.0.4 (D-040): agent.update has its own op; v1.0.7 (D-051):
+        // stage_artifact_verify is the first op of both updates.
+        assert_eq!(
+            exec_of("agent.update", &none),
+            Exec::Ops(&["stage_artifact_verify", "update_agent"])
+        );
         for component in ["dwaar", "runner", "permanu-env"] {
             assert_eq!(
                 exec_of("component.update", &json!({"component": component})),
-                Exec::Ops(&["install_artifact"]),
+                Exec::Ops(&["stage_artifact_verify", "install_artifact"]),
                 "{component}"
             );
         }
@@ -1842,9 +1896,62 @@ mod tests {
         ] {
             assert_eq!(exec_of(kind, &none), Exec::Agent, "{kind}");
         }
-        for kind in ["scale", "cron.run", "backup.verify", "alert.silence"] {
+        // v1.0.7 definition kinds: bind_plan alone; the runner records them.
+        for kind in [
+            "cron.create",
+            "cron.update",
+            "cron.delete",
+            "cron.pause",
+            "cron.resume",
+            "backup.policy.set",
+            "backup.policy.delete",
+            "backup.destination.set",
+            "backup.destination.delete",
+            "recovery_recipient.set",
+            "env.protection.set",
+            "repo.credential.set",
+            "repo.credential.delete",
+        ] {
+            assert_eq!(exec_of(kind, &none), Exec::Definition, "{kind}");
+        }
+        for (kind, op) in [
+            ("cron.run", "run_cron"),
+            ("backup.run", "backup_run"),
+            ("backup.verify", "backup_verify"),
+            ("backup.delete", "backup_delete"),
+            ("restore", "restore_backup"),
+            ("release_key.add", "update_trusted_keys"),
+            ("release_key.revoke", "update_trusted_keys"),
+        ] {
+            let Exec::Ops(ops) = exec_of(kind, &none) else {
+                panic!("{kind} runs ops");
+            };
+            assert_eq!(ops, [op], "{kind}");
+        }
+        for kind in [
+            "alert.rule.create",
+            "alert.rule.update",
+            "alert.rule.delete",
+            "alert.silence",
+            "alert.channel.create",
+            "alert.channel.update",
+            "alert.channel.delete",
+        ] {
+            assert_eq!(exec_of(kind, &none), Exec::Agent, "{kind}");
+        }
+        for kind in ["scale", "telemetry.retention.set", "db.upgrade"] {
             assert_eq!(exec_of(kind, &none), Exec::NotImplemented, "{kind}");
         }
+    }
+
+    #[test]
+    fn alert_rules_with_an_invalid_spec_are_not_applied() {
+        let valid = serde_json::json!({"alert_rule_id": "r", "name": "n",
+            "spec": "{\"event\": {\"kind\": \"KIND_CRON_FAILED\"}, \"enabled\": true}"});
+        assert_eq!(alert_spec_error("alert.rule.create", &valid), None);
+        let invalid = serde_json::json!({"alert_rule_id": "r", "name": "n", "spec": "{}"});
+        assert!(alert_spec_error("alert.rule.update", &invalid).is_some());
+        assert_eq!(alert_spec_error("alert.silence", &invalid), None);
     }
 
     #[test]

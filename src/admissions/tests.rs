@@ -14,7 +14,7 @@ const NOW: &str = "2026-09-23T10:05:00Z";
 const USER_DEPLOY_HEAD_BEFORE: &str =
     "4a98af3eeae054bf7585746ce20fa5907ec9c079ee1b049a7d01146d1c92ebfb";
 const USER_DEPLOY_HEAD_AFTER: &str =
-    "b896fd0b423eabc4f460209d90a216ab3df487eea383c0d5133ffbf6de9e6b30";
+    "46621faca524ff37eeb468903e0fb7faf0bfb27520fbb8b7521d9e7e7f05f766";
 const PROJECT: &str = "01a0cdb5-3500-70b1-8000-000000000001";
 
 fn now() -> i64 {
@@ -92,7 +92,7 @@ fn creates_the_normative_schema_with_wal_modes_and_version() {
     let version: i64 = conn
         .query_row("PRAGMA user_version", [], |r| r.get(0))
         .unwrap();
-    assert_eq!(version, 2);
+    assert_eq!(version, 3);
     let fk: i64 = conn
         .query_row("PRAGMA foreign_keys", [], |r| r.get(0))
         .unwrap();
@@ -107,6 +107,7 @@ fn creates_the_normative_schema_with_wal_modes_and_version() {
         "rules",
         "rule_invocations",
         "deliveries",
+        "rejected_deliveries",
         "delivery_consumptions",
         "builds",
         "sealed_secrets",
@@ -232,7 +233,7 @@ fn admits_the_user_deploy_vector_advances_the_head_and_dedupes() {
     assert!(!admission.deduplicated);
     assert_eq!(
         admission.plan_digest_hex,
-        "a878a86e93e31c3f2551ac3e8355a75efe24e7517580357b83960057bac55e1a"
+        "4a40f4aecabddaaa268c0ef56f33622650edadf111b017715a2c5d1550ec70e2"
     );
     assert_eq!(admission.admitted_at, NOW);
     assert_eq!(admission.deployment_ids.len(), 1);
@@ -455,6 +456,66 @@ fn reconciles_the_consumed_log_into_actions_and_outcome() {
     fs::remove_dir_all(dir).unwrap();
 }
 
+/// v1.0.7-v1.0.9 (section 14.5): `run`, `run_result`, `build`,
+/// `build_started` and `delivery` lines carry no admission action; the agent
+/// skips them for `admission_actions` without reporting them, and their
+/// `seq` keeps the sequence gap-free. An unknown event is ignored too.
+#[test]
+fn m2_consumed_log_lines_are_skipped_without_a_problem() {
+    let dir = temp_dir("store-reconcile-m2");
+    let (store, _) = AdmissionStore::open(&config(&dir), false, now()).unwrap();
+    seed_head(&store, USER_DEPLOY_HEAD_BEFORE);
+    let (envelope, specs) = user_deploy();
+    let admission = store
+        .admit(&test_trust(), &input(&envelope, &specs, now()))
+        .unwrap();
+    let (id, digest) = (&admission.plan_id, &admission.plan_digest_hex);
+    let log = dir.join("consumed.log");
+    let uid = unsafe { libc::geteuid() };
+    let other = |seq: u64, event: &str| {
+        serde_json::json!({"v": 1, "seq": seq, "at": "2026-09-23T10:06:00Z", "event": event,
+            "body_digest_hex": "a".repeat(64), "project_id": "p", "environments": ["production"]})
+        .to_string()
+    };
+    write_log(
+        &log,
+        &[
+            other(1, "delivery"),
+            line(2, "consumed", id, digest, None),
+            other(3, "build_started"),
+            other(4, "build"),
+            other(5, "some_future_event"),
+            line(6, "result", id, digest, Some("succeeded")),
+        ],
+        false,
+    );
+    let read = read_consumed_log(&log, uid);
+    assert!(read.problems.is_empty(), "{:?}", read.problems);
+    let effects = store.reconcile(&read, now()).unwrap();
+    assert!(
+        !effects
+            .iter()
+            .any(|e| matches!(e, ReconcileEffect::Unexplained { .. })),
+        "{effects:?}"
+    );
+    assert!(effects.contains(&ReconcileEffect::AdmissionFinished {
+        plan_id: id.clone(),
+        outcome: "succeeded".to_owned()
+    }));
+    // An action event without its plan fields is still malformed.
+    write_log(
+        &log,
+        &[
+            serde_json::json!({"v": 1, "seq": 7, "at": "2026-09-23T10:06:00Z",
+            "event": "consumed"})
+            .to_string(),
+        ],
+        false,
+    );
+    assert_eq!(read_consumed_log(&log, uid).problems.len(), 1);
+    fs::remove_dir_all(dir).unwrap();
+}
+
 /// v1.0.5 (D-044): a cancelled action's `result` line carries `cleanup`,
 /// and readers ignore fields they do not know (section 14.5).
 #[test]
@@ -594,7 +655,7 @@ fn runner_read_queries_work_on_the_agent_store() {
     let spec: String = conn
         .query_row(
             "SELECT spec_jcs FROM specs WHERE spec_digest_hex = ?1",
-            params!["7ca8d02473932190ad0735cc3a55b4035280f34ed003dcaa4f2f3caeebb1dab2"],
+            params!["20c40e231982e19a4b9138d298861d23925519b97333562870a3b9f238b279f5"],
             |r| r.get(0),
         )
         .unwrap();
@@ -611,7 +672,7 @@ const ENVIRONMENT_ID: &str = "01a0cdb5-3500-70b2-8000-000000000001";
 const WEB: &str = "01a0cdb5-3500-70c1-8000-000000000001";
 
 #[test]
-fn a_v1_store_migrates_to_the_v1_0_2_columns() {
+fn a_v1_store_migrates_through_the_v1_0_2_columns_to_version_three() {
     let dir = temp_dir("store-v1");
     let path = dir.join("agent/admissions.db");
     fs::create_dir_all(path.parent().unwrap()).unwrap();
@@ -632,11 +693,11 @@ fn a_v1_store_migrates_to_the_v1_0_2_columns() {
     let version: i64 = conn
         .query_row("PRAGMA user_version", [], |r| r.get(0))
         .unwrap();
-    assert_eq!(version, 2);
+    assert_eq!(version, 3);
     let schema: i64 = conn
         .query_row("SELECT schema_version FROM meta", [], |r| r.get(0))
         .unwrap();
-    assert_eq!(schema, 2);
+    assert_eq!(schema, 3);
     // Every v1.0.2 column the runner reads exists with its default.
     conn.query_row("SELECT environment_id FROM admissions LIMIT 0", [], |_| {
         Ok(())
@@ -651,15 +712,187 @@ fn a_v1_store_migrates_to_the_v1_0_2_columns() {
 }
 
 #[test]
-fn a_new_store_records_schema_version_two() {
-    let dir = temp_dir("store-v2");
+fn a_new_store_records_schema_version_three() {
+    let dir = temp_dir("store-v3-new");
     let (store, _) = AdmissionStore::open(&config(&dir), false, now()).unwrap();
     let schema: i64 = store
         .lock()
         .query_row("SELECT schema_version FROM meta", [], |r| r.get(0))
         .unwrap();
-    assert_eq!(schema, 2);
+    assert_eq!(schema, 3);
     fs::remove_dir_all(dir).unwrap();
+}
+
+/// signed-plan.md 6.4 (v1.0.8 DDL, migration stated in v1.0.10, D-060).
+#[test]
+fn a_v2_store_migrates_deliveries_and_gains_rejected_deliveries() {
+    let dir = temp_dir("store-v2-to-v3");
+    let path = dir.join("agent/admissions.db");
+    fs::create_dir_all(path.parent().unwrap()).unwrap();
+    let recent = crate::signed_plan::text::format_timestamp(
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs() as i64
+            - 3_600,
+    );
+    {
+        let conn = rusqlite::Connection::open(&path).unwrap();
+        conn.execute_batch(SCHEMA_V1).unwrap();
+        conn.execute_batch(SCHEMA_V1_AGENT).unwrap();
+        conn.execute_batch(SCHEMA_V2).unwrap();
+        conn.pragma_update(None, "user_version", 2).unwrap();
+        conn.execute(
+            "INSERT INTO meta (id, store_created_at, schema_version) VALUES (1, ?1, 2)",
+            params![NOW],
+        )
+        .unwrap();
+        seed_raw_admission(&conn, "01a0cdb5-3500-7001-8000-0000000000a1");
+        for (id, digest, received, status) in [
+            ("d-old", "11", "2020-01-01T00:00:00Z", "verified"),
+            ("d-new", "22", recent.as_str(), "verified"),
+            ("d-stale", "33", recent.as_str(), "stale"),
+            ("d-ignored", "44", recent.as_str(), "ignored"),
+        ] {
+            conn.execute(
+                "INSERT INTO deliveries VALUES (?1, 'github', ?2, 'github.com/acme/web', \
+                 'refs/heads/main', ?3, '2020-01-01T00:00:00Z', ?4, ?5)",
+                params![id, digest.repeat(32), "ab".repeat(20), received, status],
+            )
+            .unwrap();
+        }
+        conn.execute(
+            "INSERT INTO delivery_consumptions VALUES ('d-new', 'rule-1', \
+             '01a0cdb5-3500-7001-8000-0000000000a1', ?1)",
+            params![NOW],
+        )
+        .unwrap();
+    }
+    let (store, report) = AdmissionStore::open(&config(&dir), true, now()).unwrap();
+    assert!(!report.created);
+    let conn = store.lock();
+    let version: i64 = conn
+        .query_row("PRAGMA user_version", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(version, 3);
+    let schema: i64 = conn
+        .query_row("SELECT schema_version FROM meta", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(schema, 3);
+    let fk: i64 = conn
+        .query_row("PRAGMA foreign_keys", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(fk, 1, "foreign keys are back on after the rebuild");
+    let rows: Vec<(String, String, String, String, String)> = conn
+        .prepare(
+            "SELECT delivery_id, status, event, environments, expires_at FROM deliveries \
+             ORDER BY delivery_id",
+        )
+        .unwrap()
+        .query_map([], |r| {
+            Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?))
+        })
+        .unwrap()
+        .collect::<Result<_, _>>()
+        .unwrap();
+    let status: Vec<(&str, &str)> = rows.iter().map(|r| (r.0.as_str(), r.1.as_str())).collect();
+    assert_eq!(
+        status,
+        [
+            ("d-ignored", "ignored"),
+            ("d-new", "pending"),
+            ("d-old", "expired"),
+            ("d-stale", "stale")
+        ]
+    );
+    assert!(rows.iter().all(|r| r.2 == "push" && r.3 == "[]"));
+    assert_eq!(rows[2].4, "2020-01-08T00:00:00Z", "received_at + 7 days");
+    // The consumption still references the rebuilt table.
+    let violations: i64 = conn
+        .query_row("SELECT COUNT(*) FROM pragma_foreign_key_check", [], |r| {
+            r.get(0)
+        })
+        .unwrap();
+    assert_eq!(violations, 0);
+    assert!(conn
+        .execute(
+            "INSERT INTO delivery_consumptions VALUES ('missing', 'rule-2', \
+             '01a0cdb5-3500-7001-8000-0000000000a1', ?1)",
+            params![NOW],
+        )
+        .is_err());
+    conn.execute(
+        "INSERT INTO rejected_deliveries VALUES (?1, 10, ?2, 'github', ?3, 'signature')",
+        params!["cd".repeat(32), PROJECT, NOW],
+    )
+    .unwrap();
+    assert!(conn
+        .execute(
+            "INSERT INTO deliveries (delivery_id, provider, body_digest_hex, repo, ref, commit_sha, \
+             commit_time, received_at, expires_at, status) VALUES ('d-gitea', 'gitea', ?1, 'r', \
+             'refs/heads/main', ?2, ?3, ?3, ?3, 'verified')",
+            params!["ef".repeat(32), "ab".repeat(20), NOW],
+        )
+        .is_err(),
+        "verified is no longer a status"
+    );
+    drop(conn);
+    fs::remove_dir_all(dir).unwrap();
+}
+
+/// A dangling reference found by `foreign_key_check` rolls the migration
+/// back: the store stays at version 2 and the open fails.
+#[test]
+fn a_v3_migration_with_a_dangling_reference_rolls_back() {
+    let dir = temp_dir("store-v3-rollback");
+    let path = dir.join("agent/admissions.db");
+    fs::create_dir_all(path.parent().unwrap()).unwrap();
+    {
+        let conn = rusqlite::Connection::open(&path).unwrap();
+        conn.execute_batch(SCHEMA_V1).unwrap();
+        conn.execute_batch(SCHEMA_V1_AGENT).unwrap();
+        conn.execute_batch(SCHEMA_V2).unwrap();
+        conn.pragma_update(None, "user_version", 2).unwrap();
+        conn.execute(
+            "INSERT INTO meta (id, store_created_at, schema_version) VALUES (1, ?1, 2)",
+            params![NOW],
+        )
+        .unwrap();
+        // A dangling row, as a store written without foreign keys could hold.
+        conn.pragma_update(None, "foreign_keys", false).unwrap();
+        conn.execute(
+            "INSERT INTO delivery_consumptions VALUES ('nowhere', 'rule-1', 'no-plan', ?1)",
+            params![NOW],
+        )
+        .unwrap();
+    }
+    let mut conn = rusqlite::Connection::open(&path).unwrap();
+    assert!(migrate(&mut conn).is_err());
+    let version: i64 = conn
+        .query_row("PRAGMA user_version", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(version, 2);
+    let rejected: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM sqlite_master WHERE name = 'rejected_deliveries'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(rejected, 0);
+    drop(conn);
+    fs::remove_dir_all(dir).unwrap();
+}
+
+fn seed_raw_admission(conn: &rusqlite::Connection, plan_id: &str) {
+    conn.execute(
+        "INSERT INTO admissions (plan_id, plan_digest_hex, signed_plan_json, submitter, \
+         operation_id, admitted_at, admission_seq, nonce, author_kind, signer_key_ids, \
+         action_kinds, head_before_hex, head_after_hex, expires_at) VALUES (?1, ?2, '{}', \
+         'client', ?1, ?3, 1, ?1, 'user', '[]', '[]', ?2, ?2, ?3)",
+        params![plan_id, "0".repeat(64), NOW],
+    )
+    .unwrap();
 }
 
 #[test]

@@ -5,7 +5,9 @@
 //! - Schema: `schema_v1.sql` is the normative DDL of section 6.4 (v1.0.1),
 //!   verbatim; `schema_v1_agent.sql` adds agent-only tables and one trailing
 //!   nullable column, as section 6.4 allows; `schema_v2.sql` adds the v1.0.2
-//!   columns with `ADD COLUMN` (user_version 2). `PRAGMA user_version` is the migration
+//!   columns with `ADD COLUMN` (user_version 2); `schema_v3.sql` adds
+//!   `rejected_deliveries` and rebuilds `deliveries` (v1.0.8, user_version 3,
+//!   D-060). `PRAGMA user_version` is the migration
 //!   cursor; a newer store than this binary knows is refused (fail closed).
 //! - Files: database, `-wal` and `-shm` are `0640` with the configured owner
 //!   and group (`permanu-agent:permanu-runner`), the directory `2750`
@@ -18,8 +20,10 @@
 //!   1200 s quarantine (section 6.3).
 
 mod admit;
+pub mod definitions;
 mod query;
 mod reconcile;
+pub mod webhooks;
 
 #[cfg(test)]
 mod tests;
@@ -49,8 +53,31 @@ pub const OPERATION_EVENT_RETENTION_SECONDS: i64 = 7 * 86_400;
 const SCHEMA_V1: &str = include_str!("schema_v1.sql");
 const SCHEMA_V1_AGENT: &str = include_str!("schema_v1_agent.sql");
 const SCHEMA_V2: &str = include_str!("schema_v2.sql");
+const SCHEMA_V3: &str = include_str!("schema_v3.sql");
+
+/// One migration step: its SQL, and whether it rebuilds a table (section
+/// 6.4 v1.0.8: `foreign_keys` OFF for its duration, then
+/// `foreign_key_check`).
+struct Migration {
+    sql: &'static [&'static str],
+    rebuilds: bool,
+}
+
 /// Index i migrates user_version i → i + 1.
-const MIGRATIONS: &[&[&str]] = &[&[SCHEMA_V1, SCHEMA_V1_AGENT], &[SCHEMA_V2]];
+const MIGRATIONS: &[Migration] = &[
+    Migration {
+        sql: &[SCHEMA_V1, SCHEMA_V1_AGENT],
+        rebuilds: false,
+    },
+    Migration {
+        sql: &[SCHEMA_V2],
+        rebuilds: false,
+    },
+    Migration {
+        sql: &[SCHEMA_V3],
+        rebuilds: true,
+    },
+];
 pub const SCHEMA_VERSION: i64 = MIGRATIONS.len() as i64;
 
 const FILE_MODE: u32 = 0o640;
@@ -322,14 +349,44 @@ fn migrate(conn: &mut Connection) -> Result<(), StoreError> {
     if version > SCHEMA_VERSION {
         return Err(StoreError::TooNew(version));
     }
-    for (index, steps) in MIGRATIONS.iter().enumerate().skip(version as usize) {
-        let tx = conn.transaction()?;
-        for sql in *steps {
-            tx.execute_batch(sql)?;
+    for (index, step) in MIGRATIONS.iter().enumerate().skip(version as usize) {
+        if step.rebuilds {
+            // PRAGMA foreign_keys is a no-op inside a transaction.
+            conn.pragma_update(None, "foreign_keys", false)?;
         }
-        tx.pragma_update(None, "user_version", index as i64 + 1)?;
-        tx.commit()?;
+        let applied = apply_migration(conn, step, index as i64 + 1);
+        if step.rebuilds {
+            conn.pragma_update(None, "foreign_keys", true)?;
+        }
+        applied?;
     }
+    Ok(())
+}
+
+fn apply_migration(
+    conn: &mut Connection,
+    step: &Migration,
+    version: i64,
+) -> Result<(), StoreError> {
+    let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+    for sql in step.sql {
+        tx.execute_batch(sql)?;
+    }
+    if step.rebuilds {
+        let violations: i64 =
+            tx.query_row("SELECT COUNT(*) FROM pragma_foreign_key_check", [], |r| {
+                r.get(0)
+            })?;
+        if violations != 0 {
+            // Dropping the transaction rolls back: the store stays at the
+            // previous version and the agent reports INTERNAL.
+            return Err(StoreError::Unsafe(format!(
+                "migration to user_version {version}: {violations} foreign key violations"
+            )));
+        }
+    }
+    tx.pragma_update(None, "user_version", version)?;
+    tx.commit()?;
     Ok(())
 }
 

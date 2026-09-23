@@ -9,15 +9,15 @@ use rusqlite::{params, OptionalExtension, Transaction, TransactionBehavior};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
 
-use super::{new_uuid7, AdmissionStore};
+use super::{definitions, new_uuid7, AdmissionStore};
 use crate::signed_plan::crypto::hex;
 use crate::signed_plan::jcs::{canonicalize, parse_strict};
 use crate::signed_plan::schema::spec_elevated;
 use crate::signed_plan::text::format_timestamp;
 use crate::signed_plan::trust::{apply_change, TrustChange, TrustStore};
 use crate::signed_plan::verify::{
-    next_head, verify_signed_plan, DeliveryRecord, PolicyContext, RuleRecord, Submitter, Verdict,
-    VerifiedPlan, GENESIS_HEAD, SKEW_SECONDS,
+    next_head, verify_signed_plan, DeliveryRecord, PolicyContext, RuleRecord, SignedScope,
+    Submitter, Verdict, VerifiedPlan, GENESIS_HEAD, SKEW_SECONDS,
 };
 use crate::signed_plan::PlanCode;
 
@@ -161,12 +161,21 @@ impl PolicyContext for TxContext<'_> {
     }
 
     fn delivery(&self, delivery_id: &str) -> Result<Option<DeliveryRecord>, PlanCode> {
-        type Row = (String, String, String, String, String, String, String);
+        type Row = (
+            String,
+            String,
+            String,
+            String,
+            String,
+            String,
+            String,
+            String,
+        );
         let row: Option<Row> = self
             .tx
             .query_row(
-                "SELECT body_digest_hex, repo, ref, commit_sha, commit_time, received_at, status \
-                 FROM deliveries WHERE delivery_id = ?1",
+                "SELECT body_digest_hex, repo, ref, commit_sha, commit_time, received_at, status, \
+                 environments FROM deliveries WHERE delivery_id = ?1",
                 params![delivery_id],
                 |r| {
                     Ok((
@@ -177,14 +186,17 @@ impl PolicyContext for TxContext<'_> {
                         r.get(4)?,
                         r.get(5)?,
                         r.get(6)?,
+                        r.get(7)?,
                     ))
                 },
             )
             .optional()
             .map_err(internal)?;
-        let Some((body, repo, r#ref, sha, time, received, status)) = row else {
+        let Some((body, repo, r#ref, sha, time, received, status, environments)) = row else {
             return Ok(None);
         };
+        let environments: Vec<String> =
+            serde_json::from_str(&environments).map_err(|_| PlanCode::Internal)?;
         let mut statement = self
             .tx
             .prepare("SELECT rule_id FROM delivery_consumptions WHERE delivery_id = ?1")
@@ -201,8 +213,15 @@ impl PolicyContext for TxContext<'_> {
             commit_sha: sha,
             commit_time: time,
             received_at: received,
-            verified: status == "verified",
+            // v1.0.8 (agent-protocol.md 11.1): a verified delivery is
+            // `pending` until a rule consumes it; `ignored`, `stale` and
+            // `expired` ones are never evidence.
+            verified: matches!(
+                status.as_str(),
+                "pending" | "building" | "deployed" | "failed"
+            ),
             consumed_by_rule_ids: consumed,
+            environments,
         }))
     }
 
@@ -246,6 +265,38 @@ impl PolicyContext for TxContext<'_> {
             )
             .optional()
             .map_err(internal)
+    }
+
+    fn admission_scope(
+        &self,
+        plan_id: &str,
+        plan_digest_hex: &str,
+    ) -> Result<Option<SignedScope>, PlanCode> {
+        self.tx
+            .query_row(
+                "SELECT project_id, environment, environment_id FROM admissions \
+                 WHERE plan_id = ?1 AND plan_digest_hex = ?2",
+                params![plan_id, plan_digest_hex],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+            )
+            .optional()
+            .map_err(internal)
+    }
+
+    fn service_scope(&self, service_id: &str) -> Result<Option<SignedScope>, PlanCode> {
+        definitions::service_scope(self.tx, service_id).map_err(internal)
+    }
+
+    fn cron_scope(&self, cron_id: &str) -> Result<Option<SignedScope>, PlanCode> {
+        definitions::cron_scope(self.tx, cron_id).map_err(internal)
+    }
+
+    fn backup_policies(&self, resource_id: &str) -> Result<Vec<Value>, PlanCode> {
+        definitions::backup_policies(self.tx, resource_id).map_err(internal)
+    }
+
+    fn environment_protected(&self, project_id: &str, environment: &str) -> Result<bool, PlanCode> {
+        definitions::environment_protected(self.tx, project_id, environment).map_err(internal)
     }
 }
 
@@ -356,6 +407,8 @@ fn execution_preconditions(
     }
 
     check_input_composition(ctx, verified)?;
+    // agent-protocol.md 10.1, 10.2: the named job, service or destination.
+    definitions::definition_preconditions(ctx.tx, &verified.plan)?;
 
     let mut trust = ctx.trust.clone();
     for action in actions {
