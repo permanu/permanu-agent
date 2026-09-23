@@ -16,12 +16,17 @@ import "agent/v2/telemetry.proto";
 // "alert.channel.create", "alert.channel.update", "alert.channel.delete";
 // owner or deployer, presence Touch ID). A rule's plan `spec` is the proto3
 // JSON of AlertRule without server-assigned fields.
+// v2.1.0 (capability "alerts.v1"): evaluation interval, state machine and
+// channel delivery are agent-protocol.md 10.3. Channel credentials are sealed
+// to the server and decrypted only by the runner, which posts notifications
+// (runner op notify_channel); the agent never holds a channel URL or secret.
 service AlertService {
   rpc ListAlertRules(ListAlertRulesRequest) returns (ListAlertRulesResponse);
   rpc GetAlertRule(GetAlertRuleRequest) returns (AlertRule);
   rpc ListNotificationChannels(ListNotificationChannelsRequest) returns (ListNotificationChannelsResponse);
   // TestNotificationChannel sends a fixed test message. Rate limited to one
-  // test per channel per 10 s. No user-supplied content is sent.
+  // test per channel per 10 s. No user-supplied content is sent. v2.1.0: sent
+  // through the runner's notify_channel like every notification.
   rpc TestNotificationChannel(TestNotificationChannelRequest) returns (TestNotificationChannelResponse);
   // ListAlertEvents streams alert history in ascending time order, then
   // live events when follow=true.
@@ -113,6 +118,10 @@ message AlertRule {
   AlertState state = 12;
   google.protobuf.Timestamp state_since = 13;
   string plan_digest_hex = 14;
+  // v2.1.0. Last evaluation and the value it saw (metric and log rules; NaN
+  // when there was no data). Event rules are evaluated on each event.
+  google.protobuf.Timestamp last_evaluated_at = 15;
+  double last_value = 16;
 }
 
 enum AlertState {
@@ -144,6 +153,9 @@ message NotificationChannel {
   bool enabled = 6;
   DeliveryResult last_delivery = 7;
   string plan_digest_hex = 8;
+  // v2.1.0. SHA-256 of the sealed credential ciphertext the plan signed
+  // (alert.channel.create/update credential_ciphertext_digest_hex).
+  string credential_ciphertext_digest_hex = 9;
 }
 
 message DeliveryResult {
@@ -169,6 +181,12 @@ message AlertEvent {
   repeated DeliveryResult deliveries = 11;
   // Opaque cursor for resuming ListAlertEvents.
   string cursor = 12;
+  // v2.1.0. "rule" (an AlertRule), "cron_heartbeat" (a cron job's
+  // heartbeat_alert) or "backup" (a backup or verify-restore failure of a
+  // policy with channel_ids). rule_id is "" unless source is "rule".
+  string source = 13;
+  // v2.1.0. The cron_id or backup policy id for those sources.
+  string subject_id = 14;
 }
 
 message ListAlertRulesRequest {

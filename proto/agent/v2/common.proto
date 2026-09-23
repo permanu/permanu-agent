@@ -42,7 +42,11 @@ import "google/protobuf/timestamp.proto";
 // alert.channel.create, alert.channel.update, alert.channel.delete,
 // telemetry.retention.set, server.add, server.remove, agent.update,
 // component.update, shell.open, rule.create, rule.revoke, key.add,
-// key.revoke. Every string field named `actions` or `action` in v2 holds one
+// key.revoke. v2.1.0 (contracts v1.0.7) adds backup.destination.set,
+// backup.destination.delete, recovery_recipient.set, env.protection.set,
+// release_key.add and release_key.revoke (signed-plan.md 3.2 is normative;
+// the scheduler's run-now kind stays "cron.run").
+// Every string field named `actions` or `action` in v2 holds one
 // of these; an unknown kind is PLAN_MALFORMED. Ids inside plans are lowercase
 // UUIDv7 strings.
 message SignedPlan {
@@ -56,6 +60,8 @@ message SignedPlan {
   // target's AgentInfo.age_recipient. Each must match exactly one
   // *ciphertext_digest_hex the plan names (SHA-256), with none missing or
   // extra, else EXEC_PRECONDITION (signed-plan.md 3.2, Sealed secrets).
+  // v2.1.0 also backup.destination.set credentials. The agent never decrypts
+  // them; only the runner does (D-027, agent-protocol.md 4.1).
   repeated bytes sealed_secrets = 3;
 }
 
@@ -195,4 +201,21 @@ enum ErrorReason {
   // component.update(runner|permanu-env) in M1 (D-046), and runner code
   // E_NOT_SUPPORTED_YET.
   ERROR_REASON_NOT_SUPPORTED_YET = 41;
+  // v2.1.0 (contracts v1.0.7, D-051, agent-protocol.md 5 and 13). A staged
+  // artifact is not trusted: its manifest.sig.json does not verify under an
+  // active pinned release key (/etc/permanu/release-keys.json), it is signed by
+  // a TEST release key in production, or release-keys.json does not load
+  // (runner codes E_ARTIFACT_UNTRUSTED, release_keys_invalid). A digest or
+  // version mismatch is EXEC_PRECONDITION. FAILED_PRECONDITION from
+  // ArtifactService.StageArtifact; on the stage_artifact_verify step the exact
+  // runner code is in OperationStep.error_code.
+  ERROR_REASON_ARTIFACT_REJECTED = 42;
+  // v2.1.0 (contracts v1.0.7, signed-plan.md 14.9). The runner refused a
+  // scheduled run: its definition was superseded or paused, or the fire time
+  // is outside the start window (E_SCHEDULE_SUPERSEDED, E_SCHEDULE_PAUSED,
+  // E_SCHEDULE_WINDOW). Nothing ran.
+  ERROR_REASON_SCHEDULE_REJECTED = 43;
+  // v2.1.0 (contracts v1.0.7, signed-plan.md 14.10). An on-server build of a
+  // rule deploy failed or timed out (E_BUILD_FAILED).
+  ERROR_REASON_BUILD_FAILED = 44;
 }
