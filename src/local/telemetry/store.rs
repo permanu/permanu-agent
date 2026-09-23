@@ -237,6 +237,9 @@ pub trait DiskProbe: Send + Sync {
 pub struct StatvfsDisk;
 
 impl DiskProbe for StatvfsDisk {
+    // statvfs field widths differ by platform (u32 block counts on macOS,
+    // u64 on Linux), so the casts are needed on one and no-ops on the other.
+    #[allow(clippy::unnecessary_cast)]
     fn free(&self, path: &Path) -> Option<(u64, u64)> {
         use std::os::unix::ffi::OsStrExt;
         let c_path = std::ffi::CString::new(path.as_os_str().as_bytes()).ok()?;
