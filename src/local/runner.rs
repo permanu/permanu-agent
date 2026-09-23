@@ -196,6 +196,83 @@ pub async fn run_op(
     Ok(OpDone { progress, result })
 }
 
+/// A schedule binding (section 14.9): the admitted definition action a
+/// scheduled run executes under, its fire time and attempt.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ScheduleRef {
+    pub plan: PlanRef,
+    pub scheduled_for: String,
+    pub attempt: u32,
+}
+
+/// A schedule-bound op (`run_cron`, `backup_run`, `backup_verify`,
+/// `backup_prune`; section 14.8 v1.0.7): `schedule` in place of `plan`,
+/// payload `{}`. Returns the `result` line of an accepted run (its
+/// `outcome` says how the run ended); a refusal is the runner's code.
+pub async fn run_scheduled(
+    runner: &dyn Runner,
+    op: &str,
+    schedule: &ScheduleRef,
+    timeout: Duration,
+) -> Result<Value, RunnerFailure> {
+    let mut binding = schedule.plan.json();
+    binding["scheduled_for"] = json!(schedule.scheduled_for);
+    binding["attempt"] = json!(schedule.attempt);
+    let request = json!({"op": op, "schedule": binding, "payload": {}});
+    ok_or_failure(runner.exchange(request, timeout).await?)
+}
+
+/// One `notify_channel` call (section 14.3, fixed-purpose op): the runner
+/// posts `text` (and `payload_json` for a `webhook` channel) to the
+/// credential of the admitted channel. The agent never sees the URL.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Notification {
+    pub channel_id: String,
+    pub text: String,
+    pub event_id: String,
+    pub payload_json: Option<String>,
+}
+
+/// What `notify_channel` answered.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct NotifyResult {
+    pub delivered: bool,
+    pub status_code: i32,
+    pub target_display: String,
+    pub error: String,
+}
+
+/// `notify_channel` waits for the runner's 10 s post plus margin.
+pub const NOTIFY_TIMEOUT: Duration = Duration::from_secs(30);
+
+pub async fn notify_channel(
+    runner: &dyn Runner,
+    notification: &Notification,
+) -> Result<NotifyResult, RunnerFailure> {
+    let mut payload = json!({
+        "channel_id": notification.channel_id,
+        "text": notification.text,
+        "event_id": notification.event_id,
+    });
+    if let Some(body) = &notification.payload_json {
+        payload["payload_json"] = json!(body);
+    }
+    let request = json!({"op": "notify_channel", "payload": payload});
+    let result = ok_or_failure(runner.exchange(request, NOTIFY_TIMEOUT).await?)?;
+    Ok(NotifyResult {
+        delivered: result["delivered"] == true,
+        status_code: result["status_code"]
+            .as_i64()
+            .and_then(|code| i32::try_from(code).ok())
+            .unwrap_or_default(),
+        target_display: result["target_display"]
+            .as_str()
+            .map(bounded)
+            .unwrap_or_default(),
+        error: result["error"].as_str().map(bounded).unwrap_or_default(),
+    })
+}
+
 /// `bootstrap_trust` (section 14.4, v1.0.2): unbound, accepted by the runner
 /// only while trusted-keys.json is absent. The runner runs section 7.3 step 3
 /// itself, including the time window, before it writes the file.
@@ -614,6 +691,62 @@ mod tests {
             json!({"op": "bind_plan", "plan": {"plan_id": plan().plan_id,
                    "plan_digest_hex": plan().plan_digest_hex, "action_index": 2},
                    "payload": {}})
+        );
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[tokio::test]
+    async fn schedule_bound_ops_carry_the_schedule_in_place_of_the_plan() {
+        let (runner, server, dir) = scripted(
+            "rn-sched",
+            "{\"type\":\"result\",\"op\":\"run_cron\",\"ok\":true,\"outcome\":\"succeeded\"}\n",
+        )
+        .await;
+        let schedule = ScheduleRef {
+            plan: plan(),
+            scheduled_for: "2026-09-23T10:15:00Z".to_owned(),
+            attempt: 2,
+        };
+        let done = run_scheduled(&runner, "run_cron", &schedule, Duration::from_secs(5))
+            .await
+            .unwrap();
+        assert_eq!(done["outcome"], "succeeded");
+        assert_eq!(
+            server.await.unwrap(),
+            json!({"op": "run_cron", "schedule": {"plan_id": plan().plan_id,
+                   "plan_digest_hex": plan().plan_digest_hex, "action_index": 2,
+                   "scheduled_for": "2026-09-23T10:15:00Z", "attempt": 2},
+                   "payload": {}})
+        );
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[tokio::test]
+    async fn notify_channel_sends_only_the_fixed_payload() {
+        let (runner, server, dir) = scripted(
+            "rn-notify",
+            "{\"type\":\"result\",\"op\":\"notify_channel\",\"ok\":true,\"delivered\":true,\
+             \"status_code\":200,\"target_display\":\"hooks.slack.com/services/T0\\u2026\"}\n",
+        )
+        .await;
+        let sent = notify_channel(
+            &runner,
+            &Notification {
+                channel_id: "c1".to_owned(),
+                text: "[WARNING] disk".to_owned(),
+                event_id: "e1".to_owned(),
+                payload_json: None,
+            },
+        )
+        .await
+        .unwrap();
+        assert!(sent.delivered);
+        assert_eq!(sent.status_code, 200);
+        assert_eq!(sent.target_display, "hooks.slack.com/services/T0\u{2026}");
+        assert_eq!(
+            server.await.unwrap(),
+            json!({"op": "notify_channel", "payload": {"channel_id": "c1",
+                   "text": "[WARNING] disk", "event_id": "e1"}})
         );
         std::fs::remove_dir_all(dir).unwrap();
     }

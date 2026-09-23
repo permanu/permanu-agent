@@ -17,6 +17,7 @@ pub mod execution;
 pub mod facts;
 pub mod logs;
 pub mod runner;
+pub mod sched;
 pub mod socket;
 pub mod telemetry;
 

@@ -22,6 +22,7 @@ pub struct AdmittedAction {
     pub action_index: usize,
     pub admission_seq: i64,
     pub admitted_at: String,
+    pub operation_id: String,
     pub kind: String,
     pub params: Value,
     pub scope: SignedScope,
@@ -51,7 +52,7 @@ pub fn admitted_actions(
     let mut statement = conn.prepare_cached(
         "SELECT a.plan_id, a.plan_digest_hex, a.admission_seq, a.admitted_at, \
          a.signed_plan_json, a.project_id, a.environment, a.environment_id, \
-         x.action_index, x.kind, x.outcome, x.finished_at \
+         x.action_index, x.kind, x.outcome, x.finished_at, a.operation_id \
          FROM admission_actions x JOIN admissions a ON a.plan_id = x.plan_id \
          WHERE x.kind IN (SELECT value FROM json_each(?1)) \
          ORDER BY a.admission_seq DESC, x.action_index DESC",
@@ -73,12 +74,24 @@ pub fn admitted_actions(
             r.get::<_, String>(9)?,
             r.get::<_, String>(10)?,
             r.get::<_, Option<String>>(11)?,
+            r.get::<_, String>(12)?,
         ))
     })?;
     let mut out = Vec::new();
     for row in rows {
-        let (plan_id, digest, seq, admitted_at, envelope, scope, index, kind, outcome, finished) =
-            row?;
+        let (
+            plan_id,
+            digest,
+            seq,
+            admitted_at,
+            envelope,
+            scope,
+            index,
+            kind,
+            outcome,
+            finished,
+            operation_id,
+        ) = row?;
         let Some(envelope) = parse_strict(envelope.as_bytes(), MAX_SIGNED_PLAN_BYTES) else {
             continue;
         };
@@ -95,6 +108,7 @@ pub fn admitted_actions(
             action_index,
             admission_seq: seq,
             admitted_at,
+            operation_id,
             kind,
             params: action["params"].clone(),
             scope,
@@ -184,8 +198,19 @@ pub fn environment_protected(
         .any(|action| action.params["protected"] == true))
 }
 
+impl super::AdmissionStore {
+    /// Every admitted action of these kinds, newest first (see
+    /// [`admitted_actions`]).
+    pub fn admitted_actions(
+        &self,
+        kinds: &[&str],
+    ) -> Result<Vec<AdmittedAction>, super::StoreError> {
+        Ok(admitted_actions(&self.lock(), kinds)?)
+    }
+}
+
 #[cfg(test)]
-pub(super) mod tests {
+pub(crate) mod tests {
     use rusqlite::params;
     use serde_json::{json, Value};
 
@@ -217,6 +242,18 @@ pub(super) mod tests {
         actions: &[Value],
         outcome: &str,
     ) -> String {
+        record_at(store, seq, scope, actions, outcome, "2026-09-23T10:00:00Z")
+    }
+
+    /// [`record`] admitted (and, with an outcome, finished) at `at`.
+    pub fn record_at(
+        store: &AdmissionStore,
+        seq: i64,
+        scope: (&str, &str, &str),
+        actions: &[Value],
+        outcome: &str,
+        at: &str,
+    ) -> String {
         let plan_id = format!("01a0cdb5-3500-7001-8000-{seq:012x}");
         let envelope = json!({"plan": {"id": plan_id, "actions": actions}, "signatures": []});
         let kinds: Vec<&str> = actions.iter().filter_map(|a| a["kind"].as_str()).collect();
@@ -226,8 +263,7 @@ pub(super) mod tests {
              operation_id, admitted_at, admission_seq, nonce, author_kind, signer_key_ids, \
              action_kinds, project_id, environment, environment_id, head_before_hex, \
              head_after_hex, expires_at) VALUES (?1, ?2, ?3, 'client', ?1, \
-             '2026-09-23T10:00:00Z', ?4, ?1, 'user', '[]', ?5, ?6, ?7, ?8, ?2, ?2, \
-             '2026-09-23T10:15:00Z')",
+             ?9, ?4, ?1, 'user', '[]', ?5, ?6, ?7, ?8, ?2, ?2, ?9)",
             params![
                 plan_id,
                 format!("{seq:064x}"),
@@ -236,19 +272,32 @@ pub(super) mod tests {
                 serde_json::to_string(&kinds).unwrap(),
                 scope.0,
                 scope.1,
-                scope.2
+                scope.2,
+                at
             ],
         )
         .unwrap();
         for (index, kind) in kinds.iter().enumerate() {
             conn.execute(
-                "INSERT INTO admission_actions (plan_id, action_index, kind, outcome) \
-                 VALUES (?1, ?2, ?3, ?4)",
-                params![plan_id, index as i64, kind, outcome],
+                "INSERT INTO admission_actions (plan_id, action_index, kind, outcome, finished_at) \
+                 VALUES (?1, ?2, ?3, ?4, CASE WHEN ?4 = '' THEN NULL ELSE ?5 END)",
+                params![plan_id, index as i64, kind, outcome, at],
             )
             .unwrap();
         }
         plan_id
+    }
+
+    /// Ends every action of an admitted plan with `outcome` (what the
+    /// consumed-log reconciliation does).
+    pub fn finish(store: &AdmissionStore, plan_id: &str, outcome: &str, at: &str) {
+        store
+            .lock()
+            .execute(
+                "UPDATE admission_actions SET outcome = ?2, finished_at = ?3 WHERE plan_id = ?1",
+                params![plan_id, outcome, at],
+            )
+            .unwrap();
     }
 
     fn policy(resource: &str, keep_daily: i64, destination: &str) -> Value {

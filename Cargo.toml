@@ -22,6 +22,9 @@ getrandom = "0.2"
 hex = "0.4"
 http-body-util = "0.1"
 hyper = { version = "1", features = ["http1", "server"] }
+# Cron fire times in the job's IANA timezone from the tz database compiled
+# into the agent, never the host's (agent-protocol.md 10).
+jiff = { version = "0.2", default-features = false, features = ["std", "tzdb-bundle-always"] }
 hyper-util = { version = "0.1", features = ["tokio"] }
 flate2 = "1"
 libc = "0.2"
