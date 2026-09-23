@@ -1,11 +1,13 @@
 //! Local mode: agent protocol v2 served on a unix socket (agent-protocol.md).
 //!
 //! Served: `InfoService` (Hello with trust state and age recipient,
-//! GetServerFacts, Ping), `StateService.ListContainers`, `ChangeService`
-//! (signed-plan admission, operations, heads, admissions, rules, trusted
-//! keys) and `EventService.Subscribe`. Every other v2 RPC answers
-//! `UNIMPLEMENTED` with the `ERROR_REASON_CAPABILITY_MISSING` trailer. The
-//! only path that changes the host is an admitted signed plan.
+//! GetServerFacts, Ping), `StateService.ListContainers` and
+//! `TelemetryService.QueryLogs` (both through the runner's read-only
+//! container ops, D-036), `ChangeService` (signed-plan admission,
+//! operations, heads, admissions, rules, trusted keys) and
+//! `EventService.Subscribe`. Every other v2 RPC answers `UNIMPLEMENTED` with
+//! the `ERROR_REASON_CAPABILITY_MISSING` trailer. The only path that changes
+//! the host is an admitted signed plan.
 
 pub mod age_recipient;
 pub mod change;

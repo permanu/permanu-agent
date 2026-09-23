@@ -67,6 +67,8 @@ type LogStream = Pin<Box<dyn Stream<Item = Result<LogQueryResponse, Status>> + S
 pub struct TelemetrySvc {
     runner: Arc<dyn runner::Runner>,
     streams: Arc<tokio::sync::Semaphore>,
+    /// Follow keepalive and re-list period (`KEEPALIVE`; shorter in tests).
+    keepalive: Duration,
 }
 
 impl TelemetrySvc {
@@ -74,6 +76,7 @@ impl TelemetrySvc {
         Self {
             runner,
             streams: Arc::new(tokio::sync::Semaphore::new(MAX_STREAMS)),
+            keepalive: KEEPALIVE,
         }
     }
 }
@@ -562,7 +565,10 @@ impl TelemetrySvc {
         Ok(())
     }
 
-    /// Streams live lines until the client goes away.
+    /// Streams live lines until the client goes away. A follow connection
+    /// that ends while its container still runs (a transient runner or
+    /// Docker error) is reopened at the next keepalive from the last
+    /// delivered line, whose re-sent duplicates are skipped (AGENTS.md).
     async fn follow(
         &self,
         plan: Plan,
@@ -573,65 +579,70 @@ impl TelemetrySvc {
     ) {
         let (lines_tx, mut lines_rx) = mpsc::channel::<(RunnerContainer, String, String)>(256);
         let mut followed: HashMap<String, tokio::task::JoinHandle<()>> = HashMap::new();
-        let open =
-            |container: RunnerContainer,
-             since: Option<String>,
-             followed: &mut HashMap<String, tokio::task::JoinHandle<()>>| {
-                if followed.len() >= MAX_FOLLOWED || followed.contains_key(&container.id) {
+        let open = |container: RunnerContainer,
+                    since: Option<String>,
+                    followed: &mut HashMap<String, tokio::task::JoinHandle<()>>|
+         -> bool {
+            if followed.len() >= MAX_FOLLOWED || followed.contains_key(&container.id) {
+                return false;
+            }
+            let runner = self.runner.clone();
+            let lines_tx = lines_tx.clone();
+            let id = container.id.clone();
+            let task = tokio::spawn(async move {
+                let Ok(mut lines) =
+                    runner::container_logs_follow(runner.as_ref(), &container.id, since.as_deref())
+                        .await
+                else {
                     return;
-                }
-                let runner = self.runner.clone();
-                let lines_tx = lines_tx.clone();
-                let id = container.id.clone();
-                let task = tokio::spawn(async move {
-                    let Ok(mut lines) = runner::container_logs_follow(
-                        runner.as_ref(),
-                        &container.id,
-                        since.as_deref(),
-                    )
-                    .await
-                    else {
-                        return;
-                    };
-                    while let Ok(Some(line)) = lines.next().await {
-                        if line["type"] != "progress" {
-                            break;
-                        }
-                        let stream = match line["stream"].as_str() {
-                            Some("stderr") => "stderr",
-                            _ => "stdout",
-                        };
-                        let text = line["line"].as_str().unwrap_or_default().to_owned();
-                        if lines_tx
-                            .send((container.clone(), stream.to_owned(), text))
-                            .await
-                            .is_err()
-                        {
-                            break;
-                        }
+                };
+                while let Ok(Some(line)) = lines.next().await {
+                    if line["type"] != "progress" {
+                        break;
                     }
-                });
-                followed.insert(id, task);
-            };
+                    let stream = match line["stream"].as_str() {
+                        Some("stderr") => "stderr",
+                        _ => "stdout",
+                    };
+                    let text = line["line"].as_str().unwrap_or_default().to_owned();
+                    if lines_tx
+                        .send((container.clone(), stream.to_owned(), text))
+                        .await
+                        .is_err()
+                    {
+                        break;
+                    }
+                }
+            });
+            followed.insert(id, task);
+            true
+        };
         let now_since = since_of(
             i128::from(super::execution::Clock::now(&super::execution::SystemClock))
                 * 1_000_000_000,
         );
-        for container in containers {
+        // Where each container's follow starts when nothing of it was
+        // delivered yet: now for those of the query, the whole log (None)
+        // for containers that appear later.
+        let mut first_since: HashMap<String, Option<String>> = HashMap::new();
+        for container in containers.into_iter().filter(|c| c.state == "running") {
             let since = last
                 .get(&container.id)
                 .map(|key| since_of(key.nanos))
                 .unwrap_or_else(|| now_since.clone());
+            first_since.insert(container.id.clone(), Some(since.clone()));
             open(container, Some(since), &mut followed);
         }
         // Per container: the newest delivered nanos and how many lines at
-        // exactly that time were delivered (a follow `since` re-sends them).
+        // exactly that time were delivered (a follow `since` re-sends them);
+        // `replayed` counts the re-sent ones skipped on the current
+        // connection.
         let mut seen: HashMap<String, (i128, u32)> = last
             .iter()
             .map(|(id, key)| (id.clone(), (key.nanos, key.ordinal + 1)))
             .collect();
         let mut replayed: HashMap<String, u32> = HashMap::new();
-        let mut keepalive = tokio::time::interval(KEEPALIVE);
+        let mut keepalive = tokio::time::interval(self.keepalive);
         keepalive.tick().await;
         let mut window = tokio::time::Instant::now();
         let (mut sent_in_window, mut dropped) = (0_u64, 0_u64);
@@ -692,10 +703,17 @@ impl TelemetrySvc {
                     }
                     followed.retain(|_, task| !task.is_finished());
                     if let Ok((current, _)) = self.containers(&plan).await {
-                        for container in current {
-                            if !followed.contains_key(&container.id) && !seen.contains_key(&container.id) {
-                                // A new container: its whole log.
-                                open(container, None, &mut followed);
+                        for container in current.into_iter().filter(|c| c.state == "running") {
+                            if followed.contains_key(&container.id) {
+                                continue;
+                            }
+                            let id = container.id.clone();
+                            let since = match seen.get(&id) {
+                                Some((nanos, _)) => Some(since_of(*nanos)),
+                                None => first_since.entry(id.clone()).or_insert(None).clone(),
+                            };
+                            if open(container, since, &mut followed) {
+                                replayed.insert(id, 0);
                             }
                         }
                     }
@@ -1071,6 +1089,75 @@ mod tests {
             .collect::<Vec<_>>();
         assert!(follows.contains(&json!({"op": "container_logs_follow",
             "payload": {"container_id": "c1", "since": "2026-09-23T10:00:03Z"}})));
+        h.stop().await;
+    }
+
+    // AGENTS.md: a transient follow failure must not stop tailing the
+    // container; the reopened stream skips what was already delivered.
+    #[tokio::test]
+    async fn a_broken_follow_resumes_without_duplicates() {
+        let h = harness("logs-resume").await;
+        h.runner
+            .follow_breaks
+            .store(true, std::sync::atomic::Ordering::SeqCst);
+        h.runner
+            .follow_lines
+            .lock()
+            .unwrap()
+            .insert("c1".to_owned(), vec!["2026-09-23T10:00:04Z one".to_owned()]);
+        let svc = TelemetrySvc {
+            keepalive: Duration::from_millis(100),
+            ..TelemetrySvc::new(h.core.runner.clone())
+        };
+        let mut stream = svc
+            .query_logs(Request::new(LogQuery {
+                tail: 1,
+                follow: true,
+                ..query(S1)
+            }))
+            .await
+            .unwrap()
+            .into_inner();
+        async fn batch_messages(stream: &mut LogStream) -> Vec<String> {
+            use futures::StreamExt;
+            let frame = tokio::time::timeout(Duration::from_secs(5), stream.next())
+                .await
+                .expect("frame in time")
+                .unwrap()
+                .unwrap();
+            match frame.frame {
+                Some(Frame::Batch(batch)) => batch.records.into_iter().map(|r| r.message).collect(),
+                _ => Vec::new(),
+            }
+        }
+        let mut records = Vec::new();
+        while records.len() < 2 {
+            records.extend(batch_messages(&mut stream).await);
+        }
+        // The next connection re-sends "one" (same second) plus a new line.
+        h.runner.follow_lines.lock().unwrap().insert(
+            "c1".to_owned(),
+            vec![
+                "2026-09-23T10:00:04Z one".to_owned(),
+                "2026-09-23T10:00:05Z two".to_owned(),
+            ],
+        );
+        while records.len() < 3 {
+            records.extend(batch_messages(&mut stream).await);
+        }
+        assert_eq!(records, vec!["ready", "one", "two"]);
+        drop(stream);
+        let follows: Vec<_> = h
+            .runner
+            .requests
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|r| r["op"] == "container_logs_follow")
+            .map(|r| r["payload"]["since"].clone())
+            .collect();
+        assert!(follows.len() >= 2, "{follows:?}");
+        assert_eq!(follows[1], json!("2026-09-23T10:00:04Z"));
         h.stop().await;
     }
 

@@ -132,6 +132,9 @@ pub struct FakeRunner {
     pub logs: Mutex<HashMap<String, StdoutStderr>>,
     /// Lines `container_logs_follow` streams before it waits for the close.
     pub follow_lines: Mutex<HashMap<String, Vec<String>>>,
+    /// Drop the follow connection after its lines, without a `result` (a
+    /// transient failure the agent must recover from).
+    pub follow_breaks: AtomicBool,
     consumed: Mutex<HashSet<(String, u32)>>,
     ops: Mutex<HashMap<(String, u32), Vec<String>>>,
     finished: Mutex<HashSet<(String, u32)>>,
@@ -518,6 +521,9 @@ impl FakeRunner {
                         return;
                     }
                 }
+                if self.follow_breaks.load(Ordering::SeqCst) {
+                    return;
+                }
                 // Streams until the agent closes the connection.
                 let _ = lines.next_line().await;
                 return;
@@ -640,6 +646,7 @@ impl Harness {
             containers: Mutex::new(Vec::new()),
             logs: Mutex::new(HashMap::new()),
             follow_lines: Mutex::new(HashMap::new()),
+            follow_breaks: AtomicBool::new(false),
             consumed: Mutex::new(HashSet::new()),
             ops: Mutex::new(HashMap::new()),
             finished: Mutex::new(HashSet::new()),
