@@ -89,6 +89,11 @@ message HelloResponse {
   //                    (release_key.*), and agent.update / component.update
   //                    for runner and permanu-env are admitted (D-051; lifts
   //                    the v2.0.6 NOT_SUPPORTED_YET refusal).
+  // v2.1.2 adds (contracts v1.1.2, D-060; Hello still negotiates "2.1"):
+  //   "analytics.v1" - QueryAnalytics is served from the analytics store and
+  //                    honours AnalyticsQuery.service_ids. An engine requires
+  //                    it before it sends service_ids (an older agent ignores
+  //                    the field and would return every service's rows).
   repeated string capabilities = 3;
   ServerFacts server = 4;
   TrustedKeysSummary trusted_keys = 5;
