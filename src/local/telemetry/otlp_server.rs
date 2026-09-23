@@ -9,7 +9,9 @@
 //!   changes. While unbound, `AgentStatus.otlp_*_listen` are empty
 //!   (`otlp_unbound`).
 //! - Two independent checks on who may connect: the `inet permanu_otlp`
-//!   nftables table must be present ([`FirewallCheck`]), and a connection is
+//!   nftables table must be present ([`FirewallCheck`]; in production the
+//!   runner's `diagnose` check `otlp_nft`, [`RunnerFirewall`]), and a
+//!   connection is
 //!   accepted only when its source address is inside the subnet of a Docker
 //!   bridge (`docker0`, `br-*`) and the kernel's route to that source goes
 //!   out of that same bridge ([`Network`]).
@@ -91,16 +93,29 @@ pub trait FirewallCheck: Send + Sync {
     async fn table_present(&self) -> bool;
 }
 
-/// The runner's `diagnose` op has no contracted payload or answer for the
-/// nftables table (agent-protocol.md 9.5 names the check, signed-plan.md
-/// 14.3 does not define it), so the agent cannot confirm the table and
-/// fails closed: it does not bind.
-pub struct UncontractedFirewall;
+/// The runner's read-only `diagnose` op (signed-plan.md 14.3, contracts
+/// v1.1.2/v1.1.3, D-060, D-061): `{checks: ["otlp_nft"]}` answers
+/// `{otlp_nft: "present" | "absent"}`, `present` exactly when the canonical
+/// `inet permanu_otlp` ruleset (agent-protocol.md 8) is loaded. `absent`, a
+/// refusal, a malformed answer or no runner keeps OTLP unbound (fail
+/// closed).
+pub struct RunnerFirewall {
+    pub runner: Arc<dyn crate::local::runner::Runner>,
+}
+
+const DIAGNOSE_TIMEOUT: Duration = Duration::from_secs(10);
 
 #[tonic::async_trait]
-impl FirewallCheck for UncontractedFirewall {
+impl FirewallCheck for RunnerFirewall {
     async fn table_present(&self) -> bool {
-        false
+        let request = serde_json::json!({"op": "diagnose", "payload": {"checks": ["otlp_nft"]}});
+        match self.runner.exchange(request, DIAGNOSE_TIMEOUT).await {
+            Ok(result) => result["ok"] == true && result["otlp_nft"] == "present",
+            Err(failure) => {
+                warn!(error = %failure.message, "diagnose otlp_nft failed; OTLP stays unbound");
+                false
+            }
+        }
     }
 }
 
@@ -825,9 +840,65 @@ mod tests {
         assert!(l.reconcile(None).await.is_none());
         assert_eq!(t.otlp(), OtlpListen::default());
         assert!(t.degraded_reasons().contains(&"otlp_unbound"));
-        // The production check fails closed.
-        assert!(!UncontractedFirewall.table_present().await);
         std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    /// A runner that answers `diagnose` with a fixed result line.
+    struct Diagnose(Result<serde_json::Value, ()>, Mutex<Vec<serde_json::Value>>);
+
+    #[tonic::async_trait]
+    impl crate::local::runner::Runner for Diagnose {
+        async fn exchange(
+            &self,
+            request: serde_json::Value,
+            _timeout: Duration,
+        ) -> Result<serde_json::Value, crate::local::runner::RunnerFailure> {
+            self.1.lock().unwrap().push(request);
+            self.0
+                .clone()
+                .map_err(|()| crate::local::runner::RunnerFailure::transport("closed"))
+        }
+
+        async fn open(
+            &self,
+            _request: serde_json::Value,
+        ) -> Result<crate::local::runner::EventLines, crate::local::runner::RunnerFailure> {
+            Err(crate::local::runner::RunnerFailure::transport("unused"))
+        }
+    }
+
+    /// contracts v1.1.2/v1.1.3 (D-060, D-061): the production check is the
+    /// runner's read-only `diagnose {checks: ["otlp_nft"]}`; only
+    /// `present` binds, and anything else fails closed.
+    #[tokio::test]
+    async fn the_runner_diagnose_check_decides_the_firewall() {
+        use serde_json::json;
+        let ask = |answer: Result<serde_json::Value, ()>| async move {
+            let runner = Arc::new(Diagnose(answer, Mutex::new(Vec::new())));
+            let present = RunnerFirewall {
+                runner: runner.clone(),
+            }
+            .table_present()
+            .await;
+            let requests = runner.1.lock().unwrap().clone();
+            (present, requests)
+        };
+        let (present, requests) = ask(Ok(json!({"ok": true, "otlp_nft": "present"}))).await;
+        assert!(present);
+        assert_eq!(
+            requests,
+            vec![json!({"op": "diagnose", "payload": {"checks": ["otlp_nft"]}})]
+        );
+        for answer in [
+            Ok(json!({"ok": true, "otlp_nft": "absent"})),
+            Ok(json!({"ok": true})),
+            Ok(json!({"ok": false, "otlp_nft": "present",
+                      "error": {"code": "invalid_request", "message": "x"}})),
+            Ok(json!({"ok": true, "otlp_nft": true})),
+            Err(()),
+        ] {
+            assert!(!ask(answer.clone()).await.0, "{answer:?}");
+        }
     }
 
     #[tokio::test]

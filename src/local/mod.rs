@@ -961,7 +961,7 @@ fn start_telemetry(
         telemetry::ingest::LogIngest::new(store.clone(), runner.clone(), host).run(),
     ));
     tasks.push(tokio::spawn(
-        telemetry::metrics::Sampler::new(store.clone(), runner).run(),
+        telemetry::metrics::Sampler::new(store.clone(), runner.clone()).run(),
     ));
     let listeners = match cfg.dev_otlp_loopback {
         #[cfg(feature = "dev-paths")]
@@ -973,7 +973,7 @@ fn start_telemetry(
             net: Arc::new(telemetry::otlp_server::SystemNetwork {
                 proc_root: std::path::PathBuf::from("/proc"),
             }),
-            firewall: Arc::new(telemetry::otlp_server::UncontractedFirewall),
+            firewall: Arc::new(telemetry::otlp_server::RunnerFirewall { runner }),
             gateway_iface: telemetry::otlp_server::GATEWAY_IFACE.to_owned(),
             grpc_port: telemetry::otlp_server::GRPC_PORT,
             http_port: telemetry::otlp_server::HTTP_PORT,

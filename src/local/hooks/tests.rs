@@ -825,3 +825,60 @@ async fn the_queue_status_reports_the_recorded_webhook_host() {
     assert_eq!(status().await.webhook_host, "hooks.c.example.com");
     f.h.stop().await;
 }
+
+/// v1.1.3 (D-061, agent-protocol.md 11.1 "Body cap"): the agent never relies
+/// on Dwaar's cap. A body that ends before its `Content-Length`, or a
+/// chunked body cut before its last chunk (what Dwaar forwards when it cuts
+/// an oversize chunked body), is 400 and never reaches `webhook_verify`; a
+/// chunked body over 1 MiB is 413 and counted.
+#[tokio::test]
+async fn truncated_bodies_are_400_and_never_verified() {
+    let f = fixture("hooks-truncated").await;
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let task = super::listener::serve(f.hooks.clone(), listener);
+    let send_half = |raw: Vec<u8>| async move {
+        let mut stream = tokio::net::TcpStream::connect(addr).await.unwrap();
+        stream.write_all(&raw).await.unwrap();
+        stream.shutdown().await.unwrap();
+        let mut out = Vec::new();
+        let _ = stream.read_to_end(&mut out).await;
+        String::from_utf8_lossy(&out).into_owned()
+    };
+    let body = push_body("refs/heads/main", COMMIT);
+    let mac = hmac_sha256_hex(SECRET, &body);
+    let head = |framing: &str| {
+        format!(
+            "POST /hooks/{PROJECT} HTTP/1.1\r\nHost: x\r\nX-GitHub-Event: push\r\n\
+             X-Hub-Signature-256: sha256={mac}\r\nX-Real-IP: 203.0.113.9\r\n{framing}\r\n\r\n"
+        )
+    };
+    let mut short = head(&format!("Content-Length: {}", body.len() + 10)).into_bytes();
+    short.extend_from_slice(&body);
+    assert!(send_half(short).await.starts_with("HTTP/1.1 400"));
+    let mut cut = head("Transfer-Encoding: chunked").into_bytes();
+    cut.extend_from_slice(format!("{:x}\r\n", body.len()).as_bytes());
+    cut.extend_from_slice(&body);
+    cut.extend_from_slice(b"\r\n");
+    assert!(send_half(cut).await.starts_with("HTTP/1.1 400"));
+    let mut big = head("Transfer-Encoding: chunked").into_bytes();
+    let chunk = vec![b'x'; 64 * 1024];
+    for _ in 0..17 {
+        big.extend_from_slice(format!("{:x}\r\n", chunk.len()).as_bytes());
+        big.extend_from_slice(&chunk);
+        big.extend_from_slice(b"\r\n");
+    }
+    big.extend_from_slice(b"0\r\n\r\n");
+    assert!(send_half(big).await.starts_with("HTTP/1.1 413"));
+    assert_eq!(f.hooks.counters().1, 1);
+    assert!(!f
+        .h
+        .runner
+        .requests
+        .lock()
+        .unwrap()
+        .iter()
+        .any(|r| r["op"] == "webhook_verify"));
+    task.abort();
+    f.h.stop().await;
+}
