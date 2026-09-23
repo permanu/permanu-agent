@@ -1692,6 +1692,55 @@ async fn rule_revoke_is_bound_and_recorded_from_the_runner_result() {
     h.stop().await;
 }
 
+/// contracts v1.1.4 (D-062, agent-protocol.md 5.1): a `SubmitSignedPlan`
+/// refused with `RATE_LIMITED` admitted nothing and reserved nothing, so
+/// the engine's later re-submission of the same signed envelope is
+/// admitted; refusals do not count against the budget.
+#[tokio::test]
+async fn a_rate_limited_plan_admits_nothing_and_its_resubmission_is_admitted() {
+    let Some(owner) = TestSigner::load("owner") else {
+        eprintln!("skipped: docs keys.json not found");
+        return;
+    };
+    let h = Harness::start("rate-limited", Some(&vector_trust())).await;
+    for _ in 0..10 {
+        assert!(h.core.allow_submission());
+    }
+    let plan = fresh_deploy(
+        &owner,
+        "0000000000a1",
+        "RATELIMITEDAAAAAAAAAAA",
+        GENESIS_HEAD,
+    );
+    let mut change = ChangeServiceClient::new(h.channel.clone());
+    for _ in 0..3 {
+        let refused = change
+            .submit_signed_plan(submit(plan.clone()))
+            .await
+            .unwrap_err();
+        assert_eq!(refused.code(), Code::ResourceExhausted);
+        assert_eq!(
+            trailer(&refused, ERROR_REASON_HEADER),
+            "ERROR_REASON_RATE_LIMITED"
+        );
+    }
+    let admissions = change
+        .list_admissions(ListAdmissionsRequest::default())
+        .await
+        .unwrap()
+        .into_inner();
+    assert!(admissions.admissions.is_empty());
+    // The minute passes; the refused attempts were not counted.
+    h.core.forget_submissions();
+    let admitted = change
+        .submit_signed_plan(submit(plan))
+        .await
+        .unwrap()
+        .into_inner();
+    assert!(!admitted.deduplicated);
+    h.stop().await;
+}
+
 #[test]
 fn key_statement_signing_helper_matches_the_vector_chain() {
     // The helper signs key statements exactly as trusted-keys.json expects,

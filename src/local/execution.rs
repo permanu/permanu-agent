@@ -458,6 +458,12 @@ impl ChangeCore {
         true
     }
 
+    /// Tests: the submission window passed.
+    #[cfg(test)]
+    pub fn forget_submissions(&self) {
+        locked(&self.submissions).clear();
+    }
+
     pub fn subscribe_operations(&self) -> broadcast::Receiver<OperationEvent> {
         self.operations.subscribe()
     }
