@@ -530,7 +530,7 @@ pub async fn run(
         core.store_recreated();
     }
     let background = core.spawn_background();
-    let listener = socket::bind(&cfg.socket_path, gid)?;
+    let listener = socket::listen(&cfg.socket_path, gid)?;
     info!(socket = %cfg.socket_path.display(), "serving agent protocol v2");
     let result = LocalServer {
         probe,

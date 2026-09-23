@@ -1,6 +1,7 @@
 //! The v2 unix socket (agent-protocol.md section 1): `root:permanu`, mode
 //! 0660, directory 0750. The listener refuses to start when the path is a
-//! symlink or the resulting ownership/mode differs.
+//! symlink or the resulting ownership/mode differs. On a server the socket
+//! comes from `permanu-agent.socket` (section 8) and is adopted, not bound.
 
 use std::{
     ffi::CString,
@@ -106,6 +107,97 @@ pub fn bind(path: &Path, gid: Option<u32>) -> io::Result<UnixListener> {
         let _ = fs::remove_file(path);
     }
     result
+}
+
+/// The first file descriptor systemd passes (`SD_LISTEN_FDS_START`).
+pub const LISTEN_FDS_START: std::os::fd::RawFd = 3;
+
+/// Takes the socket systemd passed (`permanu-agent.socket`,
+/// agent-protocol.md section 8) when the agent was socket-activated, else
+/// binds `path` itself (dev paths, tests).
+pub fn listen(path: &Path, gid: Option<u32>) -> io::Result<UnixListener> {
+    let listen_pid = std::env::var("LISTEN_PID").ok();
+    let listen_fds = std::env::var("LISTEN_FDS").ok();
+    match activation_fd(
+        listen_pid.as_deref(),
+        listen_fds.as_deref(),
+        std::process::id(),
+    )? {
+        Some(fd) => adopt(fd, path, gid),
+        None => bind(path, gid),
+    }
+}
+
+/// The activated descriptor, when `LISTEN_PID` names this process. Exactly one
+/// socket is expected; any other count is refused rather than guessed.
+pub fn activation_fd(
+    listen_pid: Option<&str>,
+    listen_fds: Option<&str>,
+    pid: u32,
+) -> io::Result<Option<std::os::fd::RawFd>> {
+    let Some(listen_pid) = listen_pid else {
+        return Ok(None);
+    };
+    if listen_pid.trim().parse::<u32>().ok() != Some(pid) {
+        return Ok(None);
+    }
+    match listen_fds.and_then(|count| count.trim().parse::<u32>().ok()) {
+        Some(1) => Ok(Some(LISTEN_FDS_START)),
+        _ => Err(io::Error::new(
+            ErrorKind::InvalidInput,
+            "socket activation must pass exactly one socket (LISTEN_FDS=1)",
+        )),
+    }
+}
+
+/// Adopts an activated descriptor: it must be a listening unix stream socket
+/// bound at `path` with the same owner, mode and group `bind` enforces.
+pub fn adopt(fd: std::os::fd::RawFd, path: &Path, gid: Option<u32>) -> io::Result<UnixListener> {
+    use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
+    // SAFETY: the descriptor was handed to this process (systemd socket
+    // activation, or a test) and nothing else owns it.
+    let owned = unsafe { OwnedFd::from_raw_fd(fd) };
+    let int_option = |option: libc::c_int| -> io::Result<libc::c_int> {
+        let mut value: libc::c_int = 0;
+        let mut len = std::mem::size_of::<libc::c_int>() as libc::socklen_t;
+        // SAFETY: value and len are valid for writes of the sizes given.
+        let rc = unsafe {
+            libc::getsockopt(
+                owned.as_raw_fd(),
+                libc::SOL_SOCKET,
+                option,
+                (&mut value as *mut libc::c_int).cast(),
+                &mut len,
+            )
+        };
+        if rc != 0 {
+            return Err(io::Error::last_os_error());
+        }
+        Ok(value)
+    };
+    if int_option(libc::SO_TYPE)? != libc::SOCK_STREAM {
+        return Err(refuse(path, "activated socket is not a stream socket"));
+    }
+    // Linux answers SO_ACCEPTCONN for unix sockets; macOS (dev only) does not.
+    #[cfg(target_os = "linux")]
+    if int_option(libc::SO_ACCEPTCONN)? == 0 {
+        return Err(refuse(path, "activated socket is not listening"));
+    }
+    let std_listener = std::os::unix::net::UnixListener::from(owned);
+    let local = std_listener.local_addr()?;
+    if local.as_pathname() != Some(path) {
+        return Err(refuse(
+            path,
+            "activated socket is not the configured socket",
+        ));
+    }
+    verify_socket(path, gid)?;
+    // SAFETY: fcntl on a descriptor this function owns.
+    if unsafe { libc::fcntl(std_listener.as_raw_fd(), libc::F_SETFD, libc::FD_CLOEXEC) } != 0 {
+        return Err(io::Error::last_os_error());
+    }
+    std_listener.set_nonblocking(true)?;
+    UnixListener::from_std(std_listener)
 }
 
 fn prepare_dir(dir: &Path, gid: Option<u32>) -> io::Result<()> {
@@ -254,6 +346,64 @@ mod tests {
         fs::set_permissions(&dir, fs::Permissions::from_mode(0o770)).unwrap();
         let err = bind(&dir.join("agent.sock"), None).unwrap_err();
         assert!(err.to_string().contains("writable"), "{err}");
+        fs::remove_dir_all(base).unwrap();
+    }
+
+    // agent-protocol.md section 8: permanu-agent.socket creates
+    // /run/permanu/agent.sock in the root-owned /run/permanu and passes it to
+    // the sandboxed agent, which cannot bind there itself.
+    #[test]
+    fn activation_fd_follows_listen_pid_and_listen_fds() {
+        assert_eq!(activation_fd(None, None, 42).unwrap(), None);
+        assert_eq!(activation_fd(Some("41"), Some("1"), 42).unwrap(), None);
+        assert_eq!(
+            activation_fd(Some("42"), Some("1"), 42).unwrap(),
+            Some(LISTEN_FDS_START)
+        );
+        assert!(activation_fd(Some("42"), Some("2"), 42).is_err());
+        assert!(activation_fd(Some("42"), Some("0"), 42).is_err());
+        assert!(activation_fd(Some("42"), Some("x"), 42).is_err());
+    }
+
+    #[tokio::test]
+    async fn adopts_an_activated_socket_at_the_configured_path() {
+        use std::os::fd::IntoRawFd;
+        let base = temp_dir("adopt");
+        let path = base.join("agent.sock");
+        let listener = std::os::unix::net::UnixListener::bind(&path).unwrap();
+        fs::set_permissions(&path, fs::Permissions::from_mode(SOCKET_MODE)).unwrap();
+        // SAFETY: getegid has no preconditions.
+        let gid = unsafe { libc::getegid() };
+        std::os::unix::fs::chown(&path, None, Some(gid)).unwrap();
+        let fd = listener.into_raw_fd();
+        let adopted = adopt(fd, &path, Some(gid)).unwrap();
+        let client = tokio::net::UnixStream::connect(&path).await;
+        assert!(client.is_ok(), "adopted listener accepts connections");
+        drop(adopted);
+        fs::remove_dir_all(base).unwrap();
+    }
+
+    #[tokio::test]
+    async fn refuses_an_activated_socket_elsewhere_or_with_a_wrong_mode() {
+        use std::os::fd::IntoRawFd;
+        let base = temp_dir("adoptbad");
+        let path = base.join("agent.sock");
+        let listener = std::os::unix::net::UnixListener::bind(&path).unwrap();
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o666)).unwrap();
+        let fd = listener.into_raw_fd();
+        let err = adopt(fd, &base.join("other.sock"), None).unwrap_err();
+        assert!(
+            err.to_string().contains("not the configured socket"),
+            "{err}"
+        );
+
+        let listener = std::os::unix::net::UnixListener::bind(base.join("b.sock")).unwrap();
+        fs::set_permissions(base.join("b.sock"), fs::Permissions::from_mode(0o666)).unwrap();
+        let err = adopt(listener.into_raw_fd(), &base.join("b.sock"), None).unwrap_err();
+        assert!(err.to_string().contains("want 660"), "{err}");
+
+        let udp = std::net::UdpSocket::bind("127.0.0.1:0").unwrap();
+        assert!(adopt(udp.into_raw_fd(), &path, None).is_err());
         fs::remove_dir_all(base).unwrap();
     }
 
