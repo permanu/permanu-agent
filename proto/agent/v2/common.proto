@@ -181,4 +181,18 @@ enum ErrorReason {
   // v2.0.1. The agent could not read or write its own store or files
   // (runner code E_INTERNAL). Nothing was admitted or executed; retry.
   ERROR_REASON_INTERNAL = 33;              // INTERNAL
+  // v2.0.6 (contracts v1.0.6, agent-protocol.md 5). Runner execution codes
+  // (signed-plan.md 14.2-14.4), sent on OperationStep.error_reason with the
+  // exact code in OperationStep.error_code; before v2.0.6 they were INTERNAL.
+  ERROR_REASON_SCOPE_MISMATCH = 34;         // E_SCOPE_MISMATCH (D-042)
+  ERROR_REASON_PLAN_WINDOW = 35;            // E_PLAN_WINDOW
+  ERROR_REASON_PLAN_CONSUMED = 36;          // E_PLAN_CONSUMED (also a closed, cancelled action, D-048)
+  ERROR_REASON_PLAN_NOT_ADMITTED = 37;      // E_PLAN_NOT_ADMITTED
+  ERROR_REASON_ROLLBACK_TARGET_UNKNOWN = 38; // E_ROLLBACK_TARGET_UNKNOWN
+  ERROR_REASON_RULE_UNKNOWN = 39;           // E_RULE_UNKNOWN (was RULE_REJECTED)
+  ERROR_REASON_RULE_SCOPE = 40;             // E_RULE_SCOPE (was RULE_REJECTED)
+  // UNIMPLEMENTED from SubmitSignedPlan for agent.update and
+  // component.update(runner|permanu-env) in M1 (D-046), and runner code
+  // E_NOT_SUPPORTED_YET.
+  ERROR_REASON_NOT_SUPPORTED_YET = 41;
 }
