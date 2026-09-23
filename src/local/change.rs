@@ -112,7 +112,7 @@ impl ChangeSvc {
         Ok((record, operation))
     }
 
-    async fn submit(&self, plan: Option<SignedPlan>) -> Result<OperationRef, Status> {
+    pub(crate) async fn submit(&self, plan: Option<SignedPlan>) -> Result<OperationRef, Status> {
         if !self.core.allow_submission() {
             return Err(status_with_reason(
                 Code::ResourceExhausted,

@@ -10,9 +10,12 @@
 use rusqlite::{params, Connection};
 use serde_json::Value;
 
+use std::collections::BTreeSet;
+
 use crate::signed_plan::jcs::parse_strict;
 use crate::signed_plan::verify::SignedScope;
 use crate::signed_plan::verify::MAX_SIGNED_PLAN_BYTES;
+use crate::signed_plan::PlanCode;
 
 /// One action of an admitted plan with its reconciled outcome.
 #[derive(Debug, Clone, PartialEq)]
@@ -198,6 +201,117 @@ pub fn environment_protected(
         .any(|action| action.params["protected"] == true))
 }
 
+/// agent-protocol.md 10.1: at most 256 cron jobs per server.
+pub const MAX_CRON_JOBS: usize = 256;
+
+/// The cron jobs admitted and not deleted (void actions ignored).
+fn current_cron_ids(conn: &Connection) -> Result<BTreeSet<String>, rusqlite::Error> {
+    let mut ids = BTreeSet::new();
+    for action in admitted_actions(conn, &["cron.create", "cron.delete"])?
+        .iter()
+        .rev()
+        .filter(|a| !a.void())
+    {
+        let id = action.params["cron_id"]
+            .as_str()
+            .unwrap_or_default()
+            .to_owned();
+        if action.kind == "cron.create" {
+            ids.insert(id);
+        } else {
+            ids.remove(&id);
+        }
+    }
+    Ok(ids)
+}
+
+/// Execution preconditions of the cron and backup kinds (agent-protocol.md
+/// 10.1, 10.2; section 6.1 after step 12, `E_EXEC_PRECONDITION`): a named
+/// service or resource has an admitted spec here, a named job exists (and a
+/// new one does not), at most 256 jobs, and a destination in use by a
+/// policy is not deleted.
+pub fn definition_preconditions(conn: &Connection, plan: &Value) -> Result<(), PlanCode> {
+    let internal = |_: rusqlite::Error| PlanCode::Internal;
+    let actions = plan["actions"].as_array().map_or(&[][..], Vec::as_slice);
+    let kinds: Vec<&str> = actions.iter().filter_map(|a| a["kind"].as_str()).collect();
+    let touches_cron = kinds.iter().any(|k| k.starts_with("cron."));
+    let mut jobs = if touches_cron {
+        current_cron_ids(conn).map_err(internal)?
+    } else {
+        BTreeSet::new()
+    };
+    let has_spec = |id: &Value| -> Result<bool, PlanCode> {
+        Ok(service_scope(conn, id.as_str().unwrap_or_default())
+            .map_err(internal)?
+            .is_some())
+    };
+    for action in actions {
+        let params = &action["params"];
+        let cron_id = params["cron_id"].as_str().unwrap_or_default().to_owned();
+        match action["kind"].as_str().unwrap_or_default() {
+            "cron.create" => {
+                if !has_spec(&params["service_id"])?
+                    || jobs.contains(&cron_id)
+                    || jobs.len() >= MAX_CRON_JOBS
+                {
+                    return Err(PlanCode::ExecPrecondition);
+                }
+                jobs.insert(cron_id);
+            }
+            "cron.update" => {
+                if !has_spec(&params["service_id"])? || !jobs.contains(&cron_id) {
+                    return Err(PlanCode::ExecPrecondition);
+                }
+            }
+            "cron.delete" => {
+                if !jobs.remove(&cron_id) {
+                    return Err(PlanCode::ExecPrecondition);
+                }
+            }
+            "cron.pause" | "cron.resume" | "cron.run" => {
+                if !jobs.contains(&cron_id) {
+                    return Err(PlanCode::ExecPrecondition);
+                }
+            }
+            "backup.run"
+            | "backup.verify"
+            | "backup.delete"
+            | "backup.policy.set"
+            | "backup.policy.delete"
+            | "restore" => {
+                if !has_spec(&params["resource_id"])? {
+                    return Err(PlanCode::ExecPrecondition);
+                }
+            }
+            "backup.destination.delete" => {
+                let reference = &params["destination_ref"];
+                let mut policies = std::collections::BTreeMap::new();
+                for policy in admitted_actions(conn, &["backup.policy.set", "backup.policy.delete"])
+                    .map_err(internal)?
+                    .iter()
+                    .rev()
+                    .filter(|a| !a.void())
+                {
+                    let resource = policy.params["resource_id"].as_str().unwrap_or_default();
+                    if policy.kind == "backup.policy.set" {
+                        policies.insert(
+                            resource.to_owned(),
+                            policy.params["destination_ref"].clone(),
+                        );
+                    } else {
+                        policies.remove(resource);
+                    }
+                }
+                if policies.values().any(|used| used == reference) {
+                    return Err(PlanCode::ExecPrecondition);
+                }
+            }
+            _ => {}
+        }
+    }
+    Ok(())
+}
+
 impl super::AdmissionStore {
     /// Every admitted action of these kinds, newest first (see
     /// [`admitted_actions`]).
@@ -298,6 +412,98 @@ pub(crate) mod tests {
                 params![plan_id, outcome, at],
             )
             .unwrap();
+    }
+
+    fn seed_spec(store: &AdmissionStore, plan_id: &str, service_id: &str) {
+        store
+            .lock()
+            .execute(
+                "INSERT INTO specs (spec_digest_hex, service_id, spec_jcs, admitted_plan_id, \
+                 admitted_at) VALUES (?1, ?2, '{}', ?3, '2026-09-23T10:00:00Z')",
+                params![format!("{:064x}", 7), service_id, plan_id],
+            )
+            .unwrap();
+    }
+
+    #[test]
+    fn cron_and_backup_kinds_need_their_objects() {
+        let (dir, store) = open("definitions-preconditions");
+        let scope = (PROJECT, "production", ENV_ID);
+        let web = "01a0cdb5-3500-70c1-8000-000000000001";
+        let cron = "01a0cdb5-3500-70d2-8000-000000000001";
+        let deploy = record(
+            &store,
+            1,
+            scope,
+            &[json!({"kind": "deploy", "params": {}})],
+            "succeeded",
+        );
+        let plan = |actions: Value| json!({"actions": actions});
+        let create = json!({"kind": "cron.create", "params": {"cron_id": cron, "service_id": web}});
+        let run = json!({"kind": "cron.run", "params": {"cron_id": cron}});
+        let check = |p: &Value| definition_preconditions(&store.lock(), p);
+        // No admitted spec of the service yet.
+        assert_eq!(
+            check(&plan(json!([create]))),
+            Err(PlanCode::ExecPrecondition)
+        );
+        seed_spec(&store, &deploy, web);
+        assert_eq!(check(&plan(json!([create]))), Ok(()));
+        assert_eq!(
+            check(&plan(json!([run]))),
+            Err(PlanCode::ExecPrecondition),
+            "unknown job"
+        );
+        assert_eq!(
+            check(&plan(json!([create, run]))),
+            Ok(()),
+            "created by the same plan"
+        );
+        record(&store, 2, scope, std::slice::from_ref(&create), "succeeded");
+        assert_eq!(check(&plan(json!([run]))), Ok(()));
+        assert_eq!(
+            check(&plan(json!([create]))),
+            Err(PlanCode::ExecPrecondition),
+            "id taken"
+        );
+        let delete = json!({"kind": "cron.delete", "params": {"cron_id": cron}});
+        record(&store, 3, scope, &[delete], "succeeded");
+        assert_eq!(
+            check(&plan(json!([run]))),
+            Err(PlanCode::ExecPrecondition),
+            "deleted"
+        );
+        let backup =
+            |resource: &str| json!({"kind": "backup.run", "params": {"resource_id": resource}});
+        assert_eq!(check(&plan(json!([backup(web)]))), Ok(()));
+        assert_eq!(
+            check(&plan(json!([backup(
+                "01a0cdb5-3500-70c1-8000-000000000099"
+            )]))),
+            Err(PlanCode::ExecPrecondition)
+        );
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn a_destination_in_use_is_not_deleted() {
+        let (dir, store) = open("definitions-destination");
+        let scope = (PROJECT, "production", ENV_ID);
+        let res = "01a0cdb5-3500-70d1-8000-000000000001";
+        record(&store, 1, scope, &[policy(res, 7, "offsite")], "succeeded");
+        let delete = |r: &str| {
+            json!({"actions": [{"kind": "backup.destination.delete",
+            "params": {"destination_ref": r}}]})
+        };
+        assert_eq!(
+            definition_preconditions(&store.lock(), &delete("offsite")),
+            Err(PlanCode::ExecPrecondition)
+        );
+        assert_eq!(
+            definition_preconditions(&store.lock(), &delete("other")),
+            Ok(())
+        );
+        std::fs::remove_dir_all(dir).unwrap();
     }
 
     fn policy(resource: &str, keep_daily: i64, destination: &str) -> Value {

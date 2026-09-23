@@ -24,6 +24,7 @@ pub mod cron;
 pub mod cron_expr;
 pub mod ops_store;
 pub mod rpc;
+pub mod source;
 
 #[cfg(test)]
 pub(crate) mod test_support;
@@ -201,10 +202,36 @@ pub trait AlertSink: Send + Sync {
     fn builtin(&self, event: BuiltinEvent);
 }
 
-/// Discards built-in events (tests, and before the evaluator starts).
-#[derive(Debug, Default)]
-pub struct NoAlerts;
+/// The three schedulers and their store, built once at startup.
+#[derive(Clone)]
+pub struct Schedulers {
+    pub cron: Arc<cron::CronScheduler>,
+    pub backups: Arc<backup::BackupScheduler>,
+    pub alerts: Arc<alerts::AlertEvaluator>,
+    pub ops: Arc<OpsStore>,
+}
 
-impl AlertSink for NoAlerts {
-    fn builtin(&self, _: BuiltinEvent) {}
+impl Schedulers {
+    /// `server_recipient` is this server's age recipient (backup artifact
+    /// fingerprints); `source` is the telemetry store view for alert rules.
+    pub fn new(deps: Deps, server_recipient: String, source: Arc<dyn alerts::AlertSource>) -> Self {
+        let alerts = alerts::AlertEvaluator::new(deps.clone(), source);
+        let sink: Arc<dyn AlertSink> = alerts.clone();
+        Self {
+            cron: cron::CronScheduler::new(deps.clone(), sink.clone()),
+            backups: backup::BackupScheduler::new(deps.clone(), sink, server_recipient),
+            alerts,
+            ops: deps.ops,
+        }
+    }
+
+    /// Starts the scheduler loops (aborted by the caller at shutdown).
+    pub fn spawn(&self) -> Vec<tokio::task::JoinHandle<()>> {
+        vec![self.cron.spawn(), self.backups.spawn(), self.alerts.spawn()]
+    }
+
+    /// The capabilities these schedulers serve (agent-protocol.md 10).
+    pub fn capabilities() -> [&'static str; 3] {
+        [CAPABILITY_CRON, CAPABILITY_BACKUPS, CAPABILITY_ALERTS]
+    }
 }

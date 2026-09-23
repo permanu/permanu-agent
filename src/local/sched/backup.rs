@@ -1176,6 +1176,7 @@ impl BackupScheduler {
         }
     }
 
+    #[cfg(test)]
     pub async fn settle(&self) {
         loop {
             let tasks: Vec<JoinHandle<()>> =

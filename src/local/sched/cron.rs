@@ -56,8 +56,8 @@ pub const CRON_KINDS: &[&str] = &[
     "cron.resume",
     "cron.run",
 ];
-/// agent-protocol.md 10.1.
-pub const MAX_JOBS: usize = 256;
+/// agent-protocol.md 10.1 (the 256-job limit is an admission check,
+/// `definitions::MAX_CRON_JOBS`).
 pub const MAX_RUNNING: usize = 8;
 pub const MAX_ALLOWED_CHAINS: usize = 4;
 const CHECKPOINT_KEY: &str = "cron_checkpoint";
@@ -252,8 +252,6 @@ struct Chain {
     retry_at: Option<i64>,
     /// Waiting for a container slot (server limit) or the job (queue).
     waiting: bool,
-    /// A manual chain run by the plan executor.
-    manual: bool,
 }
 
 #[derive(Default)]
@@ -569,7 +567,6 @@ impl CronScheduler {
                 run: run.clone(),
                 retry_at: None,
                 waiting: true,
-                manual: false,
             },
         );
         if job.overlap == Overlap::Queue && active > 0 {
@@ -838,7 +835,6 @@ impl CronScheduler {
                     run: run.clone(),
                     retry_at: None,
                     waiting: false,
-                    manual: true,
                 });
                 continue;
             }
@@ -925,7 +921,6 @@ impl CronScheduler {
                 run: run.clone(),
                 retry_at: None,
                 waiting: false,
-                manual: true,
             },
         );
         run
@@ -989,6 +984,7 @@ impl CronScheduler {
     }
 
     /// Waits for every started run task (tests and shutdown).
+    #[cfg(test)]
     pub async fn settle(&self) {
         loop {
             let tasks: Vec<JoinHandle<()>> =

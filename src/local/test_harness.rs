@@ -654,6 +654,8 @@ pub struct Options {
     pub age_recipient: Option<String>,
     /// Open a telemetry store under the test dir (`telemetry.v1`).
     pub telemetry: bool,
+    /// Serve the schedulers (`cron.v1`, `backups.v1`, `alerts.v1`).
+    pub schedulers: bool,
 }
 
 impl Default for Options {
@@ -665,6 +667,7 @@ impl Default for Options {
             start_timeout: Duration::from_secs(300),
             age_recipient: None,
             telemetry: false,
+            schedulers: false,
         }
     }
 }
@@ -817,6 +820,24 @@ impl Harness {
             age_recipient: age_recipient.clone(),
             core: core.clone(),
             telemetry: telemetry.clone(),
+            schedulers: options.schedulers.then(|| {
+                crate::local::sched::Schedulers::new(
+                    crate::local::sched::Deps {
+                        store: core.store.clone(),
+                        ops: Arc::new(crate::local::sched::ops_store::OpsStore::in_memory()),
+                        runner: core.runner.clone(),
+                        events: core.events.clone(),
+                        clock: clock.clone(),
+                        logs: crate::local::sched::AgentLogs {
+                            telemetry: telemetry.clone(),
+                            host: "test".to_owned(),
+                        },
+                        server_id: String::new(),
+                    },
+                    age_recipient.clone(),
+                    Arc::new(crate::local::sched::alerts::NoSource),
+                )
+            }),
         };
         let task = tokio::spawn(async move {
             server

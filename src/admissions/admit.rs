@@ -407,6 +407,8 @@ fn execution_preconditions(
     }
 
     check_input_composition(ctx, verified)?;
+    // agent-protocol.md 10.1, 10.2: the named job, service or destination.
+    definitions::definition_preconditions(ctx.tx, &verified.plan)?;
 
     let mut trust = ctx.trust.clone();
     for action in actions {

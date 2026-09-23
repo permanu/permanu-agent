@@ -42,9 +42,12 @@ use crate::{
     config::{AgentMode, LocalConfig},
     proto::agent::v2::{
         agent_info, agent_status,
+        alert_service_server::AlertServiceServer,
+        backup_service_server::BackupServiceServer,
         change_service_server::ChangeServiceServer,
         event_service_server::EventServiceServer,
         info_service_server::{InfoService, InfoServiceServer},
+        schedule_service_server::ScheduleServiceServer,
         state_service_server::{StateService, StateServiceServer},
         telemetry_service_server::TelemetryServiceServer,
         trusted_keys_summary::TrustState as TrustStateProto,
@@ -139,6 +142,7 @@ pub struct InfoSvc {
     trust: TrustPaths,
     age_recipient: String,
     telemetry: Option<Arc<telemetry::Telemetry>>,
+    schedulers: bool,
 }
 
 /// `AgentStatus` (agent-protocol.md 12.3) from what this agent tracks:
@@ -292,7 +296,11 @@ impl InfoService for InfoSvc {
                 recovery_recipient_fingerprint: String::new(),
                 bundle_manifest_digest_hex: String::new(),
             }),
-            capabilities: capabilities(&self.age_recipient, self.telemetry.is_some()),
+            capabilities: capabilities(
+                &self.age_recipient,
+                self.telemetry.is_some(),
+                self.schedulers,
+            ),
             server: Some(self.probe.server_facts().await),
             trusted_keys: Some(trusted_keys),
             clock: Some(ClockInfo {
@@ -323,8 +331,9 @@ impl InfoService for InfoSvc {
 }
 
 /// `HelloResponse.capabilities`: `age.v1` only when a recipient is set,
-/// `telemetry.v1` only when the store opened.
-fn capabilities(age_recipient: &str, telemetry: bool) -> Vec<String> {
+/// `telemetry.v1` only when the store opened, `cron.v1`, `backups.v1` and
+/// `alerts.v1` only while the schedulers run.
+fn capabilities(age_recipient: &str, telemetry: bool, schedulers: bool) -> Vec<String> {
     let mut ids = vec![
         CAPABILITY_SIGNED_PLANS.to_string(),
         CAPABILITY_ADMISSIONS.to_string(),
@@ -337,6 +346,9 @@ fn capabilities(age_recipient: &str, telemetry: bool) -> Vec<String> {
     }
     if telemetry {
         ids.push(CAPABILITY_TELEMETRY.to_string());
+    }
+    if schedulers {
+        ids.extend(sched::Schedulers::capabilities().map(str::to_owned));
     }
     ids
 }
@@ -465,6 +477,9 @@ pub struct LocalServer {
     pub core: Arc<execution::ChangeCore>,
     /// The telemetry store (`telemetry.v1`); `None` serves the M1 paths.
     pub telemetry: Option<Arc<telemetry::Telemetry>>,
+    /// Cron, backup and alert schedulers (`cron.v1`, `backups.v1`,
+    /// `alerts.v1`); `None` leaves those services unimplemented.
+    pub schedulers: Option<sched::Schedulers>,
 }
 
 impl LocalServer {
@@ -480,6 +495,7 @@ impl LocalServer {
             trust: self.trust,
             age_recipient: self.age_recipient,
             telemetry: self.telemetry.clone(),
+            schedulers: self.schedulers.is_some(),
         })
         .max_decoding_message_size(MAX_MESSAGE_BYTES)
         .max_encoding_message_size(MAX_MESSAGE_BYTES);
@@ -494,6 +510,36 @@ impl LocalServer {
             bus.close();
         };
         let runner = self.core.runner.clone();
+        let (schedule_svc, backup_svc, alert_svc) = match self.schedulers {
+            Some(s) => (
+                Some(
+                    ScheduleServiceServer::new(sched::rpc::ScheduleSvc {
+                        cron: s.cron.clone(),
+                        ops: s.ops.clone(),
+                        change: change::ChangeSvc {
+                            core: self.core.clone(),
+                        },
+                        telemetry: self.telemetry.clone(),
+                    })
+                    .max_decoding_message_size(MAX_MESSAGE_BYTES)
+                    .max_encoding_message_size(MAX_MESSAGE_BYTES),
+                ),
+                Some(
+                    BackupServiceServer::new(sched::rpc::BackupSvc::new(
+                        s.backups.clone(),
+                        s.ops.clone(),
+                    ))
+                    .max_decoding_message_size(MAX_MESSAGE_BYTES)
+                    .max_encoding_message_size(MAX_MESSAGE_BYTES),
+                ),
+                Some(
+                    AlertServiceServer::new(sched::rpc::AlertSvc { alerts: s.alerts })
+                        .max_decoding_message_size(MAX_MESSAGE_BYTES)
+                        .max_encoding_message_size(MAX_MESSAGE_BYTES),
+                ),
+            ),
+            None => (None, None, None),
+        };
         let change_svc = ChangeServiceServer::new(change::ChangeSvc { core: self.core })
             .max_decoding_message_size(MAX_MESSAGE_BYTES)
             .max_encoding_message_size(MAX_MESSAGE_BYTES);
@@ -518,6 +564,9 @@ impl LocalServer {
             .add_service(change_svc)
             .add_service(event_svc)
             .add_service(telemetry_svc)
+            .add_optional_service(schedule_svc)
+            .add_optional_service(backup_svc)
+            .add_optional_service(alert_svc)
             .serve_with_incoming_shutdown(logged_incoming(listener), shutdown)
             .await
     }
@@ -649,6 +698,18 @@ pub async fn run(
     }
     let background = core.spawn_background();
     let (telemetry, telemetry_tasks) = start_telemetry(&cfg, &core, probe.clone(), trust.clone());
+    let schedulers = start_schedulers(
+        &cfg,
+        owner,
+        &core,
+        telemetry.clone(),
+        &age_recipient,
+        &trust,
+    );
+    let scheduler_tasks = schedulers
+        .as_ref()
+        .map(sched::Schedulers::spawn)
+        .unwrap_or_default();
     let listener = socket::listen(&cfg.socket_path, gid)?;
     info!(socket = %cfg.socket_path.display(), "serving agent protocol v2");
     let result = LocalServer {
@@ -658,10 +719,14 @@ pub async fn run(
         age_recipient,
         core,
         telemetry: telemetry.clone(),
+        schedulers,
     }
     .serve(listener, shutdown)
     .await;
     background.abort();
+    for task in scheduler_tasks {
+        task.abort();
+    }
     for task in telemetry_tasks {
         task.abort();
     }
@@ -672,6 +737,52 @@ pub async fn run(
     }
     result?;
     Ok(())
+}
+
+/// Opens `ops.db` next to `admissions.db` and builds the schedulers
+/// (agent-protocol.md 10). A store that cannot open leaves them off (no
+/// `cron.v1`, `backups.v1`, `alerts.v1`).
+fn start_schedulers(
+    cfg: &LocalConfig,
+    owner: Option<StoreOwner>,
+    core: &Arc<execution::ChangeCore>,
+    telemetry: Option<Arc<telemetry::Telemetry>>,
+    age_recipient: &str,
+    trust: &TrustPaths,
+) -> Option<sched::Schedulers> {
+    let path = cfg.admissions_db.with_file_name("ops.db");
+    let ops = match sched::ops_store::OpsStore::open(&path, owner) {
+        Ok(ops) => Arc::new(ops),
+        Err(err) => {
+            warn!(error = %err, path = %path.display(), "ops.db unavailable; schedulers are off");
+            return None;
+        }
+    };
+    let server_id = match trust.load() {
+        TrustState::Valid(store) => store.server_id,
+        _ => String::new(),
+    };
+    let source: Arc<dyn sched::alerts::AlertSource> = match &telemetry {
+        Some(store) => Arc::new(sched::source::StoreSource::new(store.clone())),
+        None => Arc::new(sched::alerts::NoSource),
+    };
+    let deps = sched::Deps {
+        store: core.store.clone(),
+        ops,
+        runner: core.runner.clone(),
+        events: core.events.clone(),
+        clock: Arc::new(execution::SystemClock),
+        logs: sched::AgentLogs {
+            telemetry,
+            host: hostname(),
+        },
+        server_id,
+    };
+    Some(sched::Schedulers::new(
+        deps,
+        age_recipient.to_owned(),
+        source,
+    ))
 }
 
 /// Opens the telemetry store and starts its producers (agent-protocol.md
@@ -839,7 +950,7 @@ mod tests {
     #[test]
     fn age_capability_needs_a_recipient() {
         assert_eq!(
-            capabilities("", false),
+            capabilities("", false, false),
             vec![
                 "signed_plans.v1",
                 "admissions.v1",
@@ -849,7 +960,7 @@ mod tests {
             ]
         );
         assert_eq!(
-            capabilities("age1xyz", false),
+            capabilities("age1xyz", false, false),
             vec![
                 "signed_plans.v1",
                 "admissions.v1",
@@ -861,7 +972,7 @@ mod tests {
         );
         // telemetry.v1 supersedes logs.containers.v1 for reads; both stay.
         assert_eq!(
-            capabilities("", true),
+            capabilities("", true, false),
             vec![
                 "signed_plans.v1",
                 "admissions.v1",
@@ -871,6 +982,12 @@ mod tests {
                 "telemetry.v1"
             ]
         );
+        let with_schedulers = capabilities("", false, true);
+        assert!(with_schedulers.ends_with(&[
+            "cron.v1".to_owned(),
+            "backups.v1".to_owned(),
+            "alerts.v1".to_owned()
+        ]));
     }
 
     #[tokio::test]
@@ -1102,6 +1219,80 @@ mod tests {
             .await
             .unwrap_err();
         assert_eq!(bad.code(), Code::InvalidArgument);
+        h.stop().await;
+    }
+
+    #[tokio::test]
+    async fn scheduler_services_are_served_with_their_capabilities() {
+        use crate::local::test_harness::Options;
+        use crate::proto::agent::v2::{
+            alert_service_client::AlertServiceClient, backup_service_client::BackupServiceClient,
+            schedule_service_client::ScheduleServiceClient, GetCronJobRequest,
+            ListBackupPoliciesRequest, ListCronJobsRequest, RunCronJobNowRequest,
+            TestNotificationChannelRequest,
+        };
+        let h = Harness::with(
+            "sched-wired",
+            Options {
+                schedulers: true,
+                ..Default::default()
+            },
+        )
+        .await;
+        let mut info = InfoServiceClient::new(h.channel.clone());
+        let hello = info
+            .hello(hello_request(&["2.1"]))
+            .await
+            .unwrap()
+            .into_inner();
+        for capability in ["cron.v1", "backups.v1", "alerts.v1"] {
+            assert!(
+                hello.capabilities.contains(&capability.to_owned()),
+                "{capability}"
+            );
+        }
+        let mut schedules = ScheduleServiceClient::new(h.channel.clone());
+        let jobs = schedules
+            .list_cron_jobs(ListCronJobsRequest::default())
+            .await
+            .unwrap()
+            .into_inner();
+        assert!(jobs.jobs.is_empty());
+        let missing = schedules
+            .get_cron_job(GetCronJobRequest {
+                cron_id: "01a0cdb5-3500-70d2-8000-000000000001".to_owned(),
+            })
+            .await
+            .unwrap_err();
+        assert_eq!(missing.code(), Code::NotFound);
+        let refused = schedules
+            .run_cron_job_now(RunCronJobNowRequest {
+                cron_id: "01a0cdb5-3500-70d2-8000-000000000001".to_owned(),
+                plan: None,
+            })
+            .await
+            .unwrap_err();
+        assert_eq!(refused.code(), Code::FailedPrecondition);
+        assert_eq!(
+            reason(&refused).as_deref(),
+            Some("ERROR_REASON_EXEC_PRECONDITION")
+        );
+        let mut backups = BackupServiceClient::new(h.channel.clone());
+        assert!(backups
+            .list_backup_policies(ListBackupPoliciesRequest::default())
+            .await
+            .unwrap()
+            .into_inner()
+            .policies
+            .is_empty());
+        let mut alerts = AlertServiceClient::new(h.channel.clone());
+        let unknown = alerts
+            .test_notification_channel(TestNotificationChannelRequest {
+                channel_id: "01a0cdb5-3500-70e2-8000-000000000001".to_owned(),
+            })
+            .await
+            .unwrap_err();
+        assert_eq!(unknown.code(), Code::NotFound);
         h.stop().await;
     }
 

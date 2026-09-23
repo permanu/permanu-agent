@@ -140,6 +140,7 @@ impl CronExpr {
     }
 
     /// Whether `at` is a fire time (the reference `cron_fires`).
+    #[cfg(test)]
     pub fn fires_at(&self, tz: &TimeZone, at: i64) -> bool {
         at % 60 == 0 && self.next_after(tz, at - 1) == Some(at)
     }

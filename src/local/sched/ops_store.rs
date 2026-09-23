@@ -138,6 +138,7 @@ impl OpsStore {
         })
     }
 
+    #[cfg(test)]
     pub fn in_memory() -> Self {
         let conn = Connection::open_in_memory().expect("in-memory sqlite");
         conn.execute_batch(SCHEMA).expect("schema");

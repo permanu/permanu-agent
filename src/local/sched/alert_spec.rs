@@ -81,7 +81,7 @@ fn duration(map: &Map<String, Value>, name: &str) -> Result<Option<i64>, String>
     let seconds: f64 = text
         .parse()
         .map_err(|_| format!("{name} must be a duration like \"300s\""))?;
-    if !seconds.is_finite() || seconds < 0.0 || seconds > 1e9 {
+    if !seconds.is_finite() || !(0.0..=1e9).contains(&seconds) {
         return Err(format!("{name} is out of range"));
     }
     Ok(Some(seconds.ceil() as i64))
