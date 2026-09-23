@@ -456,6 +456,66 @@ fn reconciles_the_consumed_log_into_actions_and_outcome() {
     fs::remove_dir_all(dir).unwrap();
 }
 
+/// v1.0.7-v1.0.9 (section 14.5): `run`, `run_result`, `build`,
+/// `build_started` and `delivery` lines carry no admission action; the agent
+/// skips them for `admission_actions` without reporting them, and their
+/// `seq` keeps the sequence gap-free. An unknown event is ignored too.
+#[test]
+fn m2_consumed_log_lines_are_skipped_without_a_problem() {
+    let dir = temp_dir("store-reconcile-m2");
+    let (store, _) = AdmissionStore::open(&config(&dir), false, now()).unwrap();
+    seed_head(&store, USER_DEPLOY_HEAD_BEFORE);
+    let (envelope, specs) = user_deploy();
+    let admission = store
+        .admit(&test_trust(), &input(&envelope, &specs, now()))
+        .unwrap();
+    let (id, digest) = (&admission.plan_id, &admission.plan_digest_hex);
+    let log = dir.join("consumed.log");
+    let uid = unsafe { libc::geteuid() };
+    let other = |seq: u64, event: &str| {
+        serde_json::json!({"v": 1, "seq": seq, "at": "2026-09-23T10:06:00Z", "event": event,
+            "body_digest_hex": "a".repeat(64), "project_id": "p", "environments": ["production"]})
+        .to_string()
+    };
+    write_log(
+        &log,
+        &[
+            other(1, "delivery"),
+            line(2, "consumed", id, digest, None),
+            other(3, "build_started"),
+            other(4, "build"),
+            other(5, "some_future_event"),
+            line(6, "result", id, digest, Some("succeeded")),
+        ],
+        false,
+    );
+    let read = read_consumed_log(&log, uid);
+    assert!(read.problems.is_empty(), "{:?}", read.problems);
+    let effects = store.reconcile(&read, now()).unwrap();
+    assert!(
+        !effects
+            .iter()
+            .any(|e| matches!(e, ReconcileEffect::Unexplained { .. })),
+        "{effects:?}"
+    );
+    assert!(effects.contains(&ReconcileEffect::AdmissionFinished {
+        plan_id: id.clone(),
+        outcome: "succeeded".to_owned()
+    }));
+    // An action event without its plan fields is still malformed.
+    write_log(
+        &log,
+        &[
+            serde_json::json!({"v": 1, "seq": 7, "at": "2026-09-23T10:06:00Z",
+            "event": "consumed"})
+            .to_string(),
+        ],
+        false,
+    );
+    assert_eq!(read_consumed_log(&log, uid).problems.len(), 1);
+    fs::remove_dir_all(dir).unwrap();
+}
+
 /// v1.0.5 (D-044): a cancelled action's `result` line carries `cleanup`,
 /// and readers ignore fields they do not know (section 14.5).
 #[test]
