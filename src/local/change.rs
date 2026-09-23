@@ -11,7 +11,7 @@ use serde_json::Value;
 use tonic::{Code, Request, Response, Status};
 
 use super::errors::{plan_status, reason_for};
-use super::execution::{decode_event, ChangeCore, Submission};
+use super::execution::{decode_event, not_supported_yet, ChangeCore, Submission};
 use super::{log_peer, status_with_reason};
 use crate::admissions::AdmissionRecord;
 use crate::proto::agent::v2::{
@@ -120,9 +120,19 @@ impl ChangeSvc {
                 ErrorReason::RateLimited,
             ));
         }
+        let submission = submission(plan)?;
+        if let Some(action) = not_supported_yet(&submission.envelope) {
+            return Err(status_with_reason(
+                Code::Unimplemented,
+                &format!(
+                    "not_supported_yet: {action} waits for the M2 artifact trust root (D-046)"
+                ),
+                ErrorReason::CapabilityMissing,
+            ));
+        }
         let admission = self
             .core
-            .submit(submission(plan)?, Submitter::Client)
+            .submit(submission, Submitter::Client)
             .await
             .map_err(plan_status)?;
         Ok(OperationRef {

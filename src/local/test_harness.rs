@@ -29,7 +29,7 @@ use super::{age_recipient, events::EventBus, socket, AgentIdentity, LocalServer}
 use crate::admissions::{AdmissionStore, StoreConfig};
 use crate::config::AgentMode;
 use crate::proto::agent::v2::{Container, ServerFacts};
-use crate::signed_plan::test_support::temp_dir;
+use crate::signed_plan::test_support::{temp_dir, vector};
 use crate::signed_plan::text::{format_timestamp, timestamp};
 use crate::signed_plan::trust::{TrustChange, TrustMode, TrustPaths};
 use crate::signed_plan::verify::verify_bootstrap;
@@ -121,6 +121,10 @@ pub struct FakeRunner {
     pub admissions_db: PathBuf,
     pub trust: TrustPaths,
     pub host_keys: Vec<String>,
+    pub age_recipient: String,
+    /// What `cancel_execution` reports for a prepared, unactivated deploy
+    /// candidate it cleans up (D-044): `done` or `failed`.
+    pub cancel_cleanup: Mutex<&'static str>,
     /// Every request, in arrival order.
     pub requests: Mutex<Vec<Value>>,
     pub fail_bind_with: Mutex<Option<PlanCode>>,
@@ -234,20 +238,73 @@ impl FakeRunner {
 
     /// The runner finishing an action (its `result` line), once.
     pub fn result(&self, plan_id: &str, digest: &str, index: u32, outcome: &str) {
-        if self
+        self.result_with(plan_id, digest, index, json!({"outcome": outcome}));
+    }
+
+    /// A `result` line with extra fields; false when the action had one.
+    fn result_with(&self, plan_id: &str, digest: &str, index: u32, fields: Value) -> bool {
+        let first = self
             .finished
             .lock()
             .unwrap()
-            .insert((plan_id.to_owned(), index))
-        {
-            self.append(
-                "result",
-                plan_id,
-                digest,
-                index,
-                json!({"outcome": outcome}),
-            );
+            .insert((plan_id.to_owned(), index));
+        if first {
+            self.append("result", plan_id, digest, index, fields);
         }
+        first
+    }
+
+    /// `cancel_execution` (sections 14.3, 14.6, v1.0.5 D-044): ends every
+    /// unfinished action of the target `cancelled`, cleaning up a deploy's
+    /// prepared, unactivated candidate first; returns the wire `cancelled`
+    /// list.
+    fn cancel_target(&self, target: &str) -> Vec<Value> {
+        let Some((digest, plan, count)) = self.admitted(target) else {
+            return Vec::new();
+        };
+        let mut cancelled = Vec::new();
+        for index in 0..count as u32 {
+            if self
+                .finished
+                .lock()
+                .unwrap()
+                .contains(&(target.to_owned(), index))
+            {
+                continue;
+            }
+            let action = &plan["actions"][index as usize];
+            let ops = self
+                .ops
+                .lock()
+                .unwrap()
+                .get(&(target.to_owned(), index))
+                .cloned()
+                .unwrap_or_default();
+            let prepared = ops.iter().any(|o| o == "prepare_release")
+                && !ops.iter().any(|o| o == "activate_release");
+            let cleanup = if action["kind"] == "deploy" && prepared {
+                self.append(
+                    "op",
+                    target,
+                    &digest,
+                    index,
+                    json!({"op": "cleanup_candidate"}),
+                );
+                *self.cancel_cleanup.lock().unwrap()
+            } else {
+                "none"
+            };
+            if self.result_with(
+                target,
+                &digest,
+                index,
+                json!({"outcome": "cancelled", "cleanup": cleanup}),
+            ) {
+                cancelled.push(json!({"action_index": index,
+                    "deployment_id": action["params"]["deployment_id"], "cleanup": cleanup}));
+            }
+        }
+        cancelled
     }
 
     /// Reads the admitted plan, as the real runner does (read-only).
@@ -375,7 +432,12 @@ impl FakeRunner {
         let text = request["payload"]["signed_plan"]
             .as_str()
             .unwrap_or_default();
-        match verify_bootstrap(text.as_bytes(), &self.host_keys, self.clock.now()) {
+        match verify_bootstrap(
+            text.as_bytes(),
+            &self.host_keys,
+            &self.age_recipient,
+            self.clock.now(),
+        ) {
             Ok(plan) => match self.trust.write_change(&TrustChange::Bootstrap {
                 server_id: &plan.server_id,
                 owner_key: &plan.owner_key,
@@ -454,12 +516,12 @@ impl FakeRunner {
                     .as_str()
                     .unwrap_or_default()
                     .to_owned();
-                if let Some((target_digest, _, count)) = self.admitted(&target) {
-                    for victim in 0..count as u32 {
-                        self.result(&target, &target_digest, victim, "cancelled");
-                    }
-                }
+                let cancelled = self.cancel_target(&target);
                 self.release.notify_waiters();
+                if self.write_results.load(Ordering::SeqCst) {
+                    self.result(plan_id, digest, index, "succeeded");
+                }
+                return json!({"ok": true, "cancelled": cancelled});
             }
             _ => {}
         }
@@ -554,6 +616,10 @@ pub struct Options {
     /// Whether the store is created as after a store loss (quarantine).
     pub store_lost: bool,
     pub start_timeout: Duration,
+    /// The age recipient bootstrap compares with; `None` = the bootstrap
+    /// vectors' own (`policy-cases.json` `bootstrap_cases[].age_recipient`,
+    /// D-045).
+    pub age_recipient: Option<String>,
 }
 
 impl Default for Options {
@@ -563,6 +629,7 @@ impl Default for Options {
             host_keys: vec!["ab".repeat(32)],
             store_lost: false,
             start_timeout: Duration::from_secs(300),
+            age_recipient: None,
         }
     }
 }
@@ -632,6 +699,15 @@ impl Harness {
         // SAFETY: geteuid has no preconditions.
         let age_recipient =
             age_recipient::read_recipient(&recipient_file, unsafe { libc::geteuid() }).unwrap();
+        // The recipient the bootstrap check compares with (D-045). The
+        // vectors sign the fingerprint of a placeholder that is not valid
+        // bech32, so it cannot live in the recipient file Hello reads.
+        let bootstrap_recipient = options.age_recipient.clone().unwrap_or_else(|| {
+            vector("policy-cases")["bootstrap_cases"][0]["age_recipient"]
+                .as_str()
+                .unwrap()
+                .to_owned()
+        });
         fs::create_dir_all(dir.join("runner")).unwrap();
         fs::create_dir_all(dir.join("run")).unwrap();
         let runner = Arc::new(FakeRunner {
@@ -639,6 +715,8 @@ impl Harness {
             admissions_db,
             trust: trust.clone(),
             host_keys: options.host_keys.clone(),
+            age_recipient: bootstrap_recipient.clone(),
+            cancel_cleanup: Mutex::new("done"),
             requests: Mutex::new(Vec::new()),
             fail_bind_with: Mutex::new(None),
             behaviors: Mutex::new(HashMap::new()),
@@ -677,6 +755,7 @@ impl Harness {
             consumed_log: dir.join("runner/consumed.log"),
             // SAFETY: geteuid has no preconditions.
             consumed_log_owner: unsafe { libc::geteuid() },
+            age_recipient: bootstrap_recipient,
             timing: Timing {
                 start_timeout: options.start_timeout,
                 op_timeout: Duration::from_secs(30),

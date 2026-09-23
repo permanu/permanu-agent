@@ -32,7 +32,9 @@ message ListContainersRequest {
 
 // Ids come from the Docker labels Permanu sets on every container it starts
 // (agent-protocol.md 3.1): permanu.project_id, permanu.environment_id,
-// permanu.service_id, permanu.deployment_id and permanu.spec_digest_hex.
+// permanu.service_id, permanu.deployment_id and permanu.spec_digest_hex; and
+// (v2.0.5, D-045) environment and service_kind from permanu.environment and
+// permanu.service_kind (empty for containers started before v2.0.5).
 message Container {
   string container_id = 1;
   string name = 2;
@@ -55,6 +57,10 @@ message Container {
   // Resource usage at the last sample.
   uint32 cpu_millis = 15;
   uint64 memory_bytes = 16;
+  // v2.0.5 (D-045). The signed ServiceSpec.service_kind (signed-plan.md 3.7):
+  // "web" | "worker" | "database" | "bucket" | "cron" | "static". QueryLogs
+  // serves database and bucket containers as SERVICE and the rest as APP.
+  string service_kind = 17;
 }
 
 message ListContainersResponse {

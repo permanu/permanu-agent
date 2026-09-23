@@ -6,6 +6,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use serde_json::Value;
+use sha2::{Digest, Sha256};
 
 use super::crypto::{
     b64url_decode, hex, parse_spki_base64, prefixed_digest, PLAN_PREFIX, RULE_PREFIX, SPEC_PREFIX,
@@ -646,10 +647,15 @@ pub struct BootstrapPlan {
 
 /// Section 7.3 step 3, applied only while trusted-keys.json is absent,
 /// including the step 7 time window (v1.0.2, D-033) so an expired
-/// `server.add` never writes trusted-keys.json.
+/// `server.add` never writes trusted-keys.json. `age_recipient` is the
+/// server's own recipient string (trailing newline removed); the plan's
+/// signed `age_recipient_fingerprint` must be its hex SHA-256 (v1.0.5,
+/// D-045). An empty recipient never matches, so a server that cannot read
+/// its recipient refuses every bootstrap (fail closed).
 pub fn verify_bootstrap(
     text: &[u8],
     host_key_digests: &[String],
+    age_recipient: &str,
     now: i64,
 ) -> Result<BootstrapPlan, PlanCode> {
     let (plan, signatures) = match parse_envelope(text) {
@@ -672,6 +678,12 @@ pub fn verify_bootstrap(
         .as_str()
         .unwrap_or_default();
     if !host_key_digests.iter().any(|d| d == host_key) {
+        return Err(PlanCode::Bootstrap);
+    }
+    if age_recipient.is_empty()
+        || params["age_recipient_fingerprint"].as_str()
+            != Some(hex(&Sha256::digest(age_recipient.as_bytes())).as_str())
+    {
         return Err(PlanCode::Bootstrap);
     }
     if signatures.len() != 1

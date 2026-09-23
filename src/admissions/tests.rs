@@ -14,7 +14,7 @@ const NOW: &str = "2026-09-23T10:05:00Z";
 const USER_DEPLOY_HEAD_BEFORE: &str =
     "4a98af3eeae054bf7585746ce20fa5907ec9c079ee1b049a7d01146d1c92ebfb";
 const USER_DEPLOY_HEAD_AFTER: &str =
-    "2667f951c69c97b62787014df252d190d4216b33547776aee4c049bc54bede9c";
+    "b896fd0b423eabc4f460209d90a216ab3df487eea383c0d5133ffbf6de9e6b30";
 const PROJECT: &str = "01a0cdb5-3500-70b1-8000-000000000001";
 
 fn now() -> i64 {
@@ -232,7 +232,7 @@ fn admits_the_user_deploy_vector_advances_the_head_and_dedupes() {
     assert!(!admission.deduplicated);
     assert_eq!(
         admission.plan_digest_hex,
-        "4764d0506dfacf4f8c036562fac7184e6a7a1faae7a45916772be562310a2d76"
+        "a878a86e93e31c3f2551ac3e8355a75efe24e7517580357b83960057bac55e1a"
     );
     assert_eq!(admission.admitted_at, NOW);
     assert_eq!(admission.deployment_ids.len(), 1);
@@ -455,6 +455,53 @@ fn reconciles_the_consumed_log_into_actions_and_outcome() {
     fs::remove_dir_all(dir).unwrap();
 }
 
+/// v1.0.5 (D-044): a cancelled action's `result` line carries `cleanup`,
+/// and readers ignore fields they do not know (section 14.5).
+#[test]
+fn a_cancelled_result_carries_its_cleanup_and_unknown_fields_are_ignored() {
+    let dir = temp_dir("store-cleanup");
+    let (store, _) = AdmissionStore::open(&config(&dir), false, now()).unwrap();
+    seed_head(&store, USER_DEPLOY_HEAD_BEFORE);
+    let (envelope, specs) = user_deploy();
+    let admission = store
+        .admit(&test_trust(), &input(&envelope, &specs, now()))
+        .unwrap();
+    let (id, digest) = (&admission.plan_id, &admission.plan_digest_hex);
+    let log = dir.join("consumed.log");
+    let uid = unsafe { libc::geteuid() };
+    let mut cleanup = serde_json::from_str::<Value>(&line(3, "op", id, digest, None)).unwrap();
+    cleanup["op"] = Value::String("cleanup_candidate".to_owned());
+    cleanup["future_field"] = Value::Bool(true);
+    let mut cancelled =
+        serde_json::from_str::<Value>(&line(4, "result", id, digest, Some("cancelled"))).unwrap();
+    cancelled["cleanup"] = Value::String("done".to_owned());
+    write_log(
+        &log,
+        &[
+            line(1, "consumed", id, digest, None),
+            line(2, "op", id, digest, None),
+            cleanup.to_string(),
+            cancelled.to_string(),
+        ],
+        false,
+    );
+    let read = read_consumed_log(&log, uid);
+    assert!(read.problems.is_empty(), "{:?}", read.problems);
+    assert_eq!(read.lines[3].cleanup.as_deref(), Some("done"));
+    let effects = store.reconcile(&read, now()).unwrap();
+    assert!(effects.contains(&ReconcileEffect::ActionFinished {
+        plan_id: id.clone(),
+        action_index: 0,
+        outcome: "cancelled".to_owned(),
+        cleanup: Some("done".to_owned()),
+    }));
+    assert!(!effects
+        .iter()
+        .any(|e| matches!(e, ReconcileEffect::Unexplained { .. })));
+    assert_eq!(store.admission(id).unwrap().unwrap().outcome, "cancelled");
+    fs::remove_dir_all(dir).unwrap();
+}
+
 #[test]
 fn window_expiry_marks_unconsumed_actions() {
     let dir = temp_dir("store-expire");
@@ -547,7 +594,7 @@ fn runner_read_queries_work_on_the_agent_store() {
     let spec: String = conn
         .query_row(
             "SELECT spec_jcs FROM specs WHERE spec_digest_hex = ?1",
-            params!["8ab54d633eff45b8a42f096f2f42f9837fba778f2cf8a884d73d34b70619f607"],
+            params!["7ca8d02473932190ad0735cc3a55b4035280f34ed003dcaa4f2f3caeebb1dab2"],
             |r| r.get(0),
         )
         .unwrap();

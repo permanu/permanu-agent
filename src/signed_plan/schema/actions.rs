@@ -171,6 +171,8 @@ fn params_for(kind: &str) -> Option<&'static [(&'static str, Shape)]> {
             ("owner_key", KEY_ENTRY),
             // v1.0.2 (D-029): the server bundle the engine installed.
             ("bundle_manifest_digest_hex", HEX64),
+            // v1.0.5 (D-045): hex SHA-256 of the server's age recipient.
+            ("age_recipient_fingerprint", HEX64),
         ],
         "server.remove" => &[("server_id", UUID7), ("wipe", Shape::Bool)],
         // v1.0.4 (D-040): the bundle manifest is signed too.

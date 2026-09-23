@@ -9,6 +9,7 @@ use tokio_stream::StreamExt;
 use tonic::Code;
 
 use super::errors::PLAN_ERROR_HEADER;
+use super::execution::decode_event;
 use super::test_harness::{Harness, OpBehavior, Options};
 use super::ERROR_REASON_HEADER;
 use crate::proto::agent::v2::{
@@ -288,6 +289,108 @@ async fn bootstrap_refuses_a_plan_pinned_to_another_host_key() {
     );
     assert_eq!(trailer(&status, PLAN_ERROR_HEADER), "E_BOOTSTRAP");
     assert!(!h.trust_file.exists());
+    h.stop().await;
+}
+
+/// v1.0.5 (D-045): the bootstrap `server.add` signs the fingerprint of the
+/// recipient the user confirmed; a server with another recipient refuses it
+/// before the runner is asked.
+#[tokio::test]
+async fn bootstrap_refuses_a_plan_signed_for_another_age_recipient() {
+    let case = plan_vector("server-add-bootstrap");
+    let host_key = case["plan"]["actions"][0]["params"]["ssh_host_key_digest_hex"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let h = Harness::with(
+        "boot-age",
+        Options {
+            host_keys: vec![host_key],
+            age_recipient: Some(age::x25519::Identity::generate().to_public().to_string()),
+            ..Default::default()
+        },
+    )
+    .await;
+    let status = ChangeServiceClient::new(h.channel.clone())
+        .submit_signed_plan(submit(signed(&case)))
+        .await
+        .unwrap_err();
+    assert_eq!(trailer(&status, PLAN_ERROR_HEADER), "E_BOOTSTRAP");
+    assert!(!h.trust_file.exists());
+    assert!(h.runner.requests.lock().unwrap().is_empty());
+    h.stop().await;
+}
+
+/// D-046: until the M2 artifact trust root, `agent.update` and
+/// `component.update` for `runner` or `permanu-env` are refused before
+/// admission (`not_supported_yet`), even when validly signed; the runner
+/// is never asked and nothing is admitted. `component.update(dwaar)` and
+/// `os_packages` are not refused here.
+#[tokio::test]
+async fn updates_without_an_artifact_trust_root_are_refused_before_admission() {
+    let Some(owner) = TestSigner::load("owner") else {
+        eprintln!("skipped: docs keys.json not found");
+        return;
+    };
+    let h = Harness::start("m1-updates", Some(&vector_trust())).await;
+    let mut change = ChangeServiceClient::new(h.channel.clone());
+    let digest = "ab".repeat(32);
+    let plan_for = |suffix: &str, action: Value| {
+        let mut plan = plan_vector("key-add")["plan"].clone();
+        plan["id"] = Value::String(format!("01a0cdb5-3500-7001-8000-0000000d46{suffix}"));
+        // 16 bytes: the 22nd base64url character carries 2 bits (`A`).
+        plan["nonce"] = Value::String(format!("D046AAAAAAAAAAAAAA{suffix}AA"));
+        plan["targets"] = json!([SERVER_A]);
+        plan["base"]["heads"] = json!({ SERVER_A: GENESIS_HEAD });
+        plan["actions"] = json!([action]);
+        SignedPlan {
+            envelope_json: owner.envelope(&plan).into_bytes(),
+            specs_jcs: Vec::new(),
+            sealed_secrets: Vec::new(),
+        }
+    };
+    let refused = [
+        json!({"kind": "agent.update", "params": {"version": "1.2.3",
+               "artifact_digest_hex": digest, "bundle_manifest_digest_hex": digest}}),
+        json!({"kind": "component.update", "params": {"component": "runner", "version": "1.2.3",
+               "artifact_digest_hex": digest, "bundle_manifest_digest_hex": digest}}),
+        json!({"kind": "component.update", "params": {"component": "permanu-env",
+               "version": "1.2.3", "artifact_digest_hex": digest,
+               "bundle_manifest_digest_hex": digest}}),
+    ];
+    for (index, action) in refused.into_iter().enumerate() {
+        let status = change
+            .submit_signed_plan(submit(plan_for(&format!("a{index}"), action.clone())))
+            .await
+            .unwrap_err();
+        assert_eq!(status.code(), Code::Unimplemented, "{action}");
+        assert_eq!(
+            trailer(&status, ERROR_REASON_HEADER),
+            "ERROR_REASON_CAPABILITY_MISSING"
+        );
+        assert!(
+            status.message().starts_with("not_supported_yet"),
+            "{action}"
+        );
+    }
+    assert!(h.runner.requests.lock().unwrap().is_empty());
+    let admissions = change
+        .list_admissions(ListAdmissionsRequest::default())
+        .await
+        .unwrap()
+        .into_inner();
+    assert!(admissions.admissions.is_empty());
+
+    // Dwaar updates are built in M1 and pass this gate.
+    let dwaar = json!({"kind": "component.update", "params": {"component": "dwaar",
+                       "version": "0.3.24", "artifact_digest_hex": digest,
+                       "bundle_manifest_digest_hex": digest}});
+    let admitted = change
+        .submit_signed_plan(submit(plan_for("b0", dwaar)))
+        .await
+        .unwrap()
+        .into_inner();
+    assert!(!admitted.deduplicated);
     h.stop().await;
 }
 
@@ -1113,19 +1216,30 @@ async fn inputs_are_bound_and_take_the_composed_deploy_outcome() {
     h.stop().await;
 }
 
-#[tokio::test]
-async fn cancel_stops_a_running_deploy_and_returns_the_cancel_operation() {
-    let Some(owner) = TestSigner::load("owner") else {
-        eprintln!("skipped: docs keys.json not found");
-        return;
-    };
-    let h = Harness::start("cancel", Some(&vector_trust())).await;
+/// Every `StepLog` line recorded for an operation, including lines recorded
+/// after its `finished` event (which a WatchOperation replay stops at).
+fn step_logs(h: &Harness, operation_id: &str) -> Vec<String> {
+    h.core
+        .store
+        .operation_events_after(operation_id, 0)
+        .unwrap()
+        .into_iter()
+        .filter_map(|(_, text)| match decode_event(&text)?.event {
+            Some(operation_event::Event::Log(log)) => Some(log.line),
+            _ => None,
+        })
+        .collect()
+}
+
+/// A deploy cancelled inside `prepare_release` (its candidate is prepared,
+/// never activated). Returns the deploy and the cancel plan's operation.
+async fn cancel_in_prepare(h: &Harness, owner: &TestSigner) -> (OperationRef, Operation) {
     h.runner.behave("prepare_release", OpBehavior::Hang);
     let mut change = ChangeServiceClient::new(h.channel.clone());
     let deploy = submit_ok(
-        &h,
+        h,
         fresh_deploy(
-            &owner,
+            owner,
             "0000000000f1",
             "DDDDDDDDDDDDDDDDDDDDDA",
             GENESIS_HEAD,
@@ -1180,8 +1294,8 @@ async fn cancel_stops_a_running_deploy_and_returns_the_cancel_operation() {
     // D-033: the cancel plan's own operation.
     assert_ne!(cancel.id, deploy.operation_id);
     assert_eq!(cancel.actions, vec!["operation.cancel"]);
-    wait_for_state(&h, &cancel.id, OperationState::Succeeded).await;
-    wait_for_state(&h, &deploy.operation_id, OperationState::Cancelled).await;
+    wait_for_state(h, &cancel.id, OperationState::Succeeded).await;
+    wait_for_state(h, &deploy.operation_id, OperationState::Cancelled).await;
     assert!(h
         .runner
         .ops_for(&cancel.plan_id)
@@ -1191,7 +1305,84 @@ async fn cancel_stops_a_running_deploy_and_returns_the_cancel_operation() {
         h.runner.ops_for(&deploy.plan_id),
         vec![("prepare_release".to_owned(), 0)]
     );
+    (deploy, cancel)
+}
+
+#[tokio::test]
+async fn cancel_stops_a_running_deploy_and_returns_the_cancel_operation() {
+    let Some(owner) = TestSigner::load("owner") else {
+        eprintln!("skipped: docs keys.json not found");
+        return;
+    };
+    let h = Harness::start("cancel", Some(&vector_trust())).await;
+    let (deploy, cancel) = cancel_in_prepare(&h, &owner).await;
+    // D-044: the runner cleaned up the prepared candidate within the cancel;
+    // the deploy's steps show it, and the deployment stays `cancelled`.
     let op = operation(&h, &deploy.operation_id).await;
+    assert_eq!(
+        names(&op, 0),
+        vec![
+            "queued",
+            "bound",
+            "prepare_release",
+            "cleanup_candidate",
+            "cancelled"
+        ]
+    );
+    let cleanup = op
+        .steps
+        .iter()
+        .find(|s| s.name == "cleanup_candidate")
+        .unwrap();
+    assert_eq!(cleanup.state, OperationState::Succeeded as i32);
+    assert_eq!(cleanup.failure_code, "");
+    assert_eq!(op.state, OperationState::Cancelled as i32);
+    // The cancel plan's own step logs what the runner cancelled. The
+    // runner's result line can finish the operation before the executor
+    // logs the wire result, so wait for the line in the store.
+    let expected = format!(
+        "cancelled action 0 (deployment {}): cleanup done",
+        cleanup.deployment_id
+    );
+    let mut lines = Vec::new();
+    for _ in 0..200 {
+        lines = step_logs(&h, &cancel.id);
+        if lines.contains(&expected) {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    assert!(lines.contains(&expected), "{lines:?}");
+    h.stop().await;
+}
+
+/// D-044: a cleanup the runner could not finish still ends the deploy
+/// `cancelled`, and the leftover candidate is reported in the step error.
+#[tokio::test]
+async fn a_cancel_whose_cleanup_failed_reports_the_leftover_candidate() {
+    let Some(owner) = TestSigner::load("owner") else {
+        eprintln!("skipped: docs keys.json not found");
+        return;
+    };
+    let h = Harness::start("cancel-leftover", Some(&vector_trust())).await;
+    *h.runner.cancel_cleanup.lock().unwrap() = "failed";
+    let (deploy, _) = cancel_in_prepare(&h, &owner).await;
+    let op = operation(&h, &deploy.operation_id).await;
+    assert_eq!(op.state, OperationState::Cancelled as i32);
+    let cleanup = op
+        .steps
+        .iter()
+        .find(|s| s.name == "cleanup_candidate")
+        .unwrap();
+    assert_eq!(cleanup.state, OperationState::Failed as i32);
+    assert_eq!(cleanup.failure_code, "");
+    assert!(
+        cleanup.error.contains(&cleanup.deployment_id),
+        "{}",
+        cleanup.error
+    );
+    assert!(!cleanup.deployment_id.is_empty());
+    assert!(op.error.contains("candidate"), "{}", op.error);
     assert_eq!(names(&op, 0).last().unwrap(), "cancelled");
     h.stop().await;
 }

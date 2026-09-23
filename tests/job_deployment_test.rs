@@ -39,7 +39,7 @@ mod timeutil {
 #[path = "../src/job_deployment.rs"]
 mod job_deployment;
 
-use std::sync::Mutex;
+use std::sync::{PoisonError, RwLockReadGuard, RwLockWriteGuard};
 use std::{collections::BTreeMap, fs, io::Write, net::TcpListener, thread};
 
 #[cfg(unix)]
@@ -56,7 +56,22 @@ use job_deployment::{
 use serde_json::Value;
 use sha2::{Digest, Sha256};
 
-static ENV_TEST_LOCK: Mutex<()> = Mutex::new(());
+/// Tests in this binary run in parallel but share the process environment
+/// (`PATH` and the `PERMANU_*` switches the CI runner reads). Tests that
+/// change it hold the lock exclusively; tests that run CI jobs (which read
+/// it) hold it shared. A panicking holder does not poison the others. Jobs
+/// without a `clone_dir` also get a private run id (`private_run`).
+fn exclusive_process_state() -> RwLockWriteGuard<'static, ()> {
+    job_deployment::TEST_PROCESS_STATE
+        .write()
+        .unwrap_or_else(PoisonError::into_inner)
+}
+
+fn shared_process_state() -> RwLockReadGuard<'static, ()> {
+    job_deployment::TEST_PROCESS_STATE
+        .read()
+        .unwrap_or_else(PoisonError::into_inner)
+}
 
 struct EnvVarGuard {
     key: &'static str,
@@ -182,9 +197,13 @@ fn ci_job_parses_run_steps_and_merges_env() {
 
 #[test]
 fn ci_job_accepts_github_matrix_keys_that_are_not_env_keys() {
+    let _guard = shared_process_state();
     let result = job_deployment::handle_ci_job(
         "cmd-1",
-        br#"{"job_db_id":"job-1","job_id_yaml":"test","run_db_id":"run-1","timeout_seconds":5,"matrix_values":{"go-version":"1.26","TARGET":"linux"},"steps":[{"step_db_id":"s1","step_index":0,"name":"matrix env","shell":"sh","run":"if env | grep '^go-version='; then exit 11; fi\n[ \"$TARGET\" = \"linux\" ] && printf ok"}]}"#,
+        &private_run(
+            br#"{"job_db_id":"job-1","job_id_yaml":"test","run_db_id":"run-1","timeout_seconds":60,"matrix_values":{"go-version":"1.26","TARGET":"linux"},"steps":[{"step_db_id":"s1","step_index":0,"name":"matrix env","shell":"sh","run":"if env | grep '^go-version='; then exit 11; fi\n[ \"$TARGET\" = \"linux\" ] && printf ok"}]}"#,
+            "matrix",
+        ),
     );
 
     let output = String::from_utf8(result.output).expect("utf8 output");
@@ -194,9 +213,10 @@ fn ci_job_accepts_github_matrix_keys_that_are_not_env_keys() {
 
 #[test]
 fn ci_job_defaults_run_steps_to_shell_execution() {
+    let _guard = shared_process_state();
     let workspace = managed_tempfile_like_dir("ci-default-shell");
     let payload = format!(
-        r#"{{"job_db_id":"job-1","clone_dir":{},"timeout_seconds":5,"steps":[{{"step_db_id":"s1","step_index":0,"name":"default shell","run":"printf one && printf two"}}]}}"#,
+        r#"{{"job_db_id":"job-1","clone_dir":{},"timeout_seconds":60,"steps":[{{"step_db_id":"s1","step_index":0,"name":"default shell","run":"printf one && printf two"}}]}}"#,
         serde_json::to_string(workspace.to_str().expect("utf8 path")).expect("json path")
     );
 
@@ -455,7 +475,7 @@ fn ci_job_accepts_services_without_job_container_for_host_steps() {
 #[cfg(unix)]
 #[test]
 fn ci_job_with_services_sequences_fake_docker_lifecycle_and_cleanup() {
-    let _guard = ENV_TEST_LOCK.lock().expect("env test lock");
+    let _guard = exclusive_process_state();
     let workspace = managed_tempfile_like_dir("ci-service-runtime");
     let fake_bin = managed_tempfile_like_dir("ci-service-docker-bin");
     let fake_log = fake_bin.join("docker-args.log");
@@ -467,7 +487,7 @@ fn ci_job_with_services_sequences_fake_docker_lifecycle_and_cleanup() {
     }
     let _path = EnvVarGuard::set("PATH", &path_value);
     let payload = format!(
-        r#"{{"job_db_id":"job_Prod.1","clone_dir":{},"timeout_seconds":5,"container":{{"image":"alpine:3.20"}},"services":{{"Postgres DB":{{"image":"postgres:16","ports":["5432:5432"],"env":{{"POSTGRES_PASSWORD":"postgres"}}}}}},"steps":[{{"step_db_id":"s1","step_index":0,"name":"test","shell":"sh","run":"printf ok"}}]}}"#,
+        r#"{{"job_db_id":"job_Prod.1","clone_dir":{},"timeout_seconds":60,"container":{{"image":"alpine:3.20"}},"services":{{"Postgres DB":{{"image":"postgres:16","ports":["5432:5432"],"env":{{"POSTGRES_PASSWORD":"postgres"}}}}}},"steps":[{{"step_db_id":"s1","step_index":0,"name":"test","shell":"sh","run":"printf ok"}}]}}"#,
         serde_json::to_string(workspace.to_str().expect("utf8 path")).expect("json path")
     );
 
@@ -500,7 +520,7 @@ fn ci_job_with_services_sequences_fake_docker_lifecycle_and_cleanup() {
 #[cfg(unix)]
 #[test]
 fn ci_job_with_service_credentials_logs_in_before_starting_service() {
-    let _guard = ENV_TEST_LOCK.lock().expect("env test lock");
+    let _guard = exclusive_process_state();
     let workspace = managed_tempfile_like_dir("ci-service-credentials");
     let fake_bin = managed_tempfile_like_dir("ci-service-credentials-docker-bin");
     let fake_log = fake_bin.join("docker-args.log");
@@ -512,7 +532,7 @@ fn ci_job_with_service_credentials_logs_in_before_starting_service() {
     }
     let _path = EnvVarGuard::set("PATH", &path_value);
     let payload = format!(
-        r#"{{"job_db_id":"job-1","clone_dir":{},"timeout_seconds":5,"container":{{"image":"alpine:3.20"}},"services":{{"private-db":{{"image":"ghcr.io/acme/postgres:16","credentials":{{"username":"robot","password":"secret-password"}}}}}},"steps":[{{"step_db_id":"s1","step_index":0,"name":"test","shell":"sh","run":"printf ok"}}]}}"#,
+        r#"{{"job_db_id":"job-1","clone_dir":{},"timeout_seconds":60,"container":{{"image":"alpine:3.20"}},"services":{{"private-db":{{"image":"ghcr.io/acme/postgres:16","credentials":{{"username":"robot","password":"secret-password"}}}}}},"steps":[{{"step_db_id":"s1","step_index":0,"name":"test","shell":"sh","run":"printf ok"}}]}}"#,
         serde_json::to_string(workspace.to_str().expect("utf8 path")).expect("json path")
     );
 
@@ -541,7 +561,7 @@ fn ci_job_with_service_credentials_logs_in_before_starting_service() {
 #[cfg(unix)]
 #[test]
 fn ci_job_with_service_credentials_uses_and_removes_isolated_docker_config() {
-    let _guard = ENV_TEST_LOCK.lock().expect("env test lock");
+    let _guard = exclusive_process_state();
     let workspace = managed_tempfile_like_dir("ci-service-credential-cleanup");
     let fake_bin = managed_tempfile_like_dir("ci-service-credential-cleanup-bin");
     let fake_log = fake_bin.join("docker-args.log");
@@ -553,7 +573,7 @@ fn ci_job_with_service_credentials_uses_and_removes_isolated_docker_config() {
     }
     let _path = EnvVarGuard::set("PATH", &path_value);
     let payload = format!(
-        r#"{{"job_db_id":"job-1","clone_dir":{},"timeout_seconds":5,"container":{{"image":"alpine:3.20"}},"services":{{"private-db":{{"image":"ghcr.io/acme/postgres:16","credentials":{{"username":"robot","password":"secret-password"}}}}}},"steps":[{{"step_db_id":"s1","step_index":0,"name":"test","shell":"sh","run":"printf ok"}}]}}"#,
+        r#"{{"job_db_id":"job-1","clone_dir":{},"timeout_seconds":60,"container":{{"image":"alpine:3.20"}},"services":{{"private-db":{{"image":"ghcr.io/acme/postgres:16","credentials":{{"username":"robot","password":"secret-password"}}}}}},"steps":[{{"step_db_id":"s1","step_index":0,"name":"test","shell":"sh","run":"printf ok"}}]}}"#,
         serde_json::to_string(workspace.to_str().expect("utf8 path")).expect("json path")
     );
 
@@ -594,7 +614,7 @@ fn ci_job_with_service_credentials_uses_and_removes_isolated_docker_config() {
 #[cfg(unix)]
 #[test]
 fn ci_job_executes_docker_image_action_in_ephemeral_container() {
-    let _guard = ENV_TEST_LOCK.lock().expect("env test lock");
+    let _guard = exclusive_process_state();
     let workspace = managed_tempfile_like_dir("ci-docker-image-action");
     let fake_bin = managed_tempfile_like_dir("ci-docker-action-bin");
     let fake_log = fake_bin.join("docker-args.log");
@@ -606,7 +626,7 @@ fn ci_job_executes_docker_image_action_in_ephemeral_container() {
     }
     let _path = EnvVarGuard::set("PATH", &path_value);
     let payload = format!(
-        r#"{{"job_db_id":"job-1","clone_dir":{},"timeout_seconds":5,"steps":[{{"step_db_id":"s1","step_index":0,"name":"docker action","uses":"docker://alpine:3.20","with":{{"who-to-greet":"permanu","args":"hello world"}}}}]}}"#,
+        r#"{{"job_db_id":"job-1","clone_dir":{},"timeout_seconds":60,"steps":[{{"step_db_id":"s1","step_index":0,"name":"docker action","uses":"docker://alpine:3.20","with":{{"who-to-greet":"permanu","args":"hello world"}}}}]}}"#,
         serde_json::to_string(workspace.to_str().expect("utf8 path")).expect("json path")
     );
 
@@ -632,7 +652,7 @@ fn ci_job_executes_docker_image_action_in_ephemeral_container() {
 #[cfg(unix)]
 #[test]
 fn ci_job_executes_local_javascript_action_in_ephemeral_node_container() {
-    let _guard = ENV_TEST_LOCK.lock().expect("env test lock");
+    let _guard = exclusive_process_state();
     let workspace = managed_tempfile_like_dir("ci-local-js-action");
     let action_dir = workspace.join(".github/actions/js");
     fs::create_dir_all(&action_dir).expect("create action dir");
@@ -657,7 +677,7 @@ runs:
     }
     let _path = EnvVarGuard::set("PATH", &path_value);
     let payload = format!(
-        r#"{{"job_db_id":"job-1","clone_dir":{},"timeout_seconds":5,"steps":[{{"step_db_id":"s1","step_index":0,"name":"local js action","uses":"./.github/actions/js","with":{{"node-version":"24","who-to-greet":"permanu"}}}}]}}"#,
+        r#"{{"job_db_id":"job-1","clone_dir":{},"timeout_seconds":60,"steps":[{{"step_db_id":"s1","step_index":0,"name":"local js action","uses":"./.github/actions/js","with":{{"node-version":"24","who-to-greet":"permanu"}}}}]}}"#,
         serde_json::to_string(workspace.to_str().expect("utf8 path")).expect("json path")
     );
 
@@ -686,7 +706,7 @@ runs:
 #[cfg(unix)]
 #[test]
 fn ci_job_executes_local_javascript_action_pre_main_and_post() {
-    let _guard = ENV_TEST_LOCK.lock().expect("env test lock");
+    let _guard = exclusive_process_state();
     let workspace = managed_tempfile_like_dir("ci-local-js-action-hooks");
     let action_dir = workspace.join(".github/actions/js-hooks");
     fs::create_dir_all(&action_dir).expect("create action dir");
@@ -715,7 +735,7 @@ runs:
     }
     let _path = EnvVarGuard::set("PATH", &path_value);
     let payload = format!(
-        r#"{{"job_db_id":"job-1","clone_dir":{},"timeout_seconds":5,"steps":[{{"step_db_id":"s1","step_index":0,"name":"local js action","uses":"./.github/actions/js-hooks"}}]}}"#,
+        r#"{{"job_db_id":"job-1","clone_dir":{},"timeout_seconds":60,"steps":[{{"step_db_id":"s1","step_index":0,"name":"local js action","uses":"./.github/actions/js-hooks"}}]}}"#,
         serde_json::to_string(workspace.to_str().expect("utf8 path")).expect("json path")
     );
 
@@ -746,7 +766,7 @@ runs:
 #[cfg(unix)]
 #[test]
 fn ci_job_materializes_bundled_javascript_action_files_before_execution() {
-    let _guard = ENV_TEST_LOCK.lock().expect("env test lock");
+    let _guard = exclusive_process_state();
     let workspace = managed_tempfile_like_dir("ci-bundled-js-action");
     let fake_bin = managed_tempfile_like_dir("ci-bundled-js-action-bin");
     let fake_log = fake_bin.join("docker-args.log");
@@ -767,7 +787,7 @@ runs:
         "dist/index.js": "console.log('bundled');\n"
     });
     let payload = format!(
-        r#"{{"job_db_id":"job-1","clone_dir":{},"timeout_seconds":5,"action_bundles":[{{"uses":"owner/js@v1","local_path":"./.permanu/action-bundles/js123","action_filename":"action.yml","action_yml":{},"files":{}}}],"steps":[{{"step_db_id":"s1","step_index":0,"name":"bundled js","uses":"./.permanu/action-bundles/js123"}}]}}"#,
+        r#"{{"job_db_id":"job-1","clone_dir":{},"timeout_seconds":60,"action_bundles":[{{"uses":"owner/js@v1","local_path":"./.permanu/action-bundles/js123","action_filename":"action.yml","action_yml":{},"files":{}}}],"steps":[{{"step_db_id":"s1","step_index":0,"name":"bundled js","uses":"./.permanu/action-bundles/js123"}}]}}"#,
         serde_json::to_string(workspace.to_str().expect("utf8 path")).expect("json path"),
         serde_json::to_string(action_yml).expect("json action yaml"),
         files
@@ -797,7 +817,7 @@ runs:
 #[cfg(unix)]
 #[test]
 fn ci_job_materializes_and_runs_bundled_docker_action() {
-    let _guard = ENV_TEST_LOCK.lock().expect("env test lock");
+    let _guard = exclusive_process_state();
     let workspace = managed_tempfile_like_dir("ci-bundled-docker-action");
     let fake_bin = managed_tempfile_like_dir("ci-bundled-docker-action-bin");
     let fake_log = fake_bin.join("docker-args.log");
@@ -820,7 +840,7 @@ runs:
         "Dockerfile": "FROM alpine:3.20\nENTRYPOINT [\"/bin/echo\"]\n"
     });
     let payload = format!(
-        r#"{{"job_db_id":"job-1","clone_dir":{},"timeout_seconds":5,"action_bundles":[{{"uses":"owner/docker@v1","local_path":"./.permanu/action-bundles/docker123","action_filename":"action.yml","action_yml":{},"files":{}}}],"steps":[{{"step_db_id":"s1","step_index":0,"name":"bundled docker","uses":"./.permanu/action-bundles/docker123","with":{{"name":"permanu"}}}}]}}"#,
+        r#"{{"job_db_id":"job-1","clone_dir":{},"timeout_seconds":60,"action_bundles":[{{"uses":"owner/docker@v1","local_path":"./.permanu/action-bundles/docker123","action_filename":"action.yml","action_yml":{},"files":{}}}],"steps":[{{"step_db_id":"s1","step_index":0,"name":"bundled docker","uses":"./.permanu/action-bundles/docker123","with":{{"name":"permanu"}}}}]}}"#,
         serde_json::to_string(workspace.to_str().expect("utf8 path")).expect("json path"),
         serde_json::to_string(action_yml).expect("json action yaml"),
         files
@@ -855,7 +875,7 @@ runs:
 #[cfg(unix)]
 #[test]
 fn ci_job_with_services_reports_unhealthy_readiness_and_cleans_up() {
-    let _guard = ENV_TEST_LOCK.lock().expect("env test lock");
+    let _guard = exclusive_process_state();
     let workspace = managed_tempfile_like_dir("ci-service-unhealthy");
     let fake_bin = managed_tempfile_like_dir("ci-service-unhealthy-docker-bin");
     let fake_log = fake_bin.join("docker-args.log");
@@ -867,7 +887,7 @@ fn ci_job_with_services_reports_unhealthy_readiness_and_cleans_up() {
     }
     let _path = EnvVarGuard::set("PATH", &path_value);
     let payload = format!(
-        r#"{{"job_db_id":"job_Prod.1","clone_dir":{},"timeout_seconds":5,"container":{{"image":"alpine:3.20"}},"services":{{"Postgres DB":{{"image":"postgres:16","ports":["5432/tcp"]}}}},"steps":[{{"step_db_id":"s1","step_index":0,"name":"test","shell":"sh","run":"printf ok"}}]}}"#,
+        r#"{{"job_db_id":"job_Prod.1","clone_dir":{},"timeout_seconds":60,"container":{{"image":"alpine:3.20"}},"services":{{"Postgres DB":{{"image":"postgres:16","ports":["5432/tcp"]}}}},"steps":[{{"step_db_id":"s1","step_index":0,"name":"test","shell":"sh","run":"printf ok"}}]}}"#,
         serde_json::to_string(workspace.to_str().expect("utf8 path")).expect("json path")
     );
 
@@ -914,9 +934,10 @@ fn ci_job_rejects_parent_working_dir_escape() {
 
 #[test]
 fn ci_job_sets_standard_ci_env_vars_under_managed_workspace() {
-    let payload = br#"{"job_db_id":"job-1","job_id_yaml":"build","run_db_id":"run-1","timeout_seconds":5,"steps":[{"step_db_id":"s1","step_index":0,"name":"env","shell":"sh","run":"printf '%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n' \"$GITHUB_SHA\" \"$GITHUB_REF\" \"$GITHUB_REPOSITORY\" \"$GITHUB_JOB\" \"$GITHUB_ACTIONS\" \"$PERMANU_SHA\" \"$PERMANU_REF\" \"$PERMANU_REPOSITORY\" \"$PERMANU_JOB\" \"$HOME\" \"$RUNNER_TEMP\""}]}"#;
+    let _guard = shared_process_state();
+    let payload = br#"{"job_db_id":"job-1","job_id_yaml":"build","run_db_id":"run-1","timeout_seconds":60,"steps":[{"step_db_id":"s1","step_index":0,"name":"env","shell":"sh","run":"printf '%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n' \"$GITHUB_SHA\" \"$GITHUB_REF\" \"$GITHUB_REPOSITORY\" \"$GITHUB_JOB\" \"$GITHUB_ACTIONS\" \"$PERMANU_SHA\" \"$PERMANU_REF\" \"$PERMANU_REPOSITORY\" \"$PERMANU_JOB\" \"$HOME\" \"$RUNNER_TEMP\""}]}"#;
 
-    let result = job_deployment::handle_ci_job("cmd-1", payload);
+    let result = job_deployment::handle_ci_job("cmd-1", &private_run(payload, "std-env"));
     let output: Value = serde_json::from_slice(&result.output).expect("json output");
     let log = output["log"].as_str().expect("human log");
 
@@ -927,14 +948,18 @@ fn ci_job_sets_standard_ci_env_vars_under_managed_workspace() {
         String::from_utf8_lossy(&result.output)
     );
     assert!(log.contains("true"));
-    assert!(log.contains("/var/tmp/permanu-ci/run-1/job-1"));
+    assert!(log.contains(&format!(
+        "/var/tmp/permanu-ci/{}/job-1",
+        private_run_id("run-1", "std-env")
+    )));
 }
 
 #[test]
 fn ci_job_sets_actions_oidc_request_env_when_allowed() {
-    let payload = br#"{"job_db_id":"job-1","job_id_yaml":"build","run_db_id":"run-1","oidc_token_requests_allowed":true,"oidc_request_url":"https://api.permanu.test/api/ci/oidc/token?","oidc_request_token":"request-token","timeout_seconds":5,"steps":[{"step_db_id":"s1","step_index":0,"name":"oidc env","shell":"sh","run":"printf '%s\n%s\n' \"$ACTIONS_ID_TOKEN_REQUEST_URL\" \"$ACTIONS_ID_TOKEN_REQUEST_TOKEN\""}]}"#;
+    let _guard = shared_process_state();
+    let payload = br#"{"job_db_id":"job-1","job_id_yaml":"build","run_db_id":"run-1","oidc_token_requests_allowed":true,"oidc_request_url":"https://api.permanu.test/api/ci/oidc/token?","oidc_request_token":"request-token","timeout_seconds":60,"steps":[{"step_db_id":"s1","step_index":0,"name":"oidc env","shell":"sh","run":"printf '%s\n%s\n' \"$ACTIONS_ID_TOKEN_REQUEST_URL\" \"$ACTIONS_ID_TOKEN_REQUEST_TOKEN\""}]}"#;
 
-    let result = job_deployment::handle_ci_job("cmd-1", payload);
+    let result = job_deployment::handle_ci_job("cmd-1", &private_run(payload, "oidc"));
     let output: Value = serde_json::from_slice(&result.output).expect("json output");
     let log = output["log"].as_str().expect("human log");
 
@@ -945,9 +970,10 @@ fn ci_job_sets_actions_oidc_request_env_when_allowed() {
 
 #[test]
 fn ci_job_does_not_set_actions_oidc_env_when_not_allowed() {
-    let payload = br#"{"job_db_id":"job-1","job_id_yaml":"build","run_db_id":"run-1","oidc_request_url":"https://api.permanu.test/api/ci/oidc/token?","oidc_request_token":"request-token","timeout_seconds":5,"steps":[{"step_db_id":"s1","step_index":0,"name":"oidc env","shell":"sh","run":"if [ -n \"${ACTIONS_ID_TOKEN_REQUEST_URL+x}\" ] || [ -n \"${ACTIONS_ID_TOKEN_REQUEST_TOKEN+x}\" ]; then exit 19; fi; printf absent"}]}"#;
+    let _guard = shared_process_state();
+    let payload = br#"{"job_db_id":"job-1","job_id_yaml":"build","run_db_id":"run-1","oidc_request_url":"https://api.permanu.test/api/ci/oidc/token?","oidc_request_token":"request-token","timeout_seconds":60,"steps":[{"step_db_id":"s1","step_index":0,"name":"oidc env","shell":"sh","run":"if [ -n \"${ACTIONS_ID_TOKEN_REQUEST_URL+x}\" ] || [ -n \"${ACTIONS_ID_TOKEN_REQUEST_TOKEN+x}\" ]; then exit 19; fi; printf absent"}]}"#;
 
-    let result = job_deployment::handle_ci_job("cmd-1", payload);
+    let result = job_deployment::handle_ci_job("cmd-1", &private_run(payload, "no-oidc"));
     let output: Value = serde_json::from_slice(&result.output).expect("json output");
     let log = output["log"].as_str().expect("human log");
 
@@ -957,14 +983,14 @@ fn ci_job_does_not_set_actions_oidc_env_when_not_allowed() {
 
 #[test]
 fn ci_job_strips_host_env_and_preserves_explicit_ci_env() {
-    let _guard = ENV_TEST_LOCK.lock().expect("env test lock");
+    let _guard = exclusive_process_state();
     let _host_secret = EnvVarGuard::set("PERMANU_TEST_HOST_SECRET", "host-secret-leak");
     let _strict_env = EnvVarGuard::remove("PERMANU_CI_STRICT_ENV");
     let _shared_cache = EnvVarGuard::set("PERMANU_CI_SHARED_TOOL_CACHE", "0");
 
-    let payload = br#"{"job_db_id":"job-1","job_id_yaml":"build","run_db_id":"run-1","timeout_seconds":5,"env":{"EXPLICIT_SECRET":"allowed-secret"},"matrix_values":{"TARGET":"linux"},"secret_keys":["EXPLICIT_SECRET"],"steps":[{"step_db_id":"s1","step_index":0,"name":"isolated env","shell":"sh","run":"if [ -n \"${PERMANU_TEST_HOST_SECRET+x}\" ]; then echo \"leaked=$PERMANU_TEST_HOST_SECRET\"; exit 11; fi\n[ \"$EXPLICIT_SECRET\" = \"allowed-secret\" ] || exit 12\n[ \"$TARGET\" = \"linux\" ] || exit 13\n[ -n \"$PATH\" ] || exit 14\nJOB_ROOT=$(dirname \"$GITHUB_WORKSPACE\")\ncase \"$HOME\" in \"$JOB_ROOT\"/home) ;; *) echo \"bad-home=$HOME\"; exit 15;; esac\ncase \"$TMPDIR\" in \"$JOB_ROOT\"/tmp) ;; *) echo \"bad-tmp=$TMPDIR\"; exit 16;; esac\ncase \"$RUNNER_TEMP\" in \"$JOB_ROOT\"/runner-temp) ;; *) echo \"bad-runner-temp=$RUNNER_TEMP\"; exit 17;; esac\ncase \"$RUNNER_TOOL_CACHE\" in \"$JOB_ROOT\"/runner-tool-cache) ;; *) echo \"bad-tool-cache=$RUNNER_TOOL_CACHE\"; exit 18;; esac\ncase \"$CARGO_HOME\" in \"$JOB_ROOT\"/cargo) ;; *) echo \"bad-cargo=$CARGO_HOME\"; exit 19;; esac\ncase \"$RUSTUP_HOME\" in \"$JOB_ROOT\"/rustup) ;; *) echo \"bad-rustup=$RUSTUP_HOME\"; exit 20;; esac\nif [ \"$(uname -s)\" = \"Linux\" ]; then [ \"${CGO_ENABLED:-}\" = \"1\" ] || exit 21; [ \"${CC:-}\" = \"gcc\" ] || exit 22; fi\nprintf 'explicit=%s target=%s path-ok home=%s' \"$EXPLICIT_SECRET\" \"$TARGET\" \"$HOME\""}]}"#;
+    let payload = br#"{"job_db_id":"job-1","job_id_yaml":"build","run_db_id":"run-1","timeout_seconds":60,"env":{"EXPLICIT_SECRET":"allowed-secret"},"matrix_values":{"TARGET":"linux"},"secret_keys":["EXPLICIT_SECRET"],"steps":[{"step_db_id":"s1","step_index":0,"name":"isolated env","shell":"sh","run":"if [ -n \"${PERMANU_TEST_HOST_SECRET+x}\" ]; then echo \"leaked=$PERMANU_TEST_HOST_SECRET\"; exit 11; fi\n[ \"$EXPLICIT_SECRET\" = \"allowed-secret\" ] || exit 12\n[ \"$TARGET\" = \"linux\" ] || exit 13\n[ -n \"$PATH\" ] || exit 14\nJOB_ROOT=$(dirname \"$GITHUB_WORKSPACE\")\ncase \"$HOME\" in \"$JOB_ROOT\"/home) ;; *) echo \"bad-home=$HOME\"; exit 15;; esac\ncase \"$TMPDIR\" in \"$JOB_ROOT\"/tmp) ;; *) echo \"bad-tmp=$TMPDIR\"; exit 16;; esac\ncase \"$RUNNER_TEMP\" in \"$JOB_ROOT\"/runner-temp) ;; *) echo \"bad-runner-temp=$RUNNER_TEMP\"; exit 17;; esac\ncase \"$RUNNER_TOOL_CACHE\" in \"$JOB_ROOT\"/runner-tool-cache) ;; *) echo \"bad-tool-cache=$RUNNER_TOOL_CACHE\"; exit 18;; esac\ncase \"$CARGO_HOME\" in \"$JOB_ROOT\"/cargo) ;; *) echo \"bad-cargo=$CARGO_HOME\"; exit 19;; esac\ncase \"$RUSTUP_HOME\" in \"$JOB_ROOT\"/rustup) ;; *) echo \"bad-rustup=$RUSTUP_HOME\"; exit 20;; esac\nif [ \"$(uname -s)\" = \"Linux\" ]; then [ \"${CGO_ENABLED:-}\" = \"1\" ] || exit 21; [ \"${CC:-}\" = \"gcc\" ] || exit 22; fi\nprintf 'explicit=%s target=%s path-ok home=%s' \"$EXPLICIT_SECRET\" \"$TARGET\" \"$HOME\""}]}"#;
 
-    let result = job_deployment::handle_ci_job("cmd-1", payload);
+    let result = job_deployment::handle_ci_job("cmd-1", &private_run(payload, "strip-env"));
 
     let output = String::from_utf8(result.output).expect("utf8 output");
     assert_eq!(result.status, "completed", "{output}");
@@ -975,7 +1001,7 @@ fn ci_job_strips_host_env_and_preserves_explicit_ci_env() {
 
 #[test]
 fn ci_job_uses_runner_level_tool_caches_without_sharing_home_or_tmp() {
-    let _guard = ENV_TEST_LOCK.lock().expect("env test lock");
+    let _guard = exclusive_process_state();
     let cache_root = managed_tempfile_like_dir("ci-shared-tool-cache-root");
     let _shared_cache = EnvVarGuard::set("PERMANU_CI_SHARED_TOOL_CACHE", "1");
     let _shared_cache_root = EnvVarGuard::set(
@@ -983,9 +1009,9 @@ fn ci_job_uses_runner_level_tool_caches_without_sharing_home_or_tmp() {
         cache_root.to_str().expect("utf8 cache root"),
     );
 
-    let payload = br#"{"job_db_id":"job-1","job_id_yaml":"build","run_db_id":"run-1","timeout_seconds":5,"steps":[{"step_db_id":"s1","step_index":0,"name":"shared tool cache","shell":"sh","run":"JOB_ROOT=$(dirname \"$GITHUB_WORKSPACE\")\ncase \"$HOME\" in \"$JOB_ROOT\"/home) ;; *) echo \"bad-home=$HOME\"; exit 11;; esac\ncase \"$TMPDIR\" in \"$JOB_ROOT\"/tmp) ;; *) echo \"bad-tmp=$TMPDIR\"; exit 12;; esac\ncase \"$RUNNER_TEMP\" in \"$JOB_ROOT\"/runner-temp) ;; *) echo \"bad-runner-temp=$RUNNER_TEMP\"; exit 13;; esac\ncase \"$RUNNER_TOOL_CACHE\" in \"$JOB_ROOT\"/runner-tool-cache) echo bad-tool-cache=$RUNNER_TOOL_CACHE; exit 14;; esac\ncase \"$CARGO_HOME\" in \"$JOB_ROOT\"/cargo) echo bad-cargo=$CARGO_HOME; exit 15;; esac\ncase \"$RUSTUP_HOME\" in \"$JOB_ROOT\"/rustup) echo bad-rustup=$RUSTUP_HOME; exit 16;; esac\n[ -d \"$RUNNER_TOOL_CACHE\" ] || exit 17\n[ -d \"$CARGO_HOME\" ] || exit 18\n[ -d \"$RUSTUP_HOME\" ] || exit 19\nprintf 'tool-cache=%s cargo=%s rustup=%s' \"$RUNNER_TOOL_CACHE\" \"$CARGO_HOME\" \"$RUSTUP_HOME\""}]}"#;
+    let payload = br#"{"job_db_id":"job-1","job_id_yaml":"build","run_db_id":"run-1","timeout_seconds":60,"steps":[{"step_db_id":"s1","step_index":0,"name":"shared tool cache","shell":"sh","run":"JOB_ROOT=$(dirname \"$GITHUB_WORKSPACE\")\ncase \"$HOME\" in \"$JOB_ROOT\"/home) ;; *) echo \"bad-home=$HOME\"; exit 11;; esac\ncase \"$TMPDIR\" in \"$JOB_ROOT\"/tmp) ;; *) echo \"bad-tmp=$TMPDIR\"; exit 12;; esac\ncase \"$RUNNER_TEMP\" in \"$JOB_ROOT\"/runner-temp) ;; *) echo \"bad-runner-temp=$RUNNER_TEMP\"; exit 13;; esac\ncase \"$RUNNER_TOOL_CACHE\" in \"$JOB_ROOT\"/runner-tool-cache) echo bad-tool-cache=$RUNNER_TOOL_CACHE; exit 14;; esac\ncase \"$CARGO_HOME\" in \"$JOB_ROOT\"/cargo) echo bad-cargo=$CARGO_HOME; exit 15;; esac\ncase \"$RUSTUP_HOME\" in \"$JOB_ROOT\"/rustup) echo bad-rustup=$RUSTUP_HOME; exit 16;; esac\n[ -d \"$RUNNER_TOOL_CACHE\" ] || exit 17\n[ -d \"$CARGO_HOME\" ] || exit 18\n[ -d \"$RUSTUP_HOME\" ] || exit 19\nprintf 'tool-cache=%s cargo=%s rustup=%s' \"$RUNNER_TOOL_CACHE\" \"$CARGO_HOME\" \"$RUSTUP_HOME\""}]}"#;
 
-    let result = job_deployment::handle_ci_job("cmd-1", payload);
+    let result = job_deployment::handle_ci_job("cmd-1", &private_run(payload, "tool-cache"));
 
     let output = String::from_utf8(result.output).expect("utf8 output");
     assert_eq!(result.status, "completed", "{output}");
@@ -997,6 +1023,7 @@ fn ci_job_uses_runner_level_tool_caches_without_sharing_home_or_tmp() {
 
 #[test]
 fn ci_job_actions_cache_restores_from_exact_key_and_sets_outputs() {
+    let _guard = shared_process_state();
     let workspace = managed_tempfile_like_dir("ci-cache-hit");
     let cache_root = managed_tempfile_like_dir("ci-cache-root");
     let cache_root_json =
@@ -1005,7 +1032,7 @@ fn ci_job_actions_cache_restores_from_exact_key_and_sets_outputs() {
         serde_json::to_string(workspace.to_str().expect("utf8 workspace")).expect("json path");
 
     let save_payload = format!(
-        r#"{{"job_db_id":"job-1","job_id_yaml":"build","repo_owner":"permanu","repo_name":"app","clone_dir":{workspace_json},"timeout_seconds":5,"env":{{"PERMANU_ACTIONS_CACHE_DIR":{cache_root_json}}},"steps":[{{"step_db_id":"s1","step_index":0,"name":"restore cache","uses":"actions/cache@v4","with":{{"key":"linux-deps","path":"deps"}}}},{{"step_db_id":"s2","step_index":1,"name":"write","shell":"sh","run":"mkdir -p deps && printf cached > deps/value.txt"}}]}}"#
+        r#"{{"job_db_id":"job-1","job_id_yaml":"build","repo_owner":"permanu","repo_name":"app","clone_dir":{workspace_json},"timeout_seconds":60,"env":{{"PERMANU_ACTIONS_CACHE_DIR":{cache_root_json}}},"steps":[{{"step_db_id":"s1","step_index":0,"name":"restore cache","uses":"actions/cache@v4","with":{{"key":"linux-deps","path":"deps"}}}},{{"step_db_id":"s2","step_index":1,"name":"write","shell":"sh","run":"mkdir -p deps && printf cached > deps/value.txt"}}]}}"#
     );
     let save = job_deployment::handle_ci_job("cmd-save", save_payload.as_bytes());
     assert_eq!(
@@ -1017,7 +1044,7 @@ fn ci_job_actions_cache_restores_from_exact_key_and_sets_outputs() {
 
     fs::create_dir_all(&workspace).expect("recreate workspace");
     let restore_payload = format!(
-        r#"{{"job_db_id":"job-2","job_id_yaml":"build","repo_owner":"permanu","repo_name":"app","clone_dir":{workspace_json},"timeout_seconds":5,"env":{{"PERMANU_ACTIONS_CACHE_DIR":{cache_root_json}}},"steps":[{{"step_db_id":"s1","step_index":0,"name":"restore cache","uses":"actions/cache@v4","with":{{"key":"linux-deps","path":"deps","restore-keys":"linux-"}}}},{{"step_db_id":"s2","step_index":1,"name":"verify","shell":"sh","run":"printf '%s %s %s %s' \"$(cat deps/value.txt)\" \"$PERMANU_OUTPUT_cache_hit\" \"$PERMANU_OUTPUT_cache_primary_key\" \"$PERMANU_OUTPUT_cache_matched_key\""}}]}}"#
+        r#"{{"job_db_id":"job-2","job_id_yaml":"build","repo_owner":"permanu","repo_name":"app","clone_dir":{workspace_json},"timeout_seconds":60,"env":{{"PERMANU_ACTIONS_CACHE_DIR":{cache_root_json}}},"steps":[{{"step_db_id":"s1","step_index":0,"name":"restore cache","uses":"actions/cache@v4","with":{{"key":"linux-deps","path":"deps","restore-keys":"linux-"}}}},{{"step_db_id":"s2","step_index":1,"name":"verify","shell":"sh","run":"printf '%s %s %s %s' \"$(cat deps/value.txt)\" \"$PERMANU_OUTPUT_cache_hit\" \"$PERMANU_OUTPUT_cache_primary_key\" \"$PERMANU_OUTPUT_cache_matched_key\""}}]}}"#
     );
 
     let restore = job_deployment::handle_ci_job("cmd-restore", restore_payload.as_bytes());
@@ -1033,6 +1060,7 @@ fn ci_job_actions_cache_restores_from_exact_key_and_sets_outputs() {
 
 #[test]
 fn ci_job_actions_cache_restore_key_sets_primary_and_matched_outputs() {
+    let _guard = shared_process_state();
     let workspace = managed_tempfile_like_dir("ci-cache-prefix");
     let cache_root = managed_tempfile_like_dir("ci-cache-prefix-root");
     let cache_root_json =
@@ -1041,7 +1069,7 @@ fn ci_job_actions_cache_restore_key_sets_primary_and_matched_outputs() {
         serde_json::to_string(workspace.to_str().expect("utf8 workspace")).expect("json path");
 
     let save_payload = format!(
-        r#"{{"job_db_id":"job-1","job_id_yaml":"build","repo_owner":"permanu","repo_name":"app","clone_dir":{workspace_json},"timeout_seconds":5,"env":{{"PERMANU_ACTIONS_CACHE_DIR":{cache_root_json}}},"steps":[{{"step_db_id":"s1","step_index":0,"name":"restore cache","uses":"actions/cache@v4","with":{{"key":"linux-deps-old","path":"deps"}}}},{{"step_db_id":"s2","step_index":1,"name":"write","shell":"sh","run":"mkdir -p deps && printf cached > deps/value.txt"}}]}}"#
+        r#"{{"job_db_id":"job-1","job_id_yaml":"build","repo_owner":"permanu","repo_name":"app","clone_dir":{workspace_json},"timeout_seconds":60,"env":{{"PERMANU_ACTIONS_CACHE_DIR":{cache_root_json}}},"steps":[{{"step_db_id":"s1","step_index":0,"name":"restore cache","uses":"actions/cache@v4","with":{{"key":"linux-deps-old","path":"deps"}}}},{{"step_db_id":"s2","step_index":1,"name":"write","shell":"sh","run":"mkdir -p deps && printf cached > deps/value.txt"}}]}}"#
     );
     let save = job_deployment::handle_ci_job("cmd-save", save_payload.as_bytes());
     assert_eq!(
@@ -1053,7 +1081,7 @@ fn ci_job_actions_cache_restore_key_sets_primary_and_matched_outputs() {
 
     fs::create_dir_all(&workspace).expect("recreate workspace");
     let restore_payload = format!(
-        r#"{{"job_db_id":"job-2","job_id_yaml":"build","repo_owner":"permanu","repo_name":"app","clone_dir":{workspace_json},"timeout_seconds":5,"env":{{"PERMANU_ACTIONS_CACHE_DIR":{cache_root_json}}},"steps":[{{"step_db_id":"s1","step_index":0,"name":"restore cache","uses":"actions/cache@v4","with":{{"key":"linux-deps-new","path":"deps","restore-keys":"linux-deps-"}}}},{{"step_db_id":"s2","step_index":1,"name":"verify","shell":"sh","run":"printf '%s %s %s %s' \"$(cat deps/value.txt)\" \"$PERMANU_OUTPUT_cache_hit\" \"$PERMANU_OUTPUT_cache_primary_key\" \"$PERMANU_OUTPUT_cache_matched_key\""}}]}}"#
+        r#"{{"job_db_id":"job-2","job_id_yaml":"build","repo_owner":"permanu","repo_name":"app","clone_dir":{workspace_json},"timeout_seconds":60,"env":{{"PERMANU_ACTIONS_CACHE_DIR":{cache_root_json}}},"steps":[{{"step_db_id":"s1","step_index":0,"name":"restore cache","uses":"actions/cache@v4","with":{{"key":"linux-deps-new","path":"deps","restore-keys":"linux-deps-"}}}},{{"step_db_id":"s2","step_index":1,"name":"verify","shell":"sh","run":"printf '%s %s %s %s' \"$(cat deps/value.txt)\" \"$PERMANU_OUTPUT_cache_hit\" \"$PERMANU_OUTPUT_cache_primary_key\" \"$PERMANU_OUTPUT_cache_matched_key\""}}]}}"#
     );
 
     let restore = job_deployment::handle_ci_job("cmd-restore", restore_payload.as_bytes());
@@ -1068,6 +1096,7 @@ fn ci_job_actions_cache_restore_key_sets_primary_and_matched_outputs() {
 
 #[test]
 fn ci_job_actions_cache_rejects_traversal_and_symlink_paths() {
+    let _guard = shared_process_state();
     let workspace = managed_tempfile_like_dir("ci-cache-guard");
     let outside = managed_tempfile_like_dir("ci-cache-outside");
     fs::write(outside.join("secret.txt"), "secret").expect("write outside");
@@ -1081,7 +1110,7 @@ fn ci_job_actions_cache_rejects_traversal_and_symlink_paths() {
     .expect("create symlink");
 
     let traversal_payload = format!(
-        r#"{{"job_db_id":"job-1","clone_dir":{},"timeout_seconds":5,"steps":[{{"step_db_id":"s1","step_index":0,"name":"bad cache","uses":"actions/cache@v4","with":{{"key":"bad","path":"../outside"}}}}]}}"#,
+        r#"{{"job_db_id":"job-1","clone_dir":{},"timeout_seconds":60,"steps":[{{"step_db_id":"s1","step_index":0,"name":"bad cache","uses":"actions/cache@v4","with":{{"key":"bad","path":"../outside"}}}}]}}"#,
         serde_json::to_string(workspace.to_str().expect("utf8 workspace")).expect("json path")
     );
     let traversal = job_deployment::handle_ci_job("cmd-traversal", traversal_payload.as_bytes());
@@ -1092,7 +1121,7 @@ fn ci_job_actions_cache_rejects_traversal_and_symlink_paths() {
     #[cfg(unix)]
     {
         let symlink_payload = format!(
-            r#"{{"job_db_id":"job-1","clone_dir":{},"timeout_seconds":5,"steps":[{{"step_db_id":"s1","step_index":0,"name":"bad cache","uses":"actions/cache@v4","with":{{"key":"bad","path":"linked-secret"}}}}]}}"#,
+            r#"{{"job_db_id":"job-1","clone_dir":{},"timeout_seconds":60,"steps":[{{"step_db_id":"s1","step_index":0,"name":"bad cache","uses":"actions/cache@v4","with":{{"key":"bad","path":"linked-secret"}}}}]}}"#,
             serde_json::to_string(symlink_workspace.to_str().expect("utf8 workspace"))
                 .expect("json path")
         );
@@ -1105,6 +1134,7 @@ fn ci_job_actions_cache_rejects_traversal_and_symlink_paths() {
 
 #[test]
 fn ci_job_actions_cache_lookup_only_does_not_save_on_miss() {
+    let _guard = shared_process_state();
     let workspace = managed_tempfile_like_dir("ci-cache-unsupported");
     let cache_root = managed_tempfile_like_dir("ci-cache-lookup-root");
     let cache_root_json =
@@ -1112,7 +1142,7 @@ fn ci_job_actions_cache_lookup_only_does_not_save_on_miss() {
     let workspace_json =
         serde_json::to_string(workspace.to_str().expect("utf8 workspace")).expect("json path");
     let payload = format!(
-        r#"{{"job_db_id":"job-1","repo_owner":"permanu","repo_name":"app","clone_dir":{workspace_json},"timeout_seconds":5,"env":{{"PERMANU_ACTIONS_CACHE_DIR":{cache_root_json}}},"steps":[{{"step_db_id":"s1","step_index":0,"name":"lookup only","uses":"actions/cache@v4","with":{{"key":"linux-deps","path":"deps","lookup-only":"true"}}}},{{"step_db_id":"s2","step_index":1,"name":"write","shell":"sh","run":"mkdir -p deps && printf fresh > deps/value.txt"}}]}}"#
+        r#"{{"job_db_id":"job-1","repo_owner":"permanu","repo_name":"app","clone_dir":{workspace_json},"timeout_seconds":60,"env":{{"PERMANU_ACTIONS_CACHE_DIR":{cache_root_json}}},"steps":[{{"step_db_id":"s1","step_index":0,"name":"lookup only","uses":"actions/cache@v4","with":{{"key":"linux-deps","path":"deps","lookup-only":"true"}}}},{{"step_db_id":"s2","step_index":1,"name":"write","shell":"sh","run":"mkdir -p deps && printf fresh > deps/value.txt"}}]}}"#
     );
 
     let result = job_deployment::handle_ci_job("cmd-1", payload.as_bytes());
@@ -1122,7 +1152,7 @@ fn ci_job_actions_cache_lookup_only_does_not_save_on_miss() {
 
     fs::create_dir_all(&workspace).expect("recreate workspace");
     let restore_payload = format!(
-        r#"{{"job_db_id":"job-2","repo_owner":"permanu","repo_name":"app","clone_dir":{workspace_json},"timeout_seconds":5,"env":{{"PERMANU_ACTIONS_CACHE_DIR":{cache_root_json}}},"steps":[{{"step_db_id":"s1","step_index":0,"name":"restore","uses":"actions/cache@v4","with":{{"key":"linux-deps","path":"deps"}}}},{{"step_db_id":"s2","step_index":1,"name":"verify","shell":"sh","run":"test ! -e deps/value.txt && printf '%s %s' \"$PERMANU_OUTPUT_cache_hit\" \"$PERMANU_OUTPUT_cache_primary_key\""}}]}}"#
+        r#"{{"job_db_id":"job-2","repo_owner":"permanu","repo_name":"app","clone_dir":{workspace_json},"timeout_seconds":60,"env":{{"PERMANU_ACTIONS_CACHE_DIR":{cache_root_json}}},"steps":[{{"step_db_id":"s1","step_index":0,"name":"restore","uses":"actions/cache@v4","with":{{"key":"linux-deps","path":"deps"}}}},{{"step_db_id":"s2","step_index":1,"name":"verify","shell":"sh","run":"test ! -e deps/value.txt && printf '%s %s' \"$PERMANU_OUTPUT_cache_hit\" \"$PERMANU_OUTPUT_cache_primary_key\""}}]}}"#
     );
 
     let restore = job_deployment::handle_ci_job("cmd-restore", restore_payload.as_bytes());
@@ -1136,10 +1166,11 @@ fn ci_job_actions_cache_lookup_only_does_not_save_on_miss() {
 
 #[test]
 fn ci_job_actions_cache_fail_on_cache_miss_fails_step() {
+    let _guard = shared_process_state();
     let workspace = managed_tempfile_like_dir("ci-cache-fail-miss");
     let cache_root = managed_tempfile_like_dir("ci-cache-fail-miss-root");
     let payload = format!(
-        r#"{{"job_db_id":"job-1","repo_owner":"permanu","repo_name":"app","clone_dir":{},"timeout_seconds":5,"env":{{"PERMANU_ACTIONS_CACHE_DIR":{}}},"steps":[{{"step_db_id":"s1","step_index":0,"name":"restore required cache","uses":"actions/cache@v4","with":{{"key":"linux-deps","path":"deps","fail-on-cache-miss":"true"}}}},{{"step_db_id":"s2","step_index":1,"name":"should not run","shell":"sh","run":"printf unexpected"}}]}}"#,
+        r#"{{"job_db_id":"job-1","repo_owner":"permanu","repo_name":"app","clone_dir":{},"timeout_seconds":60,"env":{{"PERMANU_ACTIONS_CACHE_DIR":{}}},"steps":[{{"step_db_id":"s1","step_index":0,"name":"restore required cache","uses":"actions/cache@v4","with":{{"key":"linux-deps","path":"deps","fail-on-cache-miss":"true"}}}},{{"step_db_id":"s2","step_index":1,"name":"should not run","shell":"sh","run":"printf unexpected"}}]}}"#,
         serde_json::to_string(workspace.to_str().expect("utf8 workspace")).expect("json path"),
         serde_json::to_string(cache_root.to_str().expect("utf8 cache root")).expect("json root")
     );
@@ -1155,6 +1186,7 @@ fn ci_job_actions_cache_fail_on_cache_miss_fails_step() {
 
 #[test]
 fn ci_job_actions_cache_records_quota_eviction_decision() {
+    let _guard = shared_process_state();
     let workspace = managed_tempfile_like_dir("ci-cache-quota");
     let cache_root = managed_tempfile_like_dir("ci-cache-quota-root");
     let cache_root_json =
@@ -1162,7 +1194,7 @@ fn ci_job_actions_cache_records_quota_eviction_decision() {
     let workspace_json =
         serde_json::to_string(workspace.to_str().expect("utf8 workspace")).expect("json path");
     let payload = format!(
-        r#"{{"job_db_id":"job-1","job_id_yaml":"build","repo_owner":"permanu","repo_name":"app","clone_dir":{workspace_json},"timeout_seconds":5,"env":{{"PERMANU_ACTIONS_CACHE_DIR":{cache_root_json},"PERMANU_ACTIONS_CACHE_MAX_BYTES":"8"}},"steps":[{{"step_db_id":"s1","step_index":0,"name":"restore cache","uses":"actions/cache@v4","with":{{"key":"linux-deps","path":"deps"}}}},{{"step_db_id":"s2","step_index":1,"name":"write","shell":"sh","run":"mkdir -p deps && printf 'larger-than-quota' > deps/value.txt"}}]}}"#
+        r#"{{"job_db_id":"job-1","job_id_yaml":"build","repo_owner":"permanu","repo_name":"app","clone_dir":{workspace_json},"timeout_seconds":60,"env":{{"PERMANU_ACTIONS_CACHE_DIR":{cache_root_json},"PERMANU_ACTIONS_CACHE_MAX_BYTES":"8"}},"steps":[{{"step_db_id":"s1","step_index":0,"name":"restore cache","uses":"actions/cache@v4","with":{{"key":"linux-deps","path":"deps"}}}},{{"step_db_id":"s2","step_index":1,"name":"write","shell":"sh","run":"mkdir -p deps && printf 'larger-than-quota' > deps/value.txt"}}]}}"#
     );
 
     let result = job_deployment::handle_ci_job("cmd-1", payload.as_bytes());
@@ -1182,6 +1214,7 @@ fn ci_job_actions_cache_records_quota_eviction_decision() {
 
 #[test]
 fn ci_job_actions_cache_quota_evicts_older_entries_before_new_saved_entry() {
+    let _guard = shared_process_state();
     let workspace = managed_tempfile_like_dir("ci-cache-lru");
     let cache_root = managed_tempfile_like_dir("ci-cache-lru-root");
     let cache_root_json =
@@ -1190,7 +1223,7 @@ fn ci_job_actions_cache_quota_evicts_older_entries_before_new_saved_entry() {
         serde_json::to_string(workspace.to_str().expect("utf8 workspace")).expect("json path");
 
     let old_payload = format!(
-        r#"{{"job_db_id":"job-1","job_id_yaml":"build","repo_owner":"permanu","repo_name":"app","clone_dir":{workspace_json},"timeout_seconds":5,"env":{{"PERMANU_ACTIONS_CACHE_DIR":{cache_root_json},"PERMANU_ACTIONS_CACHE_MAX_BYTES":"600"}},"steps":[{{"step_db_id":"s1","step_index":0,"name":"restore old","uses":"actions/cache@v4","with":{{"key":"old-deps","path":"deps"}}}},{{"step_db_id":"s2","step_index":1,"name":"write old","shell":"sh","run":"mkdir -p deps && head -c 320 </dev/zero > deps/value.bin"}}]}}"#
+        r#"{{"job_db_id":"job-1","job_id_yaml":"build","repo_owner":"permanu","repo_name":"app","clone_dir":{workspace_json},"timeout_seconds":60,"env":{{"PERMANU_ACTIONS_CACHE_DIR":{cache_root_json},"PERMANU_ACTIONS_CACHE_MAX_BYTES":"600"}},"steps":[{{"step_db_id":"s1","step_index":0,"name":"restore old","uses":"actions/cache@v4","with":{{"key":"old-deps","path":"deps"}}}},{{"step_db_id":"s2","step_index":1,"name":"write old","shell":"sh","run":"mkdir -p deps && head -c 320 </dev/zero > deps/value.bin"}}]}}"#
     );
     let old = job_deployment::handle_ci_job("cmd-old", old_payload.as_bytes());
     assert_eq!(
@@ -1202,7 +1235,7 @@ fn ci_job_actions_cache_quota_evicts_older_entries_before_new_saved_entry() {
 
     fs::create_dir_all(&workspace).expect("recreate workspace");
     let new_payload = format!(
-        r#"{{"job_db_id":"job-2","job_id_yaml":"build","repo_owner":"permanu","repo_name":"app","clone_dir":{workspace_json},"timeout_seconds":5,"env":{{"PERMANU_ACTIONS_CACHE_DIR":{cache_root_json},"PERMANU_ACTIONS_CACHE_MAX_BYTES":"600"}},"steps":[{{"step_db_id":"s1","step_index":0,"name":"restore new","uses":"actions/cache@v4","with":{{"key":"new-deps","path":"deps"}}}},{{"step_db_id":"s2","step_index":1,"name":"write new","shell":"sh","run":"mkdir -p deps && head -c 320 </dev/zero > deps/value.bin"}}]}}"#
+        r#"{{"job_db_id":"job-2","job_id_yaml":"build","repo_owner":"permanu","repo_name":"app","clone_dir":{workspace_json},"timeout_seconds":60,"env":{{"PERMANU_ACTIONS_CACHE_DIR":{cache_root_json},"PERMANU_ACTIONS_CACHE_MAX_BYTES":"600"}},"steps":[{{"step_db_id":"s1","step_index":0,"name":"restore new","uses":"actions/cache@v4","with":{{"key":"new-deps","path":"deps"}}}},{{"step_db_id":"s2","step_index":1,"name":"write new","shell":"sh","run":"mkdir -p deps && head -c 320 </dev/zero > deps/value.bin"}}]}}"#
     );
     let new = job_deployment::handle_ci_job("cmd-new", new_payload.as_bytes());
     let new_output = String::from_utf8(new.output.clone()).expect("utf8 output");
@@ -1220,7 +1253,7 @@ fn ci_job_actions_cache_quota_evicts_older_entries_before_new_saved_entry() {
 
     fs::create_dir_all(&workspace).expect("recreate workspace");
     let verify_payload = format!(
-        r#"{{"job_db_id":"job-3","job_id_yaml":"build","repo_owner":"permanu","repo_name":"app","clone_dir":{workspace_json},"timeout_seconds":5,"env":{{"PERMANU_ACTIONS_CACHE_DIR":{cache_root_json}}},"steps":[{{"step_db_id":"s1","step_index":0,"name":"restore old","uses":"actions/cache@v4","with":{{"key":"old-deps","path":"deps","lookup-only":"true"}}}},{{"step_db_id":"s2","step_index":1,"name":"verify old miss","shell":"sh","run":"printf '%s ' \"$PERMANU_OUTPUT_cache_hit\""}},{{"step_db_id":"s3","step_index":2,"name":"restore new","uses":"actions/cache@v4","with":{{"key":"new-deps","path":"deps","lookup-only":"true"}}}},{{"step_db_id":"s4","step_index":3,"name":"verify new hit","shell":"sh","run":"printf '%s' \"$PERMANU_OUTPUT_cache_hit\""}}]}}"#
+        r#"{{"job_db_id":"job-3","job_id_yaml":"build","repo_owner":"permanu","repo_name":"app","clone_dir":{workspace_json},"timeout_seconds":60,"env":{{"PERMANU_ACTIONS_CACHE_DIR":{cache_root_json}}},"steps":[{{"step_db_id":"s1","step_index":0,"name":"restore old","uses":"actions/cache@v4","with":{{"key":"old-deps","path":"deps","lookup-only":"true"}}}},{{"step_db_id":"s2","step_index":1,"name":"verify old miss","shell":"sh","run":"printf '%s ' \"$PERMANU_OUTPUT_cache_hit\""}},{{"step_db_id":"s3","step_index":2,"name":"restore new","uses":"actions/cache@v4","with":{{"key":"new-deps","path":"deps","lookup-only":"true"}}}},{{"step_db_id":"s4","step_index":3,"name":"verify new hit","shell":"sh","run":"printf '%s' \"$PERMANU_OUTPUT_cache_hit\""}}]}}"#
     );
     let verify = job_deployment::handle_ci_job("cmd-verify", verify_payload.as_bytes());
     let verify_output = String::from_utf8(verify.output).expect("utf8 output");
@@ -1244,9 +1277,10 @@ fn ci_job_actions_cache_quota_evicts_older_entries_before_new_saved_entry() {
 
 #[test]
 fn ci_job_actions_cache_rejects_cross_os_archive_with_precise_diagnostic() {
+    let _guard = shared_process_state();
     let workspace = managed_tempfile_like_dir("ci-cache-cross-os");
     let payload = format!(
-        r#"{{"job_db_id":"job-1","clone_dir":{},"timeout_seconds":5,"steps":[{{"step_db_id":"s1","step_index":0,"name":"cross os","uses":"actions/cache@v4","with":{{"key":"linux-deps","path":"deps","enableCrossOsArchive":"true"}}}}]}}"#,
+        r#"{{"job_db_id":"job-1","clone_dir":{},"timeout_seconds":60,"steps":[{{"step_db_id":"s1","step_index":0,"name":"cross os","uses":"actions/cache@v4","with":{{"key":"linux-deps","path":"deps","enableCrossOsArchive":"true"}}}}]}}"#,
         serde_json::to_string(workspace.to_str().expect("utf8 workspace")).expect("json path")
     );
 
@@ -1276,9 +1310,10 @@ fn ci_job_defaults_checkout_workspace_from_repo_metadata() {
 
 #[test]
 fn ci_job_executes_explicit_shell_and_redacts_secret_output() {
-    let payload = br#"{"job_db_id":"job-1","timeout_seconds":5,"env":{"TOKEN":"s3cr3t-value"},"matrix_values":{"TARGET":"linux"},"secret_keys":["TOKEN"],"steps":[{"step_db_id":"s1","step_index":0,"name":"show env","run":"printf '%s %s' \"$TOKEN\" \"$TARGET\"","shell":"sh"}]}"#;
+    let _guard = shared_process_state();
+    let payload = br#"{"job_db_id":"job-1","timeout_seconds":60,"env":{"TOKEN":"s3cr3t-value"},"matrix_values":{"TARGET":"linux"},"secret_keys":["TOKEN"],"steps":[{"step_db_id":"s1","step_index":0,"name":"show env","run":"printf '%s %s' \"$TOKEN\" \"$TARGET\"","shell":"sh"}]}"#;
 
-    let result = job_deployment::handle_ci_job("cmd-1", payload);
+    let result = job_deployment::handle_ci_job("cmd-1", &private_run(payload, "shell"));
     let output = String::from_utf8(result.output).expect("utf8 output");
 
     assert_eq!(result.status, "completed");
@@ -1289,9 +1324,10 @@ fn ci_job_executes_explicit_shell_and_redacts_secret_output() {
 
 #[test]
 fn ci_job_evaluates_rendered_boolean_and_status_if_expressions() {
+    let _guard = shared_process_state();
     let workspace = managed_tempfile_like_dir("ci-if-expressions");
     let payload = format!(
-        r#"{{"job_db_id":"job-1","job_id_yaml":"build","clone_dir":{},"timeout_seconds":5,"steps":[{{"step_db_id":"s1","step_index":0,"name":"rendered true","run":"printf true-ran","if":"True"}},{{"step_db_id":"s2","step_index":1,"name":"rendered false","run":"printf false-ran","if":"False"}},{{"step_db_id":"s3","step_index":2,"name":"soft failure","run":"false","continue_on_error":true}},{{"step_db_id":"s4","step_index":3,"name":"always status","run":"printf always-ran","if":"always()"}},{{"step_db_id":"s5","step_index":4,"name":"cancelled status","run":"printf cancelled-ran","if":"cancelled()"}},{{"step_db_id":"s6","step_index":5,"name":"rendered always","run":"printf rendered-always-ran","if":"${{{{ Always() }}}}"}}]}}"#,
+        r#"{{"job_db_id":"job-1","job_id_yaml":"build","clone_dir":{},"timeout_seconds":60,"steps":[{{"step_db_id":"s1","step_index":0,"name":"rendered true","run":"printf true-ran","if":"True"}},{{"step_db_id":"s2","step_index":1,"name":"rendered false","run":"printf false-ran","if":"False"}},{{"step_db_id":"s3","step_index":2,"name":"soft failure","run":"false","continue_on_error":true}},{{"step_db_id":"s4","step_index":3,"name":"always status","run":"printf always-ran","if":"always()"}},{{"step_db_id":"s5","step_index":4,"name":"cancelled status","run":"printf cancelled-ran","if":"cancelled()"}},{{"step_db_id":"s6","step_index":5,"name":"rendered always","run":"printf rendered-always-ran","if":"${{{{ Always() }}}}"}}]}}"#,
         serde_json::to_string(workspace.to_str().expect("utf8 path")).expect("json path")
     );
 
@@ -1315,9 +1351,10 @@ fn ci_job_evaluates_rendered_boolean_and_status_if_expressions() {
 
 #[test]
 fn ci_job_emits_structured_json_result_with_human_log() {
-    let payload = br#"{"job_db_id":"job-1","job_id_yaml":"build","timeout_seconds":5,"steps":[{"step_db_id":"s1","step_index":0,"name":"pass","run":"printf ok"},{"step_db_id":"s2","step_index":1,"name":"allowed failure","run":"false","continue_on_error":true},{"step_db_id":"s3","step_index":2,"name":"hard failure","run":"false"}]}"#;
+    let _guard = shared_process_state();
+    let payload = br#"{"job_db_id":"job-1","job_id_yaml":"build","timeout_seconds":60,"steps":[{"step_db_id":"s1","step_index":0,"name":"pass","run":"printf ok"},{"step_db_id":"s2","step_index":1,"name":"allowed failure","run":"false","continue_on_error":true},{"step_db_id":"s3","step_index":2,"name":"hard failure","run":"false"}]}"#;
 
-    let result = job_deployment::handle_ci_job("cmd-1", payload);
+    let result = job_deployment::handle_ci_job("cmd-1", &private_run(payload, "json"));
     let output: Value = serde_json::from_slice(&result.output).expect("json output");
 
     assert_eq!(result.status, "failed");
@@ -1334,6 +1371,7 @@ fn ci_job_emits_structured_json_result_with_human_log() {
 
 #[test]
 fn ci_job_executes_local_composite_action_and_workflow_command_files() {
+    let _guard = shared_process_state();
     let workspace = managed_tempfile_like_dir("ci-composite");
     let action_dir = workspace.join(".permanu/actions/setup");
     fs::create_dir_all(&action_dir).expect("create action dir");
@@ -1360,7 +1398,7 @@ runs:
     .expect("write action");
 
     let payload = format!(
-        r#"{{"job_db_id":"job-1","job_id_yaml":"build","clone_dir":{},"timeout_seconds":5,"steps":[{{"step_db_id":"s1","step_index":0,"name":"setup","uses":"./.permanu/actions/setup","with":{{"value":"from-composite","message":"hello multiline"}}}},{{"step_db_id":"s2","step_index":1,"name":"verify","shell":"sh","run":"printf '%s %s %s %s' \"$COMPOSITE_VALUE\" \"$PERMANU_WORKSPACE\" \"$MULTILINE\" \"$PERMANU_OUTPUT_body\""}}]}}"#,
+        r#"{{"job_db_id":"job-1","job_id_yaml":"build","clone_dir":{},"timeout_seconds":60,"steps":[{{"step_db_id":"s1","step_index":0,"name":"setup","uses":"./.permanu/actions/setup","with":{{"value":"from-composite","message":"hello multiline"}}}},{{"step_db_id":"s2","step_index":1,"name":"verify","shell":"sh","run":"printf '%s %s %s %s' \"$COMPOSITE_VALUE\" \"$PERMANU_WORKSPACE\" \"$MULTILINE\" \"$PERMANU_OUTPUT_body\""}}]}}"#,
         serde_json::to_string(workspace.to_str().expect("utf8 path")).expect("json path")
     );
 
@@ -1391,6 +1429,7 @@ runs:
 
 #[test]
 fn ci_job_materializes_remote_composite_action_bundle_before_execution() {
+    let _guard = shared_process_state();
     let workspace = managed_tempfile_like_dir("ci-remote-composite-bundle");
     let action_yml = r#"
 runs:
@@ -1401,7 +1440,7 @@ runs:
       run: echo "REMOTE_BUNDLE_VALUE=${{ inputs.value }}" >> "$PERMANU_ENV"
 "#;
     let payload = format!(
-        r#"{{"job_db_id":"job-1","job_id_yaml":"build","clone_dir":{},"timeout_seconds":5,"action_bundles":[{{"uses":"owner/composite@v1","local_path":"./.permanu/action-bundles/abc123","action_filename":"action.yml","action_yml":{}}}],"steps":[{{"step_db_id":"s1","step_index":0,"name":"remote composite","uses":"./.permanu/action-bundles/abc123","with":{{"value":"from-bundle"}}}},{{"step_db_id":"s2","step_index":1,"name":"verify","shell":"sh","run":"printf '%s' \"$REMOTE_BUNDLE_VALUE\""}}]}}"#,
+        r#"{{"job_db_id":"job-1","job_id_yaml":"build","clone_dir":{},"timeout_seconds":60,"action_bundles":[{{"uses":"owner/composite@v1","local_path":"./.permanu/action-bundles/abc123","action_filename":"action.yml","action_yml":{}}}],"steps":[{{"step_db_id":"s1","step_index":0,"name":"remote composite","uses":"./.permanu/action-bundles/abc123","with":{{"value":"from-bundle"}}}},{{"step_db_id":"s2","step_index":1,"name":"verify","shell":"sh","run":"printf '%s' \"$REMOTE_BUNDLE_VALUE\""}}]}}"#,
         serde_json::to_string(workspace.to_str().expect("utf8 path")).expect("json path"),
         serde_json::to_string(action_yml).expect("json action yaml")
     );
@@ -1428,7 +1467,7 @@ runs:
 
 #[test]
 fn ci_job_uploads_artifact_events_for_upload_artifact_v4() {
-    let _guard = ENV_TEST_LOCK.lock().expect("env test lock");
+    let _guard = exclusive_process_state();
     let workspace = managed_tempfile_like_dir("ci-artifact");
     let artifact_store = managed_tempfile_like_dir("ci-artifact-store");
     fs::create_dir_all(workspace.join("dist")).expect("create dist");
@@ -1439,7 +1478,7 @@ fn ci_job_uploads_artifact_events_for_upload_artifact_v4() {
     );
 
     let payload = format!(
-        r#"{{"job_db_id":"job-1","run_db_id":"run-1","job_id_yaml":"release","clone_dir":{},"timeout_seconds":5,"steps":[{{"step_db_id":"s1","step_index":0,"name":"upload","uses":"actions/upload-artifact@v4","with":{{"name":"dwaar-linux-amd64","path":"dist/"}}}}]}}"#,
+        r#"{{"job_db_id":"job-1","run_db_id":"run-1","job_id_yaml":"release","clone_dir":{},"timeout_seconds":60,"steps":[{{"step_db_id":"s1","step_index":0,"name":"upload","uses":"actions/upload-artifact@v4","with":{{"name":"dwaar-linux-amd64","path":"dist/"}}}}]}}"#,
         serde_json::to_string(workspace.to_str().expect("utf8 path")).expect("json path")
     );
 
@@ -1482,7 +1521,7 @@ fn ci_job_uploads_artifact_events_for_upload_artifact_v4() {
 
 #[test]
 fn ci_job_downloads_same_job_artifact_for_later_steps() {
-    let _guard = ENV_TEST_LOCK.lock().expect("env test lock");
+    let _guard = exclusive_process_state();
     let workspace = managed_tempfile_like_dir("ci-download-artifact");
     let artifact_store = managed_tempfile_like_dir("ci-download-artifact-store");
     fs::create_dir_all(workspace.join("dist")).expect("create dist");
@@ -1493,7 +1532,7 @@ fn ci_job_downloads_same_job_artifact_for_later_steps() {
     );
 
     let payload = format!(
-        r#"{{"job_db_id":"job-1","run_db_id":"run-1","job_id_yaml":"release","clone_dir":{},"timeout_seconds":5,"steps":[{{"step_db_id":"s1","step_index":0,"name":"upload","uses":"actions/upload-artifact@v4","with":{{"name":"dist","path":"dist/"}}}},{{"step_db_id":"s2","step_index":1,"name":"download","uses":"actions/download-artifact@v4","with":{{"name":"dist","path":"restored"}}}},{{"step_db_id":"s3","step_index":2,"name":"upload restored","uses":"actions/upload-artifact@v4","with":{{"name":"restored","path":"restored/"}}}}]}}"#,
+        r#"{{"job_db_id":"job-1","run_db_id":"run-1","job_id_yaml":"release","clone_dir":{},"timeout_seconds":60,"steps":[{{"step_db_id":"s1","step_index":0,"name":"upload","uses":"actions/upload-artifact@v4","with":{{"name":"dist","path":"dist/"}}}},{{"step_db_id":"s2","step_index":1,"name":"download","uses":"actions/download-artifact@v4","with":{{"name":"dist","path":"restored"}}}},{{"step_db_id":"s3","step_index":2,"name":"upload restored","uses":"actions/upload-artifact@v4","with":{{"name":"restored","path":"restored/"}}}}]}}"#,
         serde_json::to_string(workspace.to_str().expect("utf8 path")).expect("json path")
     );
 
@@ -1529,7 +1568,7 @@ fn ci_job_downloads_same_job_artifact_for_later_steps() {
 
 #[test]
 fn ci_job_upload_artifact_honors_retention_and_hidden_file_inputs() {
-    let _guard = ENV_TEST_LOCK.lock().expect("env test lock");
+    let _guard = exclusive_process_state();
     let workspace = managed_tempfile_like_dir("ci-artifact-hidden");
     let artifact_store = managed_tempfile_like_dir("ci-artifact-hidden-store");
     fs::create_dir_all(workspace.join("dist")).expect("create dist");
@@ -1540,7 +1579,7 @@ fn ci_job_upload_artifact_honors_retention_and_hidden_file_inputs() {
         artifact_store.to_str().expect("utf8 artifact store"),
     );
     let payload = format!(
-        r#"{{"job_db_id":"job-1","run_db_id":"run-1","job_id_yaml":"release","clone_dir":{},"timeout_seconds":5,"steps":[{{"step_db_id":"s1","step_index":0,"name":"upload","uses":"actions/upload-artifact@v4","with":{{"name":"dist","path":"dist/.coverage\n dist/app","include-hidden-files":"true","retention-days":"7","compression-level":"0","overwrite":"true"}}}}]}}"#,
+        r#"{{"job_db_id":"job-1","run_db_id":"run-1","job_id_yaml":"release","clone_dir":{},"timeout_seconds":60,"steps":[{{"step_db_id":"s1","step_index":0,"name":"upload","uses":"actions/upload-artifact@v4","with":{{"name":"dist","path":"dist/.coverage\n dist/app","include-hidden-files":"true","retention-days":"7","compression-level":"0","overwrite":"true"}}}}]}}"#,
         serde_json::to_string(workspace.to_str().expect("utf8 path")).expect("json path")
     );
 
@@ -1566,7 +1605,7 @@ fn ci_job_upload_artifact_honors_retention_and_hidden_file_inputs() {
 
 #[test]
 fn ci_job_upload_artifact_event_uses_archive_bytes_and_compression_level() {
-    let _guard = ENV_TEST_LOCK.lock().expect("env test lock");
+    let _guard = exclusive_process_state();
     let workspace = managed_tempfile_like_dir("ci-artifact-archive-bytes");
     let artifact_store = managed_tempfile_like_dir("ci-artifact-archive-bytes-store");
     fs::create_dir_all(workspace.join("dist")).expect("create dist");
@@ -1576,7 +1615,7 @@ fn ci_job_upload_artifact_event_uses_archive_bytes_and_compression_level() {
         artifact_store.to_str().expect("utf8 artifact store"),
     );
     let payload = format!(
-        r#"{{"job_db_id":"job-1","run_db_id":"run-1","job_id_yaml":"release","clone_dir":{},"timeout_seconds":5,"steps":[{{"step_db_id":"s1","step_index":0,"name":"upload","uses":"actions/upload-artifact@v4","with":{{"name":"dist","path":"dist/","compression-level":"0"}}}}]}}"#,
+        r#"{{"job_db_id":"job-1","run_db_id":"run-1","job_id_yaml":"release","clone_dir":{},"timeout_seconds":60,"steps":[{{"step_db_id":"s1","step_index":0,"name":"upload","uses":"actions/upload-artifact@v4","with":{{"name":"dist","path":"dist/","compression-level":"0"}}}}]}}"#,
         serde_json::to_string(workspace.to_str().expect("utf8 path")).expect("json path")
     );
 
@@ -1612,7 +1651,7 @@ fn ci_job_upload_artifact_event_uses_archive_bytes_and_compression_level() {
 
 #[test]
 fn ci_job_download_artifact_rejects_workspace_escape() {
-    let _guard = ENV_TEST_LOCK.lock().expect("env test lock");
+    let _guard = exclusive_process_state();
     let workspace = managed_tempfile_like_dir("ci-download-artifact-escape");
     let artifact_store = managed_tempfile_like_dir("ci-download-artifact-escape-store");
     let _artifact_store_env = EnvVarGuard::set(
@@ -1621,7 +1660,7 @@ fn ci_job_download_artifact_rejects_workspace_escape() {
     );
 
     let payload = format!(
-        r#"{{"job_db_id":"job-1","run_db_id":"run-1","job_id_yaml":"release","clone_dir":{},"timeout_seconds":5,"steps":[{{"step_db_id":"s1","step_index":0,"name":"download","uses":"actions/download-artifact@v4","with":{{"name":"dist","path":"../outside"}}}}]}}"#,
+        r#"{{"job_db_id":"job-1","run_db_id":"run-1","job_id_yaml":"release","clone_dir":{},"timeout_seconds":60,"steps":[{{"step_db_id":"s1","step_index":0,"name":"download","uses":"actions/download-artifact@v4","with":{{"name":"dist","path":"../outside"}}}}]}}"#,
         serde_json::to_string(workspace.to_str().expect("utf8 path")).expect("json path")
     );
 
@@ -1637,7 +1676,7 @@ fn ci_job_download_artifact_rejects_workspace_escape() {
 
 #[test]
 fn ci_job_download_artifact_errors_when_named_artifact_missing() {
-    let _guard = ENV_TEST_LOCK.lock().expect("env test lock");
+    let _guard = exclusive_process_state();
     let workspace = managed_tempfile_like_dir("ci-download-artifact-missing");
     let artifact_store = managed_tempfile_like_dir("ci-download-artifact-missing-store");
     let _artifact_store_env = EnvVarGuard::set(
@@ -1646,7 +1685,7 @@ fn ci_job_download_artifact_errors_when_named_artifact_missing() {
     );
 
     let payload = format!(
-        r#"{{"job_db_id":"job-1","run_db_id":"run-1","job_id_yaml":"release","clone_dir":{},"timeout_seconds":5,"steps":[{{"step_db_id":"s1","step_index":0,"name":"download","uses":"actions/download-artifact@v4","with":{{"name":"dist","path":"downloaded"}}}}]}}"#,
+        r#"{{"job_db_id":"job-1","run_db_id":"run-1","job_id_yaml":"release","clone_dir":{},"timeout_seconds":60,"steps":[{{"step_db_id":"s1","step_index":0,"name":"download","uses":"actions/download-artifact@v4","with":{{"name":"dist","path":"downloaded"}}}}]}}"#,
         serde_json::to_string(workspace.to_str().expect("utf8 path")).expect("json path")
     );
 
@@ -1662,7 +1701,7 @@ fn ci_job_download_artifact_errors_when_named_artifact_missing() {
 
 #[test]
 fn ci_job_downloads_available_artifact_from_same_runner_storage_path() {
-    let _guard = ENV_TEST_LOCK.lock().expect("env test lock");
+    let _guard = exclusive_process_state();
     let workspace = managed_tempfile_like_dir("ci-download-available-artifact");
     let artifact_store = managed_tempfile_like_dir("ci-download-available-artifact-store");
     fs::create_dir_all(artifact_store.join("run-1/build-1/0-dist/dist")).expect("create artifact");
@@ -1677,7 +1716,7 @@ fn ci_job_downloads_available_artifact_from_same_runner_storage_path() {
     );
 
     let payload = format!(
-        r#"{{"job_db_id":"job-1","run_db_id":"run-1","job_id_yaml":"test","clone_dir":{},"timeout_seconds":5,"available_artifacts":[{{"name":"dist","storage_path":"run-1/build-1/0-dist"}}],"steps":[{{"step_db_id":"s1","step_index":0,"name":"download","uses":"actions/download-artifact@v4","with":{{"name":"dist","path":"restored"}}}},{{"step_db_id":"s2","step_index":1,"name":"upload restored","uses":"actions/upload-artifact@v4","with":{{"name":"restored","path":"restored/"}}}}]}}"#,
+        r#"{{"job_db_id":"job-1","run_db_id":"run-1","job_id_yaml":"test","clone_dir":{},"timeout_seconds":60,"available_artifacts":[{{"name":"dist","storage_path":"run-1/build-1/0-dist"}}],"steps":[{{"step_db_id":"s1","step_index":0,"name":"download","uses":"actions/download-artifact@v4","with":{{"name":"dist","path":"restored"}}}},{{"step_db_id":"s2","step_index":1,"name":"upload restored","uses":"actions/upload-artifact@v4","with":{{"name":"restored","path":"restored/"}}}}]}}"#,
         serde_json::to_string(workspace.to_str().expect("utf8 path")).expect("json path")
     );
 
@@ -1708,7 +1747,7 @@ fn ci_job_downloads_available_artifact_from_same_runner_storage_path() {
 
 #[test]
 fn ci_job_download_available_artifact_rejects_sanitized_name_collisions() {
-    let _guard = ENV_TEST_LOCK.lock().expect("env test lock");
+    let _guard = exclusive_process_state();
     let workspace = managed_tempfile_like_dir("ci-download-available-collision");
     let artifact_store = managed_tempfile_like_dir("ci-download-available-collision-store");
     fs::create_dir_all(artifact_store.join("run-1/build-a/0-a")).expect("create artifact a");
@@ -1719,7 +1758,7 @@ fn ci_job_download_available_artifact_rejects_sanitized_name_collisions() {
     );
 
     let payload = format!(
-        r#"{{"job_db_id":"job-1","run_db_id":"run-1","job_id_yaml":"test","clone_dir":{},"timeout_seconds":5,"available_artifacts":[{{"name":"foo.bar","storage_path":"run-1/build-a/0-a"}},{{"name":"foo bar","storage_path":"run-1/build-b/0-b"}}],"steps":[{{"step_db_id":"s1","step_index":0,"name":"download","uses":"actions/download-artifact@v4","with":{{"path":"downloaded"}}}}]}}"#,
+        r#"{{"job_db_id":"job-1","run_db_id":"run-1","job_id_yaml":"test","clone_dir":{},"timeout_seconds":60,"available_artifacts":[{{"name":"foo.bar","storage_path":"run-1/build-a/0-a"}},{{"name":"foo bar","storage_path":"run-1/build-b/0-b"}}],"steps":[{{"step_db_id":"s1","step_index":0,"name":"download","uses":"actions/download-artifact@v4","with":{{"path":"downloaded"}}}}]}}"#,
         serde_json::to_string(workspace.to_str().expect("utf8 path")).expect("json path")
     );
 
@@ -1736,7 +1775,7 @@ fn ci_job_download_available_artifact_rejects_sanitized_name_collisions() {
 #[cfg(unix)]
 #[test]
 fn ci_job_download_available_artifact_rejects_symlinked_storage_path() {
-    let _guard = ENV_TEST_LOCK.lock().expect("env test lock");
+    let _guard = exclusive_process_state();
     let workspace = managed_tempfile_like_dir("ci-download-available-symlink");
     let artifact_store = managed_tempfile_like_dir("ci-download-available-symlink-store");
     let outside = managed_tempfile_like_dir("ci-download-available-symlink-outside");
@@ -1753,7 +1792,7 @@ fn ci_job_download_available_artifact_rejects_symlinked_storage_path() {
     );
 
     let payload = format!(
-        r#"{{"job_db_id":"job-1","run_db_id":"run-1","job_id_yaml":"test","clone_dir":{},"timeout_seconds":5,"available_artifacts":[{{"name":"dist","storage_path":"run-1/build-1/0-dist"}}],"steps":[{{"step_db_id":"s1","step_index":0,"name":"download","uses":"actions/download-artifact@v4","with":{{"name":"dist","path":"restored"}}}}]}}"#,
+        r#"{{"job_db_id":"job-1","run_db_id":"run-1","job_id_yaml":"test","clone_dir":{},"timeout_seconds":60,"available_artifacts":[{{"name":"dist","storage_path":"run-1/build-1/0-dist"}}],"steps":[{{"step_db_id":"s1","step_index":0,"name":"download","uses":"actions/download-artifact@v4","with":{{"name":"dist","path":"restored"}}}}]}}"#,
         serde_json::to_string(workspace.to_str().expect("utf8 path")).expect("json path")
     );
 
@@ -1770,7 +1809,7 @@ fn ci_job_download_available_artifact_rejects_symlinked_storage_path() {
 
 #[test]
 fn ci_job_download_available_artifact_reports_remote_unsupported() {
-    let _guard = ENV_TEST_LOCK.lock().expect("env test lock");
+    let _guard = exclusive_process_state();
     let workspace = managed_tempfile_like_dir("ci-download-available-remote");
     let artifact_store = managed_tempfile_like_dir("ci-download-available-remote-store");
     let _artifact_store_env = EnvVarGuard::set(
@@ -1779,7 +1818,7 @@ fn ci_job_download_available_artifact_reports_remote_unsupported() {
     );
 
     let payload = format!(
-        r#"{{"job_db_id":"job-1","run_db_id":"run-1","job_id_yaml":"test","clone_dir":{},"timeout_seconds":5,"available_artifacts":[{{"name":"dist","provider_url":"permanu://artifacts/run-1/dist"}}],"steps":[{{"step_db_id":"s1","step_index":0,"name":"download","uses":"actions/download-artifact@v4","with":{{"name":"dist","path":"restored"}}}}]}}"#,
+        r#"{{"job_db_id":"job-1","run_db_id":"run-1","job_id_yaml":"test","clone_dir":{},"timeout_seconds":60,"available_artifacts":[{{"name":"dist","provider_url":"permanu://artifacts/run-1/dist"}}],"steps":[{{"step_db_id":"s1","step_index":0,"name":"download","uses":"actions/download-artifact@v4","with":{{"name":"dist","path":"restored"}}}}]}}"#,
         serde_json::to_string(workspace.to_str().expect("utf8 path")).expect("json path")
     );
 
@@ -1795,7 +1834,7 @@ fn ci_job_download_available_artifact_reports_remote_unsupported() {
 
 #[test]
 fn ci_job_downloads_available_artifact_from_control_plane_url() {
-    let _guard = ENV_TEST_LOCK.lock().expect("env test lock");
+    let _guard = exclusive_process_state();
     let workspace = managed_tempfile_like_dir("ci-download-available-control-plane");
     let artifact_store = managed_tempfile_like_dir("ci-download-available-control-plane-store");
     let _artifact_store_env = EnvVarGuard::set(
@@ -1821,7 +1860,7 @@ fn ci_job_downloads_available_artifact_from_control_plane_url() {
 
     let download_url = format!("http://127.0.0.1:{}/api/artifacts/artifact-1/download?expires=9999999999&sig=test&run_id=run-1&job_id=build-1", addr.port());
     let payload = format!(
-        r#"{{"job_db_id":"job-1","run_db_id":"run-1","job_id_yaml":"test","clone_dir":{},"timeout_seconds":5,"available_artifacts":[{{"name":"dist","download_url":{},"size_bytes":{},"hash":{}}}],"steps":[{{"step_db_id":"s1","step_index":0,"name":"download","uses":"actions/download-artifact@v4","with":{{"name":"dist","path":"restored"}}}},{{"step_db_id":"s2","step_index":1,"name":"upload restored","uses":"actions/upload-artifact@v4","with":{{"name":"restored","path":"restored/"}}}}]}}"#,
+        r#"{{"job_db_id":"job-1","run_db_id":"run-1","job_id_yaml":"test","clone_dir":{},"timeout_seconds":60,"available_artifacts":[{{"name":"dist","download_url":{},"size_bytes":{},"hash":{}}}],"steps":[{{"step_db_id":"s1","step_index":0,"name":"download","uses":"actions/download-artifact@v4","with":{{"name":"dist","path":"restored"}}}},{{"step_db_id":"s2","step_index":1,"name":"upload restored","uses":"actions/upload-artifact@v4","with":{{"name":"restored","path":"restored/"}}}}]}}"#,
         serde_json::to_string(workspace.to_str().expect("utf8 path")).expect("json path"),
         serde_json::to_string(&download_url).expect("json url"),
         zip_size,
@@ -1829,6 +1868,12 @@ fn ci_job_downloads_available_artifact_from_control_plane_url() {
     );
 
     let result = job_deployment::handle_ci_job("cmd-1", payload.as_bytes());
+    // A job that failed before it downloaded (for example without curl)
+    // never connects; connect once so the server thread ends and the
+    // assertions below report the job's error instead of hanging.
+    if !server.is_finished() {
+        let _ = std::net::TcpStream::connect(addr);
+    }
     server.join().expect("artifact server joins");
     let output: Value = serde_json::from_slice(&result.output).expect("json output");
 
@@ -1868,7 +1913,7 @@ fn control_plane_artifact_zip_bytes() -> Vec<u8> {
 #[cfg(unix)]
 #[test]
 fn ci_job_download_artifact_rejects_symlinked_destination_file_escape() {
-    let _guard = ENV_TEST_LOCK.lock().expect("env test lock");
+    let _guard = exclusive_process_state();
     let workspace = managed_tempfile_like_dir("ci-download-artifact-file-symlink");
     let outside = managed_tempfile_like_dir("ci-download-artifact-file-outside");
     let artifact_store = managed_tempfile_like_dir("ci-download-artifact-file-store");
@@ -1887,7 +1932,7 @@ fn ci_job_download_artifact_rejects_symlinked_destination_file_escape() {
     );
 
     let payload = format!(
-        r#"{{"job_db_id":"job-1","run_db_id":"run-1","job_id_yaml":"release","clone_dir":{},"timeout_seconds":5,"steps":[{{"step_db_id":"s1","step_index":0,"name":"upload","uses":"actions/upload-artifact@v4","with":{{"name":"dist","path":"dist/app.tar.gz"}}}},{{"step_db_id":"s2","step_index":1,"name":"download","uses":"actions/download-artifact@v4","with":{{"name":"dist","path":"restored"}}}}]}}"#,
+        r#"{{"job_db_id":"job-1","run_db_id":"run-1","job_id_yaml":"release","clone_dir":{},"timeout_seconds":60,"steps":[{{"step_db_id":"s1","step_index":0,"name":"upload","uses":"actions/upload-artifact@v4","with":{{"name":"dist","path":"dist/app.tar.gz"}}}},{{"step_db_id":"s2","step_index":1,"name":"download","uses":"actions/download-artifact@v4","with":{{"name":"dist","path":"restored"}}}}]}}"#,
         serde_json::to_string(workspace.to_str().expect("utf8 path")).expect("json path")
     );
 
@@ -1908,7 +1953,7 @@ fn ci_job_download_artifact_rejects_symlinked_destination_file_escape() {
 #[cfg(unix)]
 #[test]
 fn ci_job_download_artifact_rejects_symlinked_destination_directory_escape() {
-    let _guard = ENV_TEST_LOCK.lock().expect("env test lock");
+    let _guard = exclusive_process_state();
     let workspace = managed_tempfile_like_dir("ci-download-artifact-dir-symlink");
     let outside = managed_tempfile_like_dir("ci-download-artifact-dir-outside");
     let artifact_store = managed_tempfile_like_dir("ci-download-artifact-dir-store");
@@ -1922,7 +1967,7 @@ fn ci_job_download_artifact_rejects_symlinked_destination_directory_escape() {
     );
 
     let payload = format!(
-        r#"{{"job_db_id":"job-1","run_db_id":"run-1","job_id_yaml":"release","clone_dir":{},"timeout_seconds":5,"steps":[{{"step_db_id":"s1","step_index":0,"name":"upload","uses":"actions/upload-artifact@v4","with":{{"name":"dist","path":"dist/"}}}},{{"step_db_id":"s2","step_index":1,"name":"download","uses":"actions/download-artifact@v4","with":{{"name":"dist","path":"restored"}}}}]}}"#,
+        r#"{{"job_db_id":"job-1","run_db_id":"run-1","job_id_yaml":"release","clone_dir":{},"timeout_seconds":60,"steps":[{{"step_db_id":"s1","step_index":0,"name":"upload","uses":"actions/upload-artifact@v4","with":{{"name":"dist","path":"dist/"}}}},{{"step_db_id":"s2","step_index":1,"name":"download","uses":"actions/download-artifact@v4","with":{{"name":"dist","path":"restored"}}}}]}}"#,
         serde_json::to_string(workspace.to_str().expect("utf8 path")).expect("json path")
     );
 
@@ -1942,7 +1987,7 @@ fn ci_job_download_artifact_rejects_symlinked_destination_directory_escape() {
 
 #[test]
 fn ci_job_download_artifact_supports_pattern_and_merge_multiple() {
-    let _guard = ENV_TEST_LOCK.lock().expect("env test lock");
+    let _guard = exclusive_process_state();
     let workspace = managed_tempfile_like_dir("ci-download-artifact-pattern");
     let artifact_store = managed_tempfile_like_dir("ci-download-artifact-pattern-store");
     let _artifact_store_env = EnvVarGuard::set(
@@ -1956,7 +2001,7 @@ fn ci_job_download_artifact_supports_pattern_and_merge_multiple() {
     fs::write(workspace.join("dist-b/b.txt"), b"b").expect("write artifact b");
 
     let payload = format!(
-        r#"{{"job_db_id":"job-1","run_db_id":"run-1","job_id_yaml":"release","clone_dir":{},"timeout_seconds":5,"steps":[{{"step_db_id":"s1","step_index":0,"name":"upload a","uses":"actions/upload-artifact@v4","with":{{"name":"dist-a","path":"dist-a/a.txt"}}}},{{"step_db_id":"s2","step_index":1,"name":"upload b","uses":"actions/upload-artifact@v4","with":{{"name":"dist-b","path":"dist-b/b.txt"}}}},{{"step_db_id":"s3","step_index":2,"name":"download","uses":"actions/download-artifact@v4","with":{{"pattern":"dist-*","path":"downloaded","merge-multiple":"true"}}}}]}}"#,
+        r#"{{"job_db_id":"job-1","run_db_id":"run-1","job_id_yaml":"release","clone_dir":{},"timeout_seconds":60,"steps":[{{"step_db_id":"s1","step_index":0,"name":"upload a","uses":"actions/upload-artifact@v4","with":{{"name":"dist-a","path":"dist-a/a.txt"}}}},{{"step_db_id":"s2","step_index":1,"name":"upload b","uses":"actions/upload-artifact@v4","with":{{"name":"dist-b","path":"dist-b/b.txt"}}}},{{"step_db_id":"s3","step_index":2,"name":"download","uses":"actions/download-artifact@v4","with":{{"pattern":"dist-*","path":"downloaded","merge-multiple":"true"}}}}]}}"#,
         serde_json::to_string(workspace.to_str().expect("utf8 path")).expect("json path")
     );
 
@@ -1978,7 +2023,7 @@ fn ci_job_download_artifact_supports_pattern_and_merge_multiple() {
 
 #[test]
 fn ci_job_download_artifact_rejects_sanitized_name_collisions() {
-    let _guard = ENV_TEST_LOCK.lock().expect("env test lock");
+    let _guard = exclusive_process_state();
     let workspace = managed_tempfile_like_dir("ci-download-artifact-collision");
     let artifact_store = managed_tempfile_like_dir("ci-download-artifact-collision-store");
     fs::create_dir_all(workspace.join("dist-a")).expect("create dist a");
@@ -1991,7 +2036,7 @@ fn ci_job_download_artifact_rejects_sanitized_name_collisions() {
     );
 
     let payload = format!(
-        r#"{{"job_db_id":"job-1","run_db_id":"run-1","job_id_yaml":"release","clone_dir":{},"timeout_seconds":5,"steps":[{{"step_db_id":"s1","step_index":0,"name":"upload a","uses":"actions/upload-artifact@v4","with":{{"name":"foo.bar","path":"dist-a/"}}}},{{"step_db_id":"s2","step_index":1,"name":"upload b","uses":"actions/upload-artifact@v4","with":{{"name":"foo bar","path":"dist-b/"}}}},{{"step_db_id":"s3","step_index":2,"name":"download all","uses":"actions/download-artifact@v4","with":{{"path":"downloaded"}}}}]}}"#,
+        r#"{{"job_db_id":"job-1","run_db_id":"run-1","job_id_yaml":"release","clone_dir":{},"timeout_seconds":60,"steps":[{{"step_db_id":"s1","step_index":0,"name":"upload a","uses":"actions/upload-artifact@v4","with":{{"name":"foo.bar","path":"dist-a/"}}}},{{"step_db_id":"s2","step_index":1,"name":"upload b","uses":"actions/upload-artifact@v4","with":{{"name":"foo bar","path":"dist-b/"}}}},{{"step_db_id":"s3","step_index":2,"name":"download all","uses":"actions/download-artifact@v4","with":{{"path":"downloaded"}}}}]}}"#,
         serde_json::to_string(workspace.to_str().expect("utf8 path")).expect("json path")
     );
 
@@ -2008,7 +2053,7 @@ fn ci_job_download_artifact_rejects_sanitized_name_collisions() {
 #[cfg(unix)]
 #[test]
 fn ci_job_upload_artifact_rejects_symlinked_file_escape() {
-    let _guard = ENV_TEST_LOCK.lock().expect("env test lock");
+    let _guard = exclusive_process_state();
     let workspace = managed_tempfile_like_dir("ci-artifact-file-symlink");
     let outside = managed_tempfile_like_dir("ci-artifact-file-outside");
     let artifact_store = managed_tempfile_like_dir("ci-artifact-file-store");
@@ -2025,7 +2070,7 @@ fn ci_job_upload_artifact_rejects_symlinked_file_escape() {
     );
 
     let payload = format!(
-        r#"{{"job_db_id":"job-1","run_db_id":"run-1","job_id_yaml":"release","clone_dir":{},"timeout_seconds":5,"steps":[{{"step_db_id":"s1","step_index":0,"name":"upload","uses":"actions/upload-artifact@v4","with":{{"name":"leak","path":"dist/"}}}}]}}"#,
+        r#"{{"job_db_id":"job-1","run_db_id":"run-1","job_id_yaml":"release","clone_dir":{},"timeout_seconds":60,"steps":[{{"step_db_id":"s1","step_index":0,"name":"upload","uses":"actions/upload-artifact@v4","with":{{"name":"leak","path":"dist/"}}}}]}}"#,
         serde_json::to_string(workspace.to_str().expect("utf8 path")).expect("json path")
     );
 
@@ -2039,7 +2084,7 @@ fn ci_job_upload_artifact_rejects_symlinked_file_escape() {
 #[cfg(unix)]
 #[test]
 fn ci_job_upload_artifact_rejects_symlinked_directory_escape() {
-    let _guard = ENV_TEST_LOCK.lock().expect("env test lock");
+    let _guard = exclusive_process_state();
     let workspace = managed_tempfile_like_dir("ci-artifact-dir-symlink");
     let outside = managed_tempfile_like_dir("ci-artifact-dir-outside");
     let artifact_store = managed_tempfile_like_dir("ci-artifact-dir-store");
@@ -2052,7 +2097,7 @@ fn ci_job_upload_artifact_rejects_symlinked_directory_escape() {
     );
 
     let payload = format!(
-        r#"{{"job_db_id":"job-1","run_db_id":"run-1","job_id_yaml":"release","clone_dir":{},"timeout_seconds":5,"steps":[{{"step_db_id":"s1","step_index":0,"name":"upload","uses":"actions/upload-artifact@v4","with":{{"name":"leak","path":"dist/"}}}}]}}"#,
+        r#"{{"job_db_id":"job-1","run_db_id":"run-1","job_id_yaml":"release","clone_dir":{},"timeout_seconds":60,"steps":[{{"step_db_id":"s1","step_index":0,"name":"upload","uses":"actions/upload-artifact@v4","with":{{"name":"leak","path":"dist/"}}}}]}}"#,
         serde_json::to_string(workspace.to_str().expect("utf8 path")).expect("json path")
     );
 
@@ -2065,12 +2110,13 @@ fn ci_job_upload_artifact_rejects_symlinked_directory_escape() {
 
 #[test]
 fn ci_job_native_cosign_sign_blob_requires_key_or_explicit_token() {
+    let _guard = shared_process_state();
     let workspace = managed_tempfile_like_dir("ci-cosign-token-required");
     fs::create_dir_all(workspace.join("dist")).expect("create dist");
     fs::write(workspace.join("dist/dwaar-linux-amd64"), b"release-binary").expect("write artifact");
 
     let payload = format!(
-        r#"{{"job_db_id":"job-1","run_db_id":"run-1","job_id_yaml":"release","clone_dir":{},"timeout_seconds":5,"steps":[{{"step_db_id":"s1","step_index":0,"name":"sign","uses":"permanu/cosign-sign-blob@v1","with":{{"path":"dist/"}}}}]}}"#,
+        r#"{{"job_db_id":"job-1","run_db_id":"run-1","job_id_yaml":"release","clone_dir":{},"timeout_seconds":60,"steps":[{{"step_db_id":"s1","step_index":0,"name":"sign","uses":"permanu/cosign-sign-blob@v1","with":{{"path":"dist/"}}}}]}}"#,
         serde_json::to_string(workspace.to_str().expect("utf8 path")).expect("json path")
     );
 
@@ -2087,7 +2133,7 @@ fn ci_job_native_cosign_sign_blob_requires_key_or_explicit_token() {
 
 #[test]
 fn ci_job_native_cosign_sign_blob_creates_bundle_signature_and_certificate_sidecars() {
-    let _guard = ENV_TEST_LOCK.lock().expect("env test lock");
+    let _guard = exclusive_process_state();
     let workspace = managed_tempfile_like_dir("ci-cosign-sign");
     let artifact_store = managed_tempfile_like_dir("ci-cosign-artifact-store");
     let fake_bin = managed_tempfile_like_dir("ci-cosign-bin");
@@ -2107,7 +2153,7 @@ fn ci_job_native_cosign_sign_blob_creates_bundle_signature_and_certificate_sidec
     }
 
     let payload = format!(
-        r#"{{"job_db_id":"job-1","run_db_id":"run-1","job_id_yaml":"release","clone_dir":{},"timeout_seconds":5,"env":{{"PATH":{},"PERMANU_FAKE_COSIGN_LOG":{},"PERMANU_SIGSTORE_ID_TOKEN":"token-from-runner"}},"secret_keys":["PERMANU_SIGSTORE_ID_TOKEN"],"steps":[{{"step_db_id":"s1","step_index":0,"name":"sign","uses":"permanu/cosign-sign-blob@v1","with":{{"path":"dist/"}}}},{{"step_db_id":"s2","step_index":1,"name":"upload","uses":"actions/upload-artifact@v4","with":{{"name":"dwaar-signed","path":"dist/"}}}}]}}"#,
+        r#"{{"job_db_id":"job-1","run_db_id":"run-1","job_id_yaml":"release","clone_dir":{},"timeout_seconds":60,"env":{{"PATH":{},"PERMANU_FAKE_COSIGN_LOG":{},"PERMANU_SIGSTORE_ID_TOKEN":"token-from-runner"}},"secret_keys":["PERMANU_SIGSTORE_ID_TOKEN"],"steps":[{{"step_db_id":"s1","step_index":0,"name":"sign","uses":"permanu/cosign-sign-blob@v1","with":{{"path":"dist/"}}}},{{"step_db_id":"s2","step_index":1,"name":"upload","uses":"actions/upload-artifact@v4","with":{{"name":"dwaar-signed","path":"dist/"}}}}]}}"#,
         serde_json::to_string(workspace.to_str().expect("utf8 path")).expect("json path"),
         serde_json::to_string(&path_value).expect("json path env"),
         serde_json::to_string(fake_log.to_str().expect("utf8 log path")).expect("json log path")
@@ -2150,7 +2196,7 @@ fn ci_job_native_cosign_sign_blob_creates_bundle_signature_and_certificate_sidec
 
 #[test]
 fn ci_job_native_cosign_sign_blob_uses_kms_key_and_redacts_signing_secrets() {
-    let _guard = ENV_TEST_LOCK.lock().expect("env test lock");
+    let _guard = exclusive_process_state();
     let workspace = managed_tempfile_like_dir("ci-cosign-kms-sign");
     let artifact_store = managed_tempfile_like_dir("ci-cosign-kms-artifact-store");
     let fake_bin = managed_tempfile_like_dir("ci-cosign-kms-bin");
@@ -2172,7 +2218,7 @@ fn ci_job_native_cosign_sign_blob_uses_kms_key_and_redacts_signing_secrets() {
     let kms_key = "awskms://arn:aws:kms:us-east-1:111122223333:key/key-token-secret";
     let cosign_password = "cosign-password-secret";
     let payload = format!(
-        r#"{{"job_db_id":"job-1","run_db_id":"run-1","job_id_yaml":"release","clone_dir":{},"timeout_seconds":5,"env":{{"PATH":{},"PERMANU_FAKE_COSIGN_LOG":{},"PERMANU_FAKE_COSIGN_ECHO_SECRETS":"1","PERMANU_COSIGN_KEY":{},"COSIGN_PASSWORD":{}}},"steps":[{{"step_db_id":"s1","step_index":0,"name":"kms sign","uses":"permanu/cosign-sign-blob@v1","with":{{"path":"dist/"}}}},{{"step_db_id":"s2","step_index":1,"name":"upload","uses":"actions/upload-artifact@v4","with":{{"name":"dwaar-kms-signed","path":"dist/"}}}}]}}"#,
+        r#"{{"job_db_id":"job-1","run_db_id":"run-1","job_id_yaml":"release","clone_dir":{},"timeout_seconds":60,"env":{{"PATH":{},"PERMANU_FAKE_COSIGN_LOG":{},"PERMANU_FAKE_COSIGN_ECHO_SECRETS":"1","PERMANU_COSIGN_KEY":{},"COSIGN_PASSWORD":{}}},"steps":[{{"step_db_id":"s1","step_index":0,"name":"kms sign","uses":"permanu/cosign-sign-blob@v1","with":{{"path":"dist/"}}}},{{"step_db_id":"s2","step_index":1,"name":"upload","uses":"actions/upload-artifact@v4","with":{{"name":"dwaar-kms-signed","path":"dist/"}}}}]}}"#,
         serde_json::to_string(workspace.to_str().expect("utf8 path")).expect("json path"),
         serde_json::to_string(&path_value).expect("json path env"),
         serde_json::to_string(fake_log.to_str().expect("utf8 log path")).expect("json log path"),
@@ -2214,9 +2260,13 @@ fn ci_job_native_cosign_sign_blob_uses_kms_key_and_redacts_signing_secrets() {
 
 #[test]
 fn ci_job_allows_shell_syntax_in_run_steps() {
+    let _guard = shared_process_state();
     let result = job_deployment::handle_ci_job(
         "cmd-1",
-        br#"{"job_db_id":"job-1","steps":[{"step_db_id":"s1","step_index":0,"run":"printf ok; printf done"}]}"#,
+        &private_run(
+            br#"{"job_db_id":"job-1","steps":[{"step_db_id":"s1","step_index":0,"run":"printf ok; printf done"}]}"#,
+            "shell-syntax",
+        ),
     );
     let output: Value = serde_json::from_slice(&result.output).expect("json output");
 
@@ -2390,6 +2440,22 @@ esac
     fs::set_permissions(&script, permissions).expect("chmod fake docker");
 }
 
+/// The run id `private_run` gives a test's job.
+fn private_run_id(run: &str, test: &str) -> String {
+    format!("{run}-{test}-{}", std::process::id())
+}
+
+/// The payload with a run id no other test, and no other test process, uses:
+/// a job without a `clone_dir` works in the default managed workspace
+/// `/var/tmp/permanu-ci/<run>/<job>/workspace` and removes it when it ends,
+/// so two jobs with the same ids would delete each other's workspace.
+fn private_run(payload: &[u8], test: &str) -> Vec<u8> {
+    let mut value: Value = serde_json::from_slice(payload).expect("payload json");
+    let run = value["run_db_id"].as_str().unwrap_or("adhoc").to_owned();
+    value["run_db_id"] = Value::String(private_run_id(&run, test));
+    serde_json::to_vec(&value).expect("payload bytes")
+}
+
 fn managed_tempfile_like_dir(name: &str) -> std::path::PathBuf {
     let nanos = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -2405,9 +2471,13 @@ fn managed_tempfile_like_dir(name: &str) -> std::path::PathBuf {
 
 #[test]
 fn ci_job_times_out_bounded_command() {
+    let _guard = shared_process_state();
     let result = job_deployment::handle_ci_job(
         "cmd-1",
-        br#"{"job_db_id":"job-1","timeout_seconds":1,"steps":[{"step_db_id":"s1","step_index":0,"run":"sleep 5"}]}"#,
+        &private_run(
+            br#"{"job_db_id":"job-1","timeout_seconds":1,"steps":[{"step_db_id":"s1","step_index":0,"run":"sleep 5"}]}"#,
+            "timeout",
+        ),
     );
     let output = String::from_utf8(result.output).expect("utf8 output");
 

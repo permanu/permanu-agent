@@ -68,6 +68,10 @@ pub const CAPABILITY_DEPLOYMENT_IDS: &str = "deployment_ids.v1";
 /// v2.0.3 (D-036): QueryLogs serves APP and SERVICE from the runner's
 /// read-only container ops.
 pub const CAPABILITY_LOGS_CONTAINERS: &str = "logs.containers.v1";
+/// v2.0.5 (D-045): the agent admits v1.0.5 ServiceSpecs (`service_kind`) and
+/// `server.add` with `age_recipient_fingerprint`, and fills
+/// `Container.environment` and `Container.service_kind`.
+pub const CAPABILITY_SERVICE_KIND: &str = "service_kind.v1";
 pub const ERROR_REASON_HEADER: &str = "permanu-error-reason";
 /// agent-protocol.md section 7.
 pub const MAX_MESSAGE_BYTES: usize = 4 * 1024 * 1024;
@@ -253,6 +257,7 @@ fn capabilities(age_recipient: &str) -> Vec<String> {
         CAPABILITY_ADMISSIONS.to_string(),
         CAPABILITY_DEPLOYMENT_IDS.to_string(),
         CAPABILITY_LOGS_CONTAINERS.to_string(),
+        CAPABILITY_SERVICE_KIND.to_string(),
     ];
     if !age_recipient.is_empty() {
         ids.push(CAPABILITY_AGE.to_string());
@@ -549,6 +554,7 @@ pub async fn run(
         clock: Arc::new(execution::SystemClock),
         consumed_log: cfg.consumed_log.clone(),
         consumed_log_owner: cfg.file_owner_uid,
+        age_recipient: age_recipient.clone(),
         timing: execution::Timing::default(),
     });
     if report.recreated {
@@ -641,7 +647,8 @@ mod tests {
                 "signed_plans.v1",
                 "admissions.v1",
                 "deployment_ids.v1",
-                "logs.containers.v1"
+                "logs.containers.v1",
+                "service_kind.v1"
             ]
         );
         assert_eq!(
@@ -651,6 +658,7 @@ mod tests {
                 "admissions.v1",
                 "deployment_ids.v1",
                 "logs.containers.v1",
+                "service_kind.v1",
                 "age.v1"
             ]
         );
@@ -704,6 +712,7 @@ mod tests {
                 "admissions.v1",
                 "deployment_ids.v1",
                 "logs.containers.v1",
+                "service_kind.v1",
                 "age.v1"
             ]
         );
