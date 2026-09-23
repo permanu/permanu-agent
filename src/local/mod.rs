@@ -450,28 +450,39 @@ fn logged_incoming(
     })
 }
 
-/// `permanu-agent:permanu-runner` when the agent runs as root and both
-/// exist (D-022); otherwise the store keeps the process's own ids.
+/// `permanu-agent:permanu-runner` for the store files (D-022, section 6.3).
 fn store_owner(cfg: &LocalConfig) -> Option<StoreOwner> {
     // SAFETY: geteuid has no preconditions.
-    if unsafe { libc::geteuid() } != 0 {
-        return None;
+    let euid = unsafe { libc::geteuid() };
+    let owner = store_owner_from(
+        euid,
+        socket::resolve_user(&cfg.store_user),
+        socket::resolve_group(&cfg.store_group),
+    );
+    if owner.is_none() {
+        warn!(
+            user = %cfg.store_user,
+            group = %cfg.store_group,
+            "store group missing; admissions.db keeps the agent's own group"
+        );
     }
-    let uid = socket::resolve_user(&cfg.store_user);
-    let gid = socket::resolve_group(&cfg.store_group);
-    match (uid, gid) {
-        (Ok(uid), Ok(gid)) => Some(StoreOwner { uid, gid }),
-        (uid, gid) => {
-            warn!(
-                user = %cfg.store_user,
-                group = %cfg.store_group,
-                user_found = uid.is_ok(),
-                group_found = gid.is_ok(),
-                "store owner or group missing; admissions.db stays root-owned (the runner, as root, can still read it)"
-            );
-            gid.ok().map(|gid| StoreOwner { uid: 0, gid })
-        }
-    }
+    owner
+}
+
+/// The store group is required: a non-root agent (the server layout, D-030)
+/// keeps its own uid and chowns only the group, which it may because it is
+/// a supplementary member (F-16); root also sets the `permanu-agent` uid.
+fn store_owner_from(
+    euid: u32,
+    user: std::io::Result<u32>,
+    group: std::io::Result<u32>,
+) -> Option<StoreOwner> {
+    let gid = group.ok()?;
+    let uid = match (euid, user) {
+        (0, Ok(uid)) => uid,
+        (euid, _) => euid,
+    };
+    Some(StoreOwner { uid, gid })
 }
 
 /// Binds the configured socket and serves v2 until `shutdown` resolves.
@@ -592,6 +603,32 @@ mod tests {
             .get(ERROR_REASON_HEADER)
             .and_then(|v| v.to_str().ok())
             .map(str::to_string)
+    }
+
+    // Section 6.3 (F-16): the non-root agent still puts its store in group
+    // permanu-runner (it is a supplementary member); root chowns both.
+    #[test]
+    fn store_owner_uses_the_store_group_even_when_not_root() {
+        let missing = || Err(std::io::Error::other("missing"));
+        assert_eq!(
+            store_owner_from(1000, Ok(2000), Ok(3000)),
+            Some(StoreOwner {
+                uid: 1000,
+                gid: 3000
+            })
+        );
+        assert_eq!(
+            store_owner_from(0, Ok(2000), Ok(3000)),
+            Some(StoreOwner {
+                uid: 2000,
+                gid: 3000
+            })
+        );
+        assert_eq!(store_owner_from(1000, Ok(2000), missing()), None);
+        assert_eq!(
+            store_owner_from(0, missing(), Ok(3000)),
+            Some(StoreOwner { uid: 0, gid: 3000 })
+        );
     }
 
     #[test]

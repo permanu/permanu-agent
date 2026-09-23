@@ -915,3 +915,74 @@ fn a_deployment_id_already_admitted_is_refused() {
         .unwrap();
     fs::remove_dir_all(dir).unwrap();
 }
+
+fn egid() -> u32 {
+    // SAFETY: getegid has no preconditions.
+    unsafe { libc::getegid() }
+}
+
+fn owned_config(dir: &Path) -> StoreConfig {
+    StoreConfig {
+        path: dir.join("agent/admissions.db"),
+        owner: Some(StoreOwner {
+            // SAFETY: geteuid has no preconditions.
+            uid: unsafe { libc::geteuid() },
+            gid: egid(),
+        }),
+    }
+}
+
+// Section 6.3 (v1.0.3, QA_M1 F-16): the store and its -wal/-shm are 0640 in
+// the store group, in a 2750 (setgid) directory of that group.
+#[test]
+fn an_owned_store_uses_the_store_group_and_a_setgid_directory() {
+    let dir = temp_dir("store-owned");
+    let (store, _) = AdmissionStore::open(&owned_config(&dir), false, now()).unwrap();
+    seed_head(&store, USER_DEPLOY_HEAD_BEFORE);
+    store.secure_files().unwrap();
+    for suffix in ["", "-wal", "-shm"] {
+        let path = format!("{}{suffix}", store.path().display());
+        let meta = fs::metadata(&path).unwrap();
+        assert_eq!(meta.mode() & 0o7777, 0o640, "{path}");
+        assert_eq!(meta.gid(), egid(), "{path}");
+    }
+    let meta = fs::metadata(dir.join("agent")).unwrap();
+    assert_eq!(meta.mode() & 0o7777, 0o2750);
+    assert_eq!(meta.gid(), egid());
+    fs::remove_dir_all(dir).unwrap();
+}
+
+// Section 6.3: at start the agent repairs a wrong mode before it serves.
+#[test]
+fn reopening_repairs_the_store_and_directory_modes() {
+    let dir = temp_dir("store-repair");
+    let (store, _) = AdmissionStore::open(&owned_config(&dir), false, now()).unwrap();
+    seed_head(&store, USER_DEPLOY_HEAD_BEFORE);
+    drop(store);
+    fs::set_permissions(
+        dir.join("agent/admissions.db"),
+        fs::Permissions::from_mode(0o644),
+    )
+    .unwrap();
+    fs::set_permissions(
+        dir.join("agent/admissions.db-wal"),
+        fs::Permissions::from_mode(0o666),
+    )
+    .unwrap();
+    fs::set_permissions(dir.join("agent"), fs::Permissions::from_mode(0o755)).unwrap();
+    let (_store, report) = AdmissionStore::open(&owned_config(&dir), true, now()).unwrap();
+    assert!(!report.recreated);
+    for suffix in ["", "-wal"] {
+        let path = format!("{}{suffix}", dir.join("agent/admissions.db").display());
+        assert_eq!(
+            fs::metadata(&path).unwrap().mode() & 0o7777,
+            0o640,
+            "{path}"
+        );
+    }
+    assert_eq!(
+        fs::metadata(dir.join("agent")).unwrap().mode() & 0o7777,
+        0o2750
+    );
+    fs::remove_dir_all(dir).unwrap();
+}
