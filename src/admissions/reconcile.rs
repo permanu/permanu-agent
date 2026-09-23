@@ -86,49 +86,57 @@ fn rotated(path: &Path) -> PathBuf {
     PathBuf::from(name)
 }
 
+/// The complete lines of one log file (a torn last line cut off) and its
+/// inode, or `None` when it does not exist. A file that is not a regular file
+/// owned by `owner_uid` and not group/world-writable is not trusted.
+fn read_trusted(file: &Path, owner_uid: u32) -> Result<Option<(Vec<u8>, u64)>, String> {
+    let opened = OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_NOFOLLOW)
+        .open(file);
+    let mut handle = match opened {
+        Ok(handle) => handle,
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(err) => return Err(format!("{}: {err}", file.display())),
+    };
+    let Ok(meta) = handle.metadata() else {
+        return Err(format!("{}: cannot stat", file.display()));
+    };
+    if !meta.file_type().is_file() || meta.uid() != owner_uid || meta.mode() & 0o022 != 0 {
+        return Err(format!(
+            "{}: unexpected owner, mode or type",
+            file.display()
+        ));
+    }
+    let mut bytes = Vec::new();
+    if handle
+        .by_ref()
+        .take(MAX_LOG_BYTES)
+        .read_to_end(&mut bytes)
+        .is_err()
+    {
+        return Err(format!("{}: read failed", file.display()));
+    }
+    // A torn last line (crash before fsync) is ignored: nothing ran.
+    let complete = bytes.iter().rposition(|b| *b == b'\n').map_or(0, |i| i + 1);
+    bytes.truncate(complete);
+    Ok(Some((bytes, meta.ino())))
+}
+
 /// Reads `consumed.log.1` then `consumed.log`. A file that is not a regular
 /// file owned by `owner_uid` and not group/world-writable is not trusted.
 pub fn read_consumed_log(path: &Path, owner_uid: u32) -> LogRead {
     let mut read = LogRead::default();
     for (index, file) in [rotated(path), path.to_path_buf()].iter().enumerate() {
-        let opened = OpenOptions::new()
-            .read(true)
-            .custom_flags(libc::O_NOFOLLOW)
-            .open(file);
-        let mut handle = match opened {
-            Ok(handle) => handle,
-            Err(err) if err.kind() == std::io::ErrorKind::NotFound => continue,
-            Err(err) => {
-                read.problems.push(format!("{}: {err}", file.display()));
+        let (bytes, inode) = match read_trusted(file, owner_uid) {
+            Ok(Some(found)) => found,
+            Ok(None) => continue,
+            Err(problem) => {
+                read.problems.push(problem);
                 continue;
             }
         };
-        let Ok(meta) = handle.metadata() else {
-            read.problems
-                .push(format!("{}: cannot stat", file.display()));
-            continue;
-        };
-        if !meta.file_type().is_file() || meta.uid() != owner_uid || meta.mode() & 0o022 != 0 {
-            read.problems.push(format!(
-                "{}: unexpected owner, mode or type",
-                file.display()
-            ));
-            continue;
-        }
-        let mut bytes = Vec::new();
-        if handle
-            .by_ref()
-            .take(MAX_LOG_BYTES)
-            .read_to_end(&mut bytes)
-            .is_err()
-        {
-            read.problems
-                .push(format!("{}: read failed", file.display()));
-            continue;
-        }
-        // A torn last line (crash before fsync) is ignored: nothing ran.
-        let complete = bytes.iter().rposition(|b| *b == b'\n').map_or(0, |i| i + 1);
-        for raw in bytes[..complete].split(|b| *b == b'\n') {
+        for raw in bytes.split(|b| *b == b'\n') {
             if raw.is_empty() {
                 continue;
             }
@@ -138,11 +146,33 @@ pub fn read_consumed_log(path: &Path, owner_uid: u32) -> LogRead {
             }
         }
         if index == 1 {
-            read.inode = Some(meta.ino());
-            read.offset = complete as u64;
+            read.inode = Some(inode);
+            read.offset = bytes.len() as u64;
         }
     }
     read
+}
+
+/// The `run_result` lines of `op` (v1.0.7, section 14.5) in log order, as
+/// JSON objects, read with the same checks as [`read_consumed_log`]. The
+/// runner writes a job's result fields (a backup's id, digest and size) only
+/// there; untrusted, malformed and other lines are skipped.
+pub fn run_results(path: &Path, owner_uid: u32, op: &str) -> Vec<serde_json::Value> {
+    let mut found = Vec::new();
+    for file in [rotated(path), path.to_path_buf()] {
+        let Ok(Some((bytes, _))) = read_trusted(&file, owner_uid) else {
+            continue;
+        };
+        for raw in bytes.split(|b| *b == b'\n') {
+            let Ok(value) = serde_json::from_slice::<serde_json::Value>(raw) else {
+                continue;
+            };
+            if value["v"] == 1 && value["event"] == "run_result" && value["op"] == op {
+                found.push(value);
+            }
+        }
+    }
+    found
 }
 
 /// The events that end or advance an admission action (section 14.5).

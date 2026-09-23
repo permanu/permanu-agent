@@ -30,7 +30,7 @@ mod tests;
 
 pub use admit::{Admission, AdmitInput, INPUT_KINDS};
 pub use query::{execution_deadline, ActionRecord, AdmissionRecord};
-pub use reconcile::{read_consumed_log, ReconcileEffect};
+pub use reconcile::{read_consumed_log, run_results, ReconcileEffect};
 
 use std::fs::{self, OpenOptions};
 use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt, PermissionsExt};

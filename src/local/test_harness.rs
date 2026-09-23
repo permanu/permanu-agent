@@ -1056,6 +1056,11 @@ impl Harness {
                             host: "test".to_owned(),
                         },
                         server_id: String::new(),
+                        consumed_log: Some(crate::local::sched::ConsumedLogRef {
+                            path: dir.join("runner/consumed.log"),
+                            // SAFETY: geteuid has no preconditions.
+                            owner_uid: unsafe { libc::geteuid() },
+                        }),
                     },
                     age_recipient.clone(),
                     Arc::new(crate::local::sched::alerts::NoSource),

@@ -172,6 +172,11 @@ impl Fixture {
             clock: clock.clone(),
             logs: AgentLogs::default(),
             server_id: "01a0cdb5-3500-70a1-8000-000000000001".to_owned(),
+            consumed_log: Some(super::ConsumedLogRef {
+                path: dir.join("consumed.log"),
+                // SAFETY: geteuid has no preconditions.
+                owner_uid: unsafe { libc::geteuid() },
+            }),
         };
         Self {
             dir,
@@ -194,6 +199,21 @@ impl Fixture {
             outcome,
             &crate::signed_plan::text::format_timestamp(self.clock.now()),
         )
+    }
+
+    /// Appends one line to the runner's consumed log (mode 0640, like the
+    /// runner's).
+    pub fn append_consumed(&self, line: &Value) {
+        use std::io::Write;
+        use std::os::unix::fs::PermissionsExt;
+        let path = self.dir.join("consumed.log");
+        let mut file = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&path)
+            .unwrap();
+        writeln!(file, "{line}").unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o640)).unwrap();
     }
 
     /// Ends every action of `plan_id` now.

@@ -132,6 +132,55 @@ async fn a_scheduled_backup_records_its_artifact_then_prunes_under_the_same_bind
     );
 }
 
+/// A manual `backup.run` is run by the plan executor; the runner writes the
+/// backup's id, digest and size only on its `run_result` line (section 14.5),
+/// so the artifact comes from that line, and only a succeeded line of the
+/// same action counts.
+#[tokio::test]
+async fn a_manual_backup_records_its_artifact_from_the_runners_run_result_line() {
+    let f = Fixture::new("backup-manual", "2026-09-23T02:00:00Z");
+    f.record(1, &[policy(PG, "0 3 * * *", Value::Null)], "succeeded");
+    let s = scheduler(&f);
+    let plan = f.record(
+        2,
+        &[json!({"kind": "backup.run", "params": {"resource_id": PG}})],
+        "succeeded",
+    );
+    let line = |index: u32, outcome: &str, backup: &str| {
+        json!({"v": 1, "seq": 1, "at": "2026-09-23T02:00:01Z", "event": "run_result",
+               "plan_id": plan, "plan_digest_hex": format!("{:064x}", 2), "action_index": index,
+               "op": "backup_run", "scheduled_for": null, "attempt": 1, "outcome": outcome,
+               "backup_id": backup, "backup_digest_hex": "cd".repeat(32), "size_bytes": 4321,
+               "resource_id": PG, "destination_ref": "local", "trigger": "manual"})
+    };
+    f.append_consumed(&line(1, "succeeded", BACKUP_A));
+    f.append_consumed(&line(0, "failed", BACKUP_A));
+    f.append_consumed(&line(0, "succeeded", BACKUP_B));
+    tick_at(&f, &s, "2026-09-23T02:00:05Z").await;
+    let runs = backup_runs(&f);
+    assert_eq!(runs.len(), 1);
+    assert_eq!(runs[0].status, BackupRunStatus::Succeeded as i32);
+    assert_eq!(runs[0].artifact_id, BACKUP_B);
+    assert_eq!(runs[0].content_digest_hex, "cd".repeat(32));
+    assert_eq!(runs[0].size_bytes, 4321);
+    let artifact: BackupArtifact = f
+        .deps
+        .ops
+        .get(RecordKind::Artifact, BACKUP_B)
+        .expect("the manual backup's artifact")
+        .decode()
+        .unwrap();
+    assert_eq!(
+        artifact.location,
+        format!(
+            "/var/lib/permanu/backups/permanu/v1/{}/{PG}/{BACKUP_B}.age",
+            f.deps.server_id
+        )
+    );
+    assert_eq!(artifact.size_bytes, 4321);
+    assert!(f.deps.ops.get(RecordKind::Artifact, BACKUP_A).is_none());
+}
+
 /// The real runner's answers (jobs::bound::finish): a failed run is
 /// `ok: false` with `run_outcome`, and verify `checks` is an object of
 /// booleans.

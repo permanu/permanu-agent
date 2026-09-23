@@ -66,6 +66,16 @@ pub struct Deps {
     pub clock: Arc<dyn Clock>,
     pub logs: AgentLogs,
     pub server_id: String,
+    /// The runner's consumed log, read only for the `run_result` lines of
+    /// manual runs (section 14.5); `None` reads nothing.
+    pub consumed_log: Option<ConsumedLogRef>,
+}
+
+/// Where the runner's consumed log is and who must own it.
+#[derive(Debug, Clone)]
+pub struct ConsumedLogRef {
+    pub path: std::path::PathBuf,
+    pub owner_uid: u32,
 }
 
 /// RFC 3339 of Unix seconds.

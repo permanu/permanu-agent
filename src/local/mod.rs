@@ -921,6 +921,10 @@ fn start_schedulers(
             host: hostname(),
         },
         server_id,
+        consumed_log: Some(sched::ConsumedLogRef {
+            path: core.consumed_log.clone(),
+            owner_uid: core.consumed_log_owner,
+        }),
     };
     Some(sched::Schedulers::new(
         deps,

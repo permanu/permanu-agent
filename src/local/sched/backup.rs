@@ -1063,6 +1063,9 @@ impl BackupScheduler {
                 if !action.outcome.is_empty() {
                     run.finished_at = finished.or(Some(pts(now)));
                 }
+                if action.outcome == "succeeded" {
+                    self.record_manual_artifact(&action, &mut run, now);
+                }
                 self.record_run(&run, &slot);
             } else {
                 let existing = self.manual_row(RecordKind::Verification, &resource, &slot);
@@ -1094,6 +1097,43 @@ impl BackupScheduler {
                 }
                 self.record_verification(&verification, &slot);
             }
+        }
+    }
+
+    /// Records the artifact of a succeeded manual `backup.run` from the
+    /// runner's `run_result` line of that action (the only place the runner
+    /// writes the backup's id, digest and size).
+    fn record_manual_artifact(&self, action: &AdmittedAction, run: &mut BackupRun, now: i64) {
+        let Some(consumed) = &self.deps.consumed_log else {
+            return;
+        };
+        let lines =
+            crate::admissions::run_results(&consumed.path, consumed.owner_uid, "backup_run");
+        let Some(line) = lines.iter().rev().find(|line| {
+            line["plan_id"] == action.plan_id.as_str()
+                && line["plan_digest_hex"] == action.plan_digest_hex.as_str()
+                && line["action_index"].as_u64() == u64::try_from(action.action_index).ok()
+                && line["outcome"] == "succeeded"
+        }) else {
+            return;
+        };
+        let backup_id = line["backup_id"].as_str().unwrap_or_default();
+        if !crate::signed_plan::text::uuid7(backup_id) {
+            return;
+        }
+        run.artifact_id = backup_id.to_owned();
+        run.content_digest_hex = line["backup_digest_hex"]
+            .as_str()
+            .filter(|digest| crate::signed_plan::text::hex64(digest))
+            .unwrap_or_default()
+            .to_owned();
+        run.size_bytes = line["size_bytes"].as_u64().unwrap_or_default();
+        let policy = self.state().defs.policies.get(&run.policy_id).cloned();
+        match policy {
+            Some(policy) => self.record_artifact(&policy, run, backup_id, now),
+            None => warn!(
+                "manual backup of a resource without a recorded policy; artifact not recorded"
+            ),
         }
     }
 
