@@ -487,5 +487,19 @@ async fn an_update_needs_its_staged_set_and_verifies_it_first() {
         .map(|(op, _)| op)
         .collect();
     assert_eq!(ops, vec!["stage_artifact_verify", "update_agent"]);
+    // v1.1.3 (D-061): the set is deleted once the install succeeded.
+    let digest = case["action"]["params"]["bundle_manifest_digest_hex"]
+        .as_str()
+        .unwrap();
+    let staging = h.core.staging.get().unwrap().clone();
+    for _ in 0..200 {
+        h.core.reconcile_once().await;
+        if staging.sets().is_empty() {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    }
+    assert!(staging.sets().is_empty());
+    assert!(!h.dir.join("staging").join(digest).exists());
     h.stop().await;
 }

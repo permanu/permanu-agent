@@ -857,6 +857,17 @@ impl ChangeCore {
         action: &ActionRecord,
         outcome: &str,
     ) {
+        if outcome == "succeeded"
+            && matches!(action.kind.as_str(), "agent.update" | "component.update")
+        {
+            let params = &plan["actions"][action.action_index as usize]["params"];
+            if let (Some(staging), Some(digest)) = (
+                self.staging.get(),
+                params["bundle_manifest_digest_hex"].as_str(),
+            ) {
+                staging.consumed(digest);
+            }
+        }
         let (failure_code, error, error_code) = locked(&self.failures)
             .get(&(record.plan_id.clone(), action.action_index))
             .cloned()

@@ -499,6 +499,31 @@ impl Artifacts {
         })
     }
 
+    /// v1.1.3 (D-061, agent-protocol.md 13): an `agent.update` /
+    /// `component.update` installed from this set ended `succeeded`, so the
+    /// set is deleted at once (a failed or cancelled install keeps it until
+    /// its 24 h expiry for a retry).
+    pub fn consumed(&self, bundle_manifest_digest_hex: &str) {
+        if !text::hex64(bundle_manifest_digest_hex) {
+            return;
+        }
+        for row in self.deps.ops.list(
+            RecordKind::StagedSet,
+            &Listing {
+                limit: 1_000,
+                ..Default::default()
+            },
+        ) {
+            let same = row
+                .decode::<StagedArtifactSet>()
+                .is_some_and(|set| set.bundle_manifest_digest_hex == bundle_manifest_digest_hex);
+            if same {
+                self.deps.ops.remove(RecordKind::StagedSet, &row.id);
+            }
+        }
+        let _ = fs::remove_dir_all(self.deps.root.join(bundle_manifest_digest_hex));
+    }
+
     /// Drops expired sets and all but the newest two.
     fn prune(&self) {
         let now = self.now();
