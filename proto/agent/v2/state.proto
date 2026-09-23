@@ -30,6 +30,9 @@ message ListContainersRequest {
   PageRequest page = 3;
 }
 
+// Ids come from the Docker labels Permanu sets on every container it starts
+// (agent-protocol.md 3.1): permanu.project_id, permanu.environment_id,
+// permanu.service_id, permanu.deployment_id and permanu.spec_digest_hex.
 message Container {
   string container_id = 1;
   string name = 2;
