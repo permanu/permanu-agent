@@ -1,0 +1,24 @@
+# gitleaks config for permanu-agent. Extends the default rules; allowlists only public signed-plan test vectors.
+title = "permanu-agent secret scanning"
+
+[extend]
+useDefault = true
+
+[[allowlists]]
+description = "Signed-plan TEST ONLY key material vendored from the specs repo (public by design; production verifiers reject these key ids, signed-plan.md section 7.2)."
+targetRules = ["private-key", "generic-api-key"]
+paths = [
+  '''(?:^|/)tests/vectors/signed-plan/keys\.json$''',
+  '''(?:^|/)tests/vectors/signed-plan/trusted-keys\.json$''',
+]
+
+[[allowlists]]
+description = "SHA-256 *_digest_hex content digests in signed-plan test vectors (not credentials)."
+targetRules = ["generic-api-key"]
+condition = "AND"
+regexTarget = "match"
+regexes = ['''_digest_hex"\s*:\s*"[0-9a-f]{64}"''']
+paths = [
+  '''(?:^|/)tests/vectors/signed-plan/plans\.json$''',
+  '''(?:^|/)tests/vectors/signed-plan/policy-cases\.json$''',
+]
