@@ -813,6 +813,7 @@ pub async fn run(
             Err(err) => warn!(error = %err, "webhook listener not bound"),
         }
         scheduler_tasks.push(hooks.spawn_sweeper());
+        scheduler_tasks.push(hooks.spawn_rule_watch());
     }
     let artifacts = ops
         .clone()

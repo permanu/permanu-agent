@@ -273,12 +273,24 @@ pub fn definition_preconditions(conn: &Connection, plan: &Value) -> Result<(), P
                     return Err(PlanCode::ExecPrecondition);
                 }
             }
+            // v1.0.11 (D-061): a restore may target a service an earlier
+            // deploy of this plan creates; the source must exist here.
+            "restore" => {
+                let target = &params["resource_id"];
+                let deployed_here = actions
+                    .iter()
+                    .take_while(|a| !std::ptr::eq(*a, action))
+                    .any(|a| a["kind"] == "deploy" && a["params"]["service_id"] == *target);
+                let source = params.get("source_resource_id").unwrap_or(target);
+                if !(deployed_here || has_spec(target)?) || !has_spec(source)? {
+                    return Err(PlanCode::ExecPrecondition);
+                }
+            }
             "backup.run"
             | "backup.verify"
             | "backup.delete"
             | "backup.policy.set"
-            | "backup.policy.delete"
-            | "restore" => {
+            | "backup.policy.delete" => {
                 if !has_spec(&params["resource_id"])? {
                     return Err(PlanCode::ExecPrecondition);
                 }
@@ -502,6 +514,46 @@ pub(crate) mod tests {
         assert_eq!(
             definition_preconditions(&store.lock(), &delete("other")),
             Ok(())
+        );
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    /// v1.0.11 (D-061): a restore into a service the same plan deploys
+    /// first needs no admitted spec of the target, but its source must have
+    /// one here.
+    #[test]
+    fn a_restore_into_a_new_service_needs_the_source_and_an_earlier_deploy() {
+        let (dir, store) = open("definitions-restore-new");
+        let scope = (PROJECT, "production", ENV_ID);
+        let pg = "01a0cdb5-3500-70c1-8000-000000000011";
+        let fresh = "01a0cdb5-3500-70c1-8000-000000000012";
+        let backup = "01a0cdb5-3500-70d3-8000-000000000001";
+        let deploy_plan = record(
+            &store,
+            1,
+            scope,
+            &[json!({"kind": "deploy", "params": {}})],
+            "succeeded",
+        );
+        seed_spec(&store, &deploy_plan, pg);
+        let deploy_new = json!({"kind": "deploy", "params": {"service_id": fresh}});
+        let restore = |source: &str| {
+            json!({"kind": "restore", "params": {"resource_id": fresh, "backup_id": backup,
+                "backup_digest_hex": "00".repeat(32), "origin": "server",
+                "source_resource_id": source}})
+        };
+        let check =
+            |actions: Value| definition_preconditions(&store.lock(), &json!({"actions": actions}));
+        assert_eq!(check(json!([deploy_new.clone(), restore(pg)])), Ok(()));
+        assert_eq!(
+            check(json!([restore(pg)])),
+            Err(PlanCode::ExecPrecondition),
+            "no deploy of the target"
+        );
+        assert_eq!(
+            check(json!([deploy_new, restore(fresh)])),
+            Err(PlanCode::ExecPrecondition),
+            "the source has no spec here"
         );
         std::fs::remove_dir_all(dir).unwrap();
     }

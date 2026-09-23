@@ -171,6 +171,20 @@ impl Hooks {
         self.buildkit_ok.load(std::sync::atomic::Ordering::SeqCst)
     }
 
+    /// `WebhookQueueStatus.webhook_host` (v2.1.3, D-061): the latest
+    /// `webhook.host.set` whose action succeeded on this server; `""` before
+    /// one.
+    pub fn webhook_host(&self) -> String {
+        self.deps
+            .store
+            .admitted_actions(&["webhook.host.set"])
+            .unwrap_or_default()
+            .into_iter()
+            .find(|action| action.succeeded())
+            .and_then(|action| action.params["webhook_host"].as_str().map(str::to_owned))
+            .unwrap_or_default()
+    }
+
     /// `WebhookQueueStatus.pending`.
     pub fn pending(&self) -> u32 {
         self.deps.ops.count(
@@ -376,6 +390,35 @@ impl Hooks {
             }
             Err(err) => tracing::warn!(error = %err, "delivery expiry failed"),
         }
+    }
+
+    /// v1.1.4 (D-062): re-matches pending deliveries whenever the executor
+    /// applies an admitted `rule.create` (its `TrustChanged` event). After a
+    /// missed event every active rule is re-matched (idempotent: only
+    /// `PENDING` deliveries are touched).
+    pub fn spawn_rule_watch(self: &Arc<Self>) -> JoinHandle<()> {
+        let hooks = self.clone();
+        let mut live = self.deps.events.live();
+        tokio::spawn(async move {
+            loop {
+                match live.recv().await {
+                    Ok(event) => {
+                        if let Some(event::Payload::TrustChanged(change)) = &event.payload {
+                            if change.change == "rule.create" {
+                                hooks.rule_admitted(&change.subject_id);
+                            }
+                        }
+                    }
+                    Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {
+                        let now = hooks.now();
+                        for rule in hooks.deps.store.rules(false, now).unwrap_or_default() {
+                            hooks.rule_admitted(&rule.rule_id);
+                        }
+                    }
+                    Err(tokio::sync::broadcast::error::RecvError::Closed) => return,
+                }
+            }
+        })
     }
 
     /// The sweeper loop.

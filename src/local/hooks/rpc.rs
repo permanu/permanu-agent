@@ -193,6 +193,7 @@ impl WebhookService for WebhookSvc {
                 .rejected_since(now - 86_400)
                 .unwrap_or_default(),
             builds_queued: hooks.builds_queued(),
+            webhook_host: hooks.webhook_host(),
         }))
     }
 

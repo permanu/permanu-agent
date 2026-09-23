@@ -1361,10 +1361,14 @@ async fn cancel_in_prepare(h: &Harness, owner: &TestSigner) -> (OperationRef, Op
     assert_eq!(cancel.actions, vec!["operation.cancel"]);
     wait_for_state(h, &cancel.id, OperationState::Succeeded).await;
     wait_for_state(h, &deploy.operation_id, OperationState::Cancelled).await;
-    assert!(h
-        .runner
-        .ops_for(&cancel.plan_id)
-        .contains(&("cancel_execution".to_owned(), 0)));
+    // v1.0.11 (D-061): cancel_running always runs first.
+    assert_eq!(
+        h.runner.ops_for(&cancel.plan_id),
+        vec![
+            ("cancel_running".to_owned(), 0),
+            ("cancel_execution".to_owned(), 0)
+        ]
+    );
     // The deploy stopped before its next step: no health check, no rollback.
     assert_eq!(
         h.runner.ops_for(&deploy.plan_id),
@@ -1627,6 +1631,64 @@ async fn standing_rules_list_after_rule_create() {
             .into_bytes()
     );
     assert!(!rule.revoked);
+    h.stop().await;
+}
+
+/// v1.0.11 (D-061): `rule.revoke` is bound through the runner like every
+/// definition kind. Admission only stops the rule from triggering; the rule
+/// is marked revoked once the runner's `result` line is reconciled.
+#[tokio::test]
+async fn rule_revoke_is_bound_and_recorded_from_the_runner_result() {
+    let Some(owner) = TestSigner::load("owner") else {
+        eprintln!("skipped: docs keys.json not found");
+        return;
+    };
+    let trust = serde_json::to_string(&vector("policy-cases")["context"]["trusted_keys"]).unwrap();
+    let h = Harness::start("rule-revoke", Some(&trust)).await;
+    let mut create = plan_vector("rule-create")["plan"].clone();
+    create["base"]["heads"][SERVER_A] = Value::String(GENESIS_HEAD.to_owned());
+    let created = submit_ok(
+        &h,
+        SignedPlan {
+            envelope_json: owner.envelope(&create).into_bytes(),
+            ..Default::default()
+        },
+    )
+    .await;
+    wait_for_state(&h, &created.operation_id, OperationState::Succeeded).await;
+    let rule = &create["actions"][0]["params"]["rule"];
+    let mut revoke = create.clone();
+    revoke["id"] = json!("01a0cdb5-3500-7001-8000-0000000000e1");
+    revoke["nonce"] = json!("RRRRRRRRRRRRRRRRRRRRRA");
+    revoke["base"]["heads"][SERVER_A] = json!(next_head(GENESIS_HEAD, &created.plan_digest_hex));
+    revoke["actions"] = json!([{"kind": "rule.revoke", "params": {
+        "rule_id": rule["id"],
+        "rule_digest_hex": vector("plans")["extras"]["rule_digest_hex"]}}]);
+    let revoked = submit_ok(
+        &h,
+        SignedPlan {
+            envelope_json: owner.envelope(&revoke).into_bytes(),
+            ..Default::default()
+        },
+    )
+    .await;
+    for _ in 0..200 {
+        if !h.runner.consumed_for(&revoked.plan_id).is_empty() {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    assert_eq!(h.runner.consumed_for(&revoked.plan_id), vec![0]);
+    // Admitted and bound, not yet recorded: no longer triggers, not revoked.
+    assert!(h.core.store.rules(false, 0).unwrap().is_empty());
+    let all = h.core.store.rules(true, 0).unwrap();
+    assert_eq!(all.len(), 1);
+    assert_eq!(all[0].revoked_at, None);
+    h.runner
+        .result(&revoked.plan_id, &revoked.plan_digest_hex, 0, "succeeded");
+    wait_for_state(&h, &revoked.operation_id, OperationState::Succeeded).await;
+    let all = h.core.store.rules(true, 0).unwrap();
+    assert!(all[0].revoked_at.is_some());
     h.stop().await;
 }
 

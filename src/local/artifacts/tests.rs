@@ -37,7 +37,7 @@ const PLAN_ONLY_CASES: &[&str] = &[
 fn the_commit_check_agrees_with_the_contract_vectors() {
     let cases = vector("artifact-cases");
     let cases = cases["cases"].as_array().unwrap();
-    assert_eq!(cases.len(), 18);
+    assert_eq!(cases.len(), 20);
     for case in cases {
         let name = case["name"].as_str().unwrap();
         let arch = case["arch"].as_str().unwrap();

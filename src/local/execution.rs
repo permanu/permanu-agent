@@ -128,6 +128,9 @@ const DEFINITION_KINDS: &[&str] = &[
     "env.protection.set",
     "repo.credential.set",
     "repo.credential.delete",
+    // v1.0.11 (D-061): bound like every definition kind; the agent records
+    // the revocation from the runner's result line.
+    "rule.revoke",
 ];
 
 /// Why an `alert.rule.*` action cannot be applied (its signed `spec` is
@@ -142,11 +145,14 @@ fn alert_spec_error(kind: &str, params: &Value) -> Option<String> {
 
 fn exec_of(kind: &str, params: &Value) -> Exec {
     match kind {
-        "server.add" | "rule.create" | "rule.revoke" | "service.elevate" => Exec::Agent,
+        "server.add" | "rule.create" | "service.elevate" => Exec::Agent,
         "deploy" => Exec::Deploy,
         "rollback" => Exec::Ops(&["rollback_release"]),
         "restart" => Exec::Ops(&["restart_release"]),
-        "operation.cancel" => Exec::Ops(&["cancel_execution"]),
+        // v1.0.11 (D-061): every cancel stops running work first.
+        "operation.cancel" => Exec::Ops(&["cancel_running", "cancel_execution"]),
+        // v1.0.11 (D-061): the Dwaar webhook route.
+        "webhook.host.set" => Exec::Ops(&["set_webhook_route"]),
         // v1.0.4 (D-040): agent.update runs its own op; install_artifact
         // serves component.update only. v1.0.7 (D-051): the runner's
         // stage_artifact_verify copies and verifies the staged set first.
@@ -1274,6 +1280,12 @@ impl ChangeCore {
         locked(&self.held)
             .entry(record.plan_id.clone())
             .or_default();
+        if !done
+            .iter()
+            .any(|d| d == "cancel_running" || d == "cancel_execution")
+        {
+            self.run_cancel_running(record, action).await;
+        }
         let mut wire = None;
         if !done.iter().any(|d| d == "cancel_execution") {
             self.step(
@@ -1359,6 +1371,70 @@ impl ChangeCore {
         );
         info!(canceller = %record.plan_id, target = %target, "operation cancelled");
         Outcome::succeeded()
+    }
+
+    /// v1.0.9/v1.0.11 (D-058, D-061): `cancel_running`, before
+    /// `cancel_execution` of the same action, stops the cancelled plan's
+    /// in-flight restart, cron run, backup, verification or server build;
+    /// each stopped op is logged. A refusal is logged and the cancel goes
+    /// on: `cancel_execution` still stops the plan before its next step.
+    async fn run_cancel_running(&self, record: &AdmissionRecord, action: &ActionRecord) {
+        self.step(
+            record,
+            Some(action),
+            "cancel_running",
+            OperationState::Running,
+            "",
+            "",
+        );
+        match runner::run_op(
+            self.runner.as_ref(),
+            "cancel_running",
+            &plan_ref(record, action),
+            self.timing.op_timeout,
+        )
+        .await
+        {
+            Ok(result) => {
+                for line in &result.progress {
+                    self.log_line(record, action, "cancel_running", line);
+                }
+                for stopped in result.result["stopped"].as_array().into_iter().flatten() {
+                    let text = |field: &str| stopped[field].as_str().unwrap_or("-").to_owned();
+                    self.log_line(
+                        record,
+                        action,
+                        "cancel_running",
+                        &format!(
+                            "stopped {} ({} binding): {}",
+                            text("op"),
+                            text("binding"),
+                            text("outcome")
+                        ),
+                    );
+                }
+                self.step(
+                    record,
+                    Some(action),
+                    "cancel_running",
+                    OperationState::Succeeded,
+                    "",
+                    "",
+                );
+            }
+            Err(failure) => {
+                warn!(canceller = %record.plan_id, error = %failure.message, "cancel_running refused");
+                self.step_coded(
+                    record,
+                    Some(action),
+                    "cancel_running",
+                    OperationState::Failed,
+                    &describe(&failure),
+                    "",
+                    &failure.code,
+                );
+            }
+        }
     }
 
     /// Whether the runner's `result` line ended this action `succeeded`.
@@ -1601,11 +1677,8 @@ impl ChangeCore {
         if let Some(error) = alert_spec_error(&action.kind, params) {
             return Outcome::with("failed", "", format!("invalid alert rule spec: {error}"));
         }
-        if matches!(action.kind.as_str(), "rule.create" | "rule.revoke") {
-            let subject = params["rule"]["id"]
-                .as_str()
-                .or(params["rule_id"].as_str())
-                .unwrap_or_default();
+        if action.kind == "rule.create" {
+            let subject = params["rule"]["id"].as_str().unwrap_or_default();
             self.trust_changed(&action.kind, subject);
         }
         Outcome::succeeded()
@@ -1682,6 +1755,13 @@ impl ChangeCore {
                     return;
                 }
                 if let Some((record, plan, action)) = self.action_context(&plan_id, action_index) {
+                    if action.kind == "rule.revoke" && outcome == "succeeded" {
+                        let params = &plan["actions"][action_index as usize]["params"];
+                        self.trust_changed(
+                            "rule.revoke",
+                            params["rule_id"].as_str().unwrap_or_default(),
+                        );
+                    }
                     if let Some(cleanup) = cleanup {
                         self.cancel_cleanup_step(&record, &action, &cleanup);
                     }
@@ -1861,9 +1941,14 @@ mod tests {
         assert_eq!(exec_of("deploy", &none), Exec::Deploy);
         assert_eq!(exec_of("rollback", &none), Exec::Ops(&["rollback_release"]));
         assert_eq!(exec_of("restart", &none), Exec::Ops(&["restart_release"]));
+        // v1.0.11 (D-061): every operation.cancel runs cancel_running first.
         assert_eq!(
             exec_of("operation.cancel", &none),
-            Exec::Ops(&["cancel_execution"])
+            Exec::Ops(&["cancel_running", "cancel_execution"])
+        );
+        assert_eq!(
+            exec_of("webhook.host.set", &none),
+            Exec::Ops(&["set_webhook_route"])
         );
         // v1.0.4 (D-040): agent.update has its own op; v1.0.7 (D-051):
         // stage_artifact_verify is the first op of both updates.
@@ -1888,12 +1973,7 @@ mod tests {
         for kind in INPUT_KINDS {
             assert_eq!(exec_of(kind, &none), Exec::Input, "{kind}");
         }
-        for kind in [
-            "server.add",
-            "rule.create",
-            "rule.revoke",
-            "service.elevate",
-        ] {
+        for kind in ["server.add", "rule.create", "service.elevate"] {
             assert_eq!(exec_of(kind, &none), Exec::Agent, "{kind}");
         }
         // v1.0.7 definition kinds: bind_plan alone; the runner records them.
@@ -1911,6 +1991,8 @@ mod tests {
             "env.protection.set",
             "repo.credential.set",
             "repo.credential.delete",
+            // v1.0.11 (D-061): bound like every definition kind.
+            "rule.revoke",
         ] {
             assert_eq!(exec_of(kind, &none), Exec::Definition, "{kind}");
         }

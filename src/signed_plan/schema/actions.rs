@@ -265,6 +265,28 @@ fn nonce(value: &Value) -> bool {
         .is_some_and(|bytes| bytes.len() == 16)
 }
 
+/// One action's params: the kind's fixed members, plus (v1.0.11, D-061)
+/// any optional member it carries, each checked against its own shape
+/// (never null; absent keeps the v1.0.10 meaning).
+fn params_ok(kind: &str, params: Option<&Value>) -> bool {
+    let (Some(fixed), Some(value)) = (params_of(kind, params), params) else {
+        return false;
+    };
+    let optional = super::actions_m2::optional_params_for(kind);
+    let Some(map) = value.as_object() else {
+        return false;
+    };
+    let mut base = map.clone();
+    for (name, shape) in optional {
+        if let Some(member) = base.remove(*name) {
+            if !check(shape, &member) {
+                return false;
+            }
+        }
+    }
+    check(&Shape::Object(fixed), &Value::Object(base))
+}
+
 fn actions(value: &Value) -> bool {
     value.as_array().is_some_and(|items| {
         (1..=64).contains(&items.len())
@@ -274,11 +296,7 @@ fn actions(value: &Value) -> bool {
                         && map
                             .get("kind")
                             .and_then(Value::as_str)
-                            .and_then(|kind| params_of(kind, map.get("params")))
-                            .is_some_and(|params| {
-                                map.get("params")
-                                    .is_some_and(|value| check(&Shape::Object(params), value))
-                            })
+                            .is_some_and(|kind| params_ok(kind, map.get("params")))
                 })
             })
     })
@@ -361,7 +379,10 @@ fn plan_rules_hold(plan: &Value) -> bool {
     if distinct.len() != deployment_ids.len() {
         return false;
     }
-    actions.iter().all(|action| action_rules_hold(plan, action))
+    actions
+        .iter()
+        .enumerate()
+        .all(|(index, action)| action_rules_hold(plan, index, action))
         && super::super::jcs::canonicalize(plan).is_some()
 }
 
@@ -381,7 +402,7 @@ fn scope_rules_hold(plan: &Value, kinds: &[&str]) -> bool {
     }
 }
 
-fn action_rules_hold(plan: &Value, action: &Value) -> bool {
+fn action_rules_hold(plan: &Value, index: usize, action: &Value) -> bool {
     let params = &action["params"];
     let single_target = |server: &Value| {
         plan["targets"]
@@ -426,6 +447,7 @@ fn action_rules_hold(plan: &Value, action: &Value) -> bool {
                 .any(|keep| params[*keep].as_i64().unwrap_or(0) > 0)
                 && super::actions_m2::action_rules_hold(plan, "backup.policy.set", params)
         }
+        "restore" => super::actions_m2::restore_shape(plan, index, params),
         kind => super::actions_m2::action_rules_hold(plan, kind, params),
     }
 }

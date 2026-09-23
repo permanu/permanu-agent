@@ -55,18 +55,89 @@ fn endpoint(value: &str) -> bool {
         })
 }
 
-/// `([A-Za-z0-9._-]{1,64}(/[A-Za-z0-9._-]{1,64}){0,7})?`
+/// `([A-Za-z0-9._-]{1,64}(/[A-Za-z0-9._-]{1,64}){0,7})?`; v1.0.11 (D-061):
+/// no `.` or `..` segment, so an object key never leaves the prefix.
 fn prefix(value: &str) -> bool {
     value.is_empty() || {
         let parts: Vec<&str> = value.split('/').collect();
         parts.len() <= 8
             && parts.iter().all(|part| {
                 (1..=64).contains(&part.len())
+                    && !matches!(*part, "." | "..")
                     && part
                         .bytes()
                         .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'_' | b'-'))
             })
     }
+}
+
+/// `permanu/v1/<uuid7>/<uuid7>/<uuid7>.age` (v1.0.11, D-061): where an
+/// imported restore's object is, below the destination's prefix.
+fn object_key(value: &str) -> bool {
+    let Some(rest) = value.strip_prefix("permanu/v1/") else {
+        return false;
+    };
+    let parts: Vec<&str> = rest.split('/').collect();
+    parts.len() == 3
+        && text::uuid7(parts[0])
+        && text::uuid7(parts[1])
+        && parts[2].strip_suffix(".age").is_some_and(text::uuid7)
+}
+
+const DB_CREDENTIALS: Shape = Shape::Object(&[
+    ("user", Shape::Pattern(text::env_name)),
+    ("password", Shape::Pattern(text::env_name)),
+    ("database", Shape::Pattern(text::env_name)),
+]);
+const UUID7: Shape = Shape::Pattern(text::uuid7);
+
+/// v1.0.11 (D-061): members an action MAY carry, never null (reference
+/// `OPTIONAL_PARAMS`).
+pub(super) fn optional_params_for(kind: &str) -> &'static [(&'static str, Shape)] {
+    match kind {
+        "restore" => &[
+            ("source_resource_id", UUID7),
+            ("destination_ref", REF),
+            ("object_key", Shape::Pattern(object_key)),
+        ],
+        "backup.policy.set" => &[
+            ("db_credentials_ref", DB_CREDENTIALS),
+            ("channel_ids", Shape::Set(&UUID7, 0, 16)),
+        ],
+        _ => &[],
+    }
+}
+
+/// v1.0.11 (D-061, reference `_restore_shape`): an imported restore signs
+/// its location and never `source_resource_id`; a server restore signs no
+/// location; a restore into another service needs a `deploy` of that
+/// service earlier in the same plan.
+pub(super) fn restore_shape(plan: &Value, index: usize, params: &Value) -> bool {
+    let located = params.get("destination_ref").is_some() || params.get("object_key").is_some();
+    if params["origin"] == "imported" {
+        let key_names_backup = params["object_key"]
+            .as_str()
+            .and_then(|key| key.rsplit('/').next())
+            .zip(params["backup_id"].as_str())
+            .is_some_and(|(last, backup)| last.strip_suffix(".age") == Some(backup));
+        if params.get("destination_ref").is_none()
+            || params.get("object_key").is_none()
+            || params.get("source_resource_id").is_some()
+            || !key_names_backup
+        {
+            return false;
+        }
+    } else if located {
+        return false;
+    }
+    let resource = &params["resource_id"];
+    let source = params.get("source_resource_id").unwrap_or(resource);
+    source == resource
+        || plan["actions"].as_array().is_some_and(|actions| {
+            actions.iter().take(index).any(|earlier| {
+                earlier["kind"] == "deploy" && earlier["params"]["service_id"] == *resource
+            })
+        })
 }
 
 /// `[a-z0-9-]{1,64}`
@@ -129,6 +200,8 @@ pub(super) fn params_for(kind: &str) -> Option<&'static [(&'static str, Shape)]>
             ("credential_ciphertext_digest_hex", HEX64),
         ],
         "repo.credential.delete" => &[("repo", Shape::Pattern(text::repo))],
+        // v1.0.11 (D-061): the hostname Dwaar routes /hooks/* on.
+        "webhook.host.set" => &[("webhook_host", Shape::Pattern(text::hostname))],
         _ => return None,
     })
 }
@@ -140,6 +213,8 @@ pub(super) const SERVER_KINDS_M2: &[&str] = &[
     "recovery_recipient.set",
     "release_key.add",
     "release_key.revoke",
+    // v1.0.11 (D-061).
+    "webhook.host.set",
 ];
 
 /// `backup.destination.set` (D-049): which optional fields each

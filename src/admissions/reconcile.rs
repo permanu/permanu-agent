@@ -158,6 +158,16 @@ pub fn read_consumed_log(path: &Path, owner_uid: u32) -> LogRead {
 /// runner writes a job's result fields (a backup's id, digest and size) only
 /// there; untrusted, malformed and other lines are skipped.
 pub fn run_results(path: &Path, owner_uid: u32, op: &str) -> Vec<serde_json::Value> {
+    event_lines(path, owner_uid, "run_result")
+        .into_iter()
+        .filter(|value| value["op"] == op)
+        .collect()
+}
+
+/// Every line of one `event` (v1.0.7+ `run`, `run_result`, `build`,
+/// `build_started`, `delivery`) in log order, as JSON objects, read with
+/// the same trust checks as [`read_consumed_log`].
+pub fn event_lines(path: &Path, owner_uid: u32, event: &str) -> Vec<serde_json::Value> {
     let mut found = Vec::new();
     for file in [rotated(path), path.to_path_buf()] {
         let Ok(Some((bytes, _))) = read_trusted(&file, owner_uid) else {
@@ -167,7 +177,7 @@ pub fn run_results(path: &Path, owner_uid: u32, op: &str) -> Vec<serde_json::Val
             let Ok(value) = serde_json::from_slice::<serde_json::Value>(raw) else {
                 continue;
             };
-            if value["v"] == 1 && value["event"] == "run_result" && value["op"] == op {
+            if value["v"] == 1 && value["event"] == event {
                 found.push(value);
             }
         }
@@ -304,6 +314,7 @@ fn apply_line(
                     line.action_index
                 ],
             )?;
+            settle_rule_revoke(tx, &line.plan_id, line.action_index, outcome, &line.at)?;
             effects.push(ReconcileEffect::ActionFinished {
                 plan_id: line.plan_id.clone(),
                 action_index: line.action_index,
@@ -322,6 +333,41 @@ fn apply_line(
             }
         }
         _ => {}
+    }
+    Ok(())
+}
+
+/// v1.0.11 (D-061): a `rule.revoke` action's end records the revocation
+/// (`succeeded`: `revoked_at` = the result's time) or drops the pending
+/// mark (any other outcome: the runner revoked nothing, the rule stays).
+pub(super) fn settle_rule_revoke(
+    tx: &Transaction<'_>,
+    plan_id: &str,
+    action_index: u32,
+    outcome: &str,
+    at: &str,
+) -> Result<(), StoreError> {
+    let kind: Option<String> = tx
+        .query_row(
+            "SELECT kind FROM admission_actions WHERE plan_id = ?1 AND action_index = ?2",
+            params![plan_id, action_index],
+            |r| r.get(0),
+        )
+        .optional()?;
+    if kind.as_deref() != Some("rule.revoke") {
+        return Ok(());
+    }
+    if outcome == "succeeded" {
+        tx.execute(
+            "UPDATE rules SET revoked_at = ?1 WHERE revoked_plan_id = ?2 AND revoked_at IS NULL",
+            params![at, plan_id],
+        )?;
+    } else {
+        tx.execute(
+            "UPDATE rules SET revoked_plan_id = NULL WHERE revoked_plan_id = ?1 \
+             AND revoked_at IS NULL",
+            params![plan_id],
+        )?;
     }
     Ok(())
 }

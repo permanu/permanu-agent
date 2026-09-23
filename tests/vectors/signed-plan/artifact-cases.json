@@ -889,6 +889,104 @@
       },
       "mode": "test",
       "expect": "OK"
+    },
+    {
+      "name": "ok_artifact_manifest_with_build_tools",
+      "action": {
+        "kind": "agent.update",
+        "params": {
+          "version": "2.1.0",
+          "artifact_digest_hex": "e10e11e9a895b71e006e52acb2f8af1faa198062942ee1cfb02a61078b7b191a",
+          "bundle_manifest_digest_hex": "2e790e7c76cdef6edb737575b56fcd813249394cbe3792da7bafa9c7bd64babe",
+          "allow_downgrade": false
+        }
+      },
+      "arch": "amd64",
+      "installed_version": "2.0.6",
+      "manifest": "{\"components\":[{\"arch\":\"amd64\",\"artifact_digest_hex\":\"6dc204153d8e8b73511363ea7b6161789da93c601b59de65038d28cb6cc66c9a\",\"name\":\"buildctl\",\"path\":\"amd64/buildctl\",\"version\":\"2.1.0\"},{\"arch\":\"arm64\",\"artifact_digest_hex\":\"61030c0e790209cdaffa986896894d378fbcb8665ee677d0351471c15a558013\",\"name\":\"buildctl\",\"path\":\"arm64/buildctl\",\"version\":\"2.1.0\"},{\"arch\":\"amd64\",\"artifact_digest_hex\":\"4a9b137b10fd7d57f373d93bed73c49dbbaa6f348ee93d2de5c4b79cda150458\",\"name\":\"buildkitd\",\"path\":\"amd64/buildkitd\",\"version\":\"2.1.0\"},{\"arch\":\"arm64\",\"artifact_digest_hex\":\"df7b6c0cf8a9597b5c6523276ab304171accf4c0990d2fa6f741a15cba36e3f1\",\"name\":\"buildkitd\",\"path\":\"arm64/buildkitd\",\"version\":\"2.1.0\"},{\"arch\":\"amd64\",\"artifact_digest_hex\":\"dc2ffed1fc999b259c6dce9bb95e80ac29e6be359185d29bebb94f2cf8ba60cb\",\"name\":\"dwaar\",\"path\":\"amd64/dwaar\",\"version\":\"2.1.0\"},{\"arch\":\"arm64\",\"artifact_digest_hex\":\"5e5b51ddc42089bf76d75b94868585cd909307bd035c21969408d903a7c5556b\",\"name\":\"dwaar\",\"path\":\"arm64/dwaar\",\"version\":\"2.1.0\"},{\"arch\":\"amd64\",\"artifact_digest_hex\":\"e10e11e9a895b71e006e52acb2f8af1faa198062942ee1cfb02a61078b7b191a\",\"name\":\"permanu-agent\",\"path\":\"amd64/permanu-agent\",\"version\":\"2.1.0\"},{\"arch\":\"arm64\",\"artifact_digest_hex\":\"a4bc871a4c9c21b2e855ff3ac6a981789229aa9b773bd72151b48c747e54fa98\",\"name\":\"permanu-agent\",\"path\":\"arm64/permanu-agent\",\"version\":\"2.1.0\"},{\"arch\":\"amd64\",\"artifact_digest_hex\":\"baddb48a415805b84fdd5553efd5376d61555021a89f7db75391897d61074da5\",\"name\":\"permanu-env\",\"path\":\"amd64/permanu-env\",\"version\":\"2.1.0\"},{\"arch\":\"arm64\",\"artifact_digest_hex\":\"a5a30a0fd407fc34a09223df7c2560022daf7d8f3f4252f5f763fb4dd9cb1065\",\"name\":\"permanu-env\",\"path\":\"arm64/permanu-env\",\"version\":\"2.1.0\"},{\"arch\":\"amd64\",\"artifact_digest_hex\":\"8ef5dbf0b98a80108f9f4b3c6b66bd7e0a4c936e2d6c42ea056e4f7202eda599\",\"name\":\"permanu-runner\",\"path\":\"amd64/permanu-runner\",\"version\":\"2.1.0\"},{\"arch\":\"arm64\",\"artifact_digest_hex\":\"a9964497d655e0e8240e5550b1392a0cd4680297d42143f746b1a4915f8b5c0d\",\"name\":\"permanu-runner\",\"path\":\"arm64/permanu-runner\",\"version\":\"2.1.0\"},{\"arch\":\"amd64\",\"artifact_digest_hex\":\"1f521a03260383e5c1a4008c434d885157a827291b340a21185ed2a5aacce558\",\"name\":\"rclone\",\"path\":\"amd64/rclone\",\"version\":\"2.1.0\"},{\"arch\":\"arm64\",\"artifact_digest_hex\":\"167ba5b6d04c66eaebd588e7b4a3f4febe6de7872fe1604c30c402e375fb0386\",\"name\":\"rclone\",\"path\":\"arm64/rclone\",\"version\":\"2.1.0\"},{\"arch\":\"amd64\",\"artifact_digest_hex\":\"b13b1d11a16d1bbbf2e7f73df5ea7e765aa5935cbf5859523617aafba620a9ac\",\"name\":\"rootlesskit\",\"path\":\"amd64/rootlesskit\",\"version\":\"2.1.0\"},{\"arch\":\"arm64\",\"artifact_digest_hex\":\"9d48c33884aa6eac4613b647c26efe5504390d532145c4970209671ccf410265\",\"name\":\"rootlesskit\",\"path\":\"arm64/rootlesskit\",\"version\":\"2.1.0\"},{\"arch\":\"amd64\",\"artifact_digest_hex\":\"db18fc959ac34ec49259fcff132dd83dc0cfd4de74e559929a224824eedeca6d\",\"name\":\"slirp4netns\",\"path\":\"amd64/slirp4netns\",\"version\":\"2.1.0\"},{\"arch\":\"arm64\",\"artifact_digest_hex\":\"cbc46a7efa7493506c9ae8debc2fc6c045b73a7ffe35558c529b0fe2b8747be8\",\"name\":\"slirp4netns\",\"path\":\"arm64/slirp4netns\",\"version\":\"2.1.0\"}],\"release_keys\":[{\"key_id\":\"RE1jopVSq8Moy0jDftg6Kg\",\"label\":\"Permanu TEST release key (rotated)\",\"spki\":\"MCowBQYDK2VwAyEAGZtqVq+kKLsm+LOjTwv8MyMHrGU4692o51PChact9zc=\"},{\"key_id\":\"cl98Xxg2voSKlukyuAPKJg\",\"label\":\"Permanu TEST release key (release)\",\"spki\":\"MCowBQYDK2VwAyEAxUG8N6ZYv4fm4+BLDKpGKrVaGRXdQjEdXbvfEADrd2k=\"}],\"version\":2}",
+      "manifest_sig": "{\"alg\":\"Ed25519\",\"key_id\":\"cl98Xxg2voSKlukyuAPKJg\",\"sig\":\"lCM9xSIcydibFECZkIFbETfJbLwXkv8vo4qvlzkPrEYffJKmBqHmBDxMcQUQNZXbmky41RZPSFMYbRM4jETWBQ\",\"version\":1}",
+      "release_keys": {
+        "version": 1,
+        "keys": [
+          {
+            "key_id": "cl98Xxg2voSKlukyuAPKJg",
+            "alg": "Ed25519",
+            "spki": "MCowBQYDK2VwAyEAxUG8N6ZYv4fm4+BLDKpGKrVaGRXdQjEdXbvfEADrd2k=",
+            "label": "Permanu TEST release key (release)",
+            "added_at": "2026-09-01T08:00:00Z",
+            "added_by": null
+          },
+          {
+            "key_id": "RE1jopVSq8Moy0jDftg6Kg",
+            "alg": "Ed25519",
+            "spki": "MCowBQYDK2VwAyEAGZtqVq+kKLsm+LOjTwv8MyMHrGU4692o51PChact9zc=",
+            "label": "Permanu TEST release key (rotated)",
+            "added_at": "2026-09-23T10:00:00Z",
+            "added_by": {
+              "plan_id": "01a0cdb5-3500-7001-8000-00000000000b",
+              "plan_digest_hex": "f6a50c66742dd3864c5ab9a39dc519275d135144bbe4eb5f8ac468b6969afcc9"
+            }
+          }
+        ],
+        "revocations": []
+      },
+      "staged_digests_hex": {
+        "permanu-agent": "e10e11e9a895b71e006e52acb2f8af1faa198062942ee1cfb02a61078b7b191a",
+        "permanu-runner": "8ef5dbf0b98a80108f9f4b3c6b66bd7e0a4c936e2d6c42ea056e4f7202eda599",
+        "permanu-env": "baddb48a415805b84fdd5553efd5376d61555021a89f7db75391897d61074da5",
+        "dwaar": "dc2ffed1fc999b259c6dce9bb95e80ac29e6be359185d29bebb94f2cf8ba60cb"
+      },
+      "mode": "test",
+      "expect": "OK"
+    },
+    {
+      "name": "artifact_manifest_unknown_component",
+      "action": {
+        "kind": "agent.update",
+        "params": {
+          "version": "2.1.0",
+          "artifact_digest_hex": "e10e11e9a895b71e006e52acb2f8af1faa198062942ee1cfb02a61078b7b191a",
+          "bundle_manifest_digest_hex": "0515e1041fd06e1a4cad38c61efb15bd2078022b4e75fb5673949aeb1504b9e2",
+          "allow_downgrade": false
+        }
+      },
+      "arch": "amd64",
+      "installed_version": "2.0.6",
+      "manifest": "{\"components\":[{\"arch\":\"amd64\",\"artifact_digest_hex\":\"522f5c7b716386f952d54c7497132448a6f18f67744b4beef77d11297f66a972\",\"name\":\"curl\",\"path\":\"amd64/curl\",\"version\":\"8.0.0\"},{\"arch\":\"amd64\",\"artifact_digest_hex\":\"dc2ffed1fc999b259c6dce9bb95e80ac29e6be359185d29bebb94f2cf8ba60cb\",\"name\":\"dwaar\",\"path\":\"amd64/dwaar\",\"version\":\"2.1.0\"},{\"arch\":\"arm64\",\"artifact_digest_hex\":\"5e5b51ddc42089bf76d75b94868585cd909307bd035c21969408d903a7c5556b\",\"name\":\"dwaar\",\"path\":\"arm64/dwaar\",\"version\":\"2.1.0\"},{\"arch\":\"amd64\",\"artifact_digest_hex\":\"e10e11e9a895b71e006e52acb2f8af1faa198062942ee1cfb02a61078b7b191a\",\"name\":\"permanu-agent\",\"path\":\"amd64/permanu-agent\",\"version\":\"2.1.0\"},{\"arch\":\"arm64\",\"artifact_digest_hex\":\"a4bc871a4c9c21b2e855ff3ac6a981789229aa9b773bd72151b48c747e54fa98\",\"name\":\"permanu-agent\",\"path\":\"arm64/permanu-agent\",\"version\":\"2.1.0\"},{\"arch\":\"amd64\",\"artifact_digest_hex\":\"baddb48a415805b84fdd5553efd5376d61555021a89f7db75391897d61074da5\",\"name\":\"permanu-env\",\"path\":\"amd64/permanu-env\",\"version\":\"2.1.0\"},{\"arch\":\"arm64\",\"artifact_digest_hex\":\"a5a30a0fd407fc34a09223df7c2560022daf7d8f3f4252f5f763fb4dd9cb1065\",\"name\":\"permanu-env\",\"path\":\"arm64/permanu-env\",\"version\":\"2.1.0\"},{\"arch\":\"amd64\",\"artifact_digest_hex\":\"8ef5dbf0b98a80108f9f4b3c6b66bd7e0a4c936e2d6c42ea056e4f7202eda599\",\"name\":\"permanu-runner\",\"path\":\"amd64/permanu-runner\",\"version\":\"2.1.0\"},{\"arch\":\"arm64\",\"artifact_digest_hex\":\"a9964497d655e0e8240e5550b1392a0cd4680297d42143f746b1a4915f8b5c0d\",\"name\":\"permanu-runner\",\"path\":\"arm64/permanu-runner\",\"version\":\"2.1.0\"}],\"release_keys\":[{\"key_id\":\"RE1jopVSq8Moy0jDftg6Kg\",\"label\":\"Permanu TEST release key (rotated)\",\"spki\":\"MCowBQYDK2VwAyEAGZtqVq+kKLsm+LOjTwv8MyMHrGU4692o51PChact9zc=\"},{\"key_id\":\"cl98Xxg2voSKlukyuAPKJg\",\"label\":\"Permanu TEST release key (release)\",\"spki\":\"MCowBQYDK2VwAyEAxUG8N6ZYv4fm4+BLDKpGKrVaGRXdQjEdXbvfEADrd2k=\"}],\"version\":2}",
+      "manifest_sig": "{\"alg\":\"Ed25519\",\"key_id\":\"cl98Xxg2voSKlukyuAPKJg\",\"sig\":\"4MkwcJUhgSTbqNIltP6c6f6l8otCKc8T8QsYjOU6TjnFan5MQdMIU50AbiXA_3AbazvHb90kw5SjAxfBal09AQ\",\"version\":1}",
+      "release_keys": {
+        "version": 1,
+        "keys": [
+          {
+            "key_id": "cl98Xxg2voSKlukyuAPKJg",
+            "alg": "Ed25519",
+            "spki": "MCowBQYDK2VwAyEAxUG8N6ZYv4fm4+BLDKpGKrVaGRXdQjEdXbvfEADrd2k=",
+            "label": "Permanu TEST release key (release)",
+            "added_at": "2026-09-01T08:00:00Z",
+            "added_by": null
+          },
+          {
+            "key_id": "RE1jopVSq8Moy0jDftg6Kg",
+            "alg": "Ed25519",
+            "spki": "MCowBQYDK2VwAyEAGZtqVq+kKLsm+LOjTwv8MyMHrGU4692o51PChact9zc=",
+            "label": "Permanu TEST release key (rotated)",
+            "added_at": "2026-09-23T10:00:00Z",
+            "added_by": {
+              "plan_id": "01a0cdb5-3500-7001-8000-00000000000b",
+              "plan_digest_hex": "f6a50c66742dd3864c5ab9a39dc519275d135144bbe4eb5f8ac468b6969afcc9"
+            }
+          }
+        ],
+        "revocations": []
+      },
+      "staged_digests_hex": {
+        "permanu-agent": "e10e11e9a895b71e006e52acb2f8af1faa198062942ee1cfb02a61078b7b191a",
+        "permanu-runner": "8ef5dbf0b98a80108f9f4b3c6b66bd7e0a4c936e2d6c42ea056e4f7202eda599",
+        "permanu-env": "baddb48a415805b84fdd5553efd5376d61555021a89f7db75391897d61074da5",
+        "dwaar": "dc2ffed1fc999b259c6dce9bb95e80ac29e6be359185d29bebb94f2cf8ba60cb"
+      },
+      "mode": "test",
+      "expect": "E_ARTIFACT_UNTRUSTED"
     }
   ]
 }
