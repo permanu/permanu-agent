@@ -65,10 +65,34 @@ pub struct Deps {
     pub events: EventBus,
     pub clock: Arc<dyn Clock>,
     pub logs: AgentLogs,
-    pub server_id: String,
+    pub server_id: ServerId,
     /// The runner's consumed log, read only for the `run_result` lines of
     /// manual runs (section 14.5); `None` reads nothing.
     pub consumed_log: Option<ConsumedLogRef>,
+}
+
+/// The server id the schedulers name (backup locations, alert texts). The
+/// installer starts the agent before `server.add` writes the trust store,
+/// so the agent reads it from the trust store at each use; tests fix it.
+#[derive(Debug, Clone)]
+pub enum ServerId {
+    #[cfg(test)]
+    Fixed(String),
+    Trust(crate::signed_plan::trust::TrustPaths),
+}
+
+impl ServerId {
+    /// The id, or `""` before the bootstrap.
+    pub fn get(&self) -> String {
+        match self {
+            #[cfg(test)]
+            Self::Fixed(id) => id.clone(),
+            Self::Trust(trust) => match trust.load() {
+                crate::signed_plan::trust::TrustState::Valid(store) => store.server_id,
+                _ => String::new(),
+            },
+        }
+    }
 }
 
 /// Where the runner's consumed log is and who must own it.

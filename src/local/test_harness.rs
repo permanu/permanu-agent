@@ -1055,7 +1055,7 @@ impl Harness {
                             telemetry: telemetry.clone(),
                             host: "test".to_owned(),
                         },
-                        server_id: String::new(),
+                        server_id: crate::local::sched::ServerId::Fixed(String::new()),
                         consumed_log: Some(crate::local::sched::ConsumedLogRef {
                             path: dir.join("runner/consumed.log"),
                             // SAFETY: geteuid has no preconditions.

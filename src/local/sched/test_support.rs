@@ -171,7 +171,7 @@ impl Fixture {
             events: EventBus::new(),
             clock: clock.clone(),
             logs: AgentLogs::default(),
-            server_id: "01a0cdb5-3500-70a1-8000-000000000001".to_owned(),
+            server_id: super::ServerId::Fixed("01a0cdb5-3500-70a1-8000-000000000001".to_owned()),
             consumed_log: Some(super::ConsumedLogRef {
                 path: dir.join("consumed.log"),
                 // SAFETY: geteuid has no preconditions.

@@ -99,7 +99,7 @@ async fn a_scheduled_backup_records_its_artifact_then_prunes_under_the_same_bind
         artifact.location,
         format!(
             "/var/lib/permanu/backups/permanu/v1/{}/{PG}/{BACKUP_B}.age",
-            f.deps.server_id
+            f.deps.server_id.get()
         )
     );
     assert_eq!(
@@ -129,6 +129,52 @@ async fn a_scheduled_backup_records_its_artifact_then_prunes_under_the_same_bind
     assert_eq!(
         proto.next_run_at.unwrap().seconds,
         super::super::test_support::at("2026-09-24T03:00:00Z")
+    );
+}
+
+/// The installer starts the agent before `server.add` bootstraps it, so the
+/// schedulers must take the server id from the trust store when they use
+/// it: a backup recorded after the bootstrap names the server in its
+/// location (else the engine cannot attribute it and never lists it).
+#[tokio::test]
+async fn backups_after_the_bootstrap_name_the_server_in_their_location() {
+    use crate::signed_plan::trust::{TrustMode, TrustPaths};
+    use std::os::unix::fs::PermissionsExt;
+    let mut f = Fixture::new("backup-late-trust", "2026-09-23T02:00:00Z");
+    let trust = TrustPaths {
+        file: f.dir.join("trusted-keys.json"),
+        lock: f.dir.join("trust.lock"),
+        // SAFETY: geteuid has no preconditions.
+        owner_uid: unsafe { libc::geteuid() },
+        mode: TrustMode::Test,
+    };
+    f.deps.server_id = super::super::ServerId::Trust(trust.clone());
+    f.record(1, &[policy(PG, "0 3 * * *", Value::Null)], "succeeded");
+    let s = scheduler(&f);
+    tick_at(&f, &s, "2026-09-23T02:59:55Z").await;
+    // server.add after the agent started.
+    let document =
+        crate::signed_plan::test_support::vector("policy-cases")["context"]["trusted_keys"].clone();
+    std::fs::write(&trust.file, serde_json::to_vec(&document).unwrap()).unwrap();
+    std::fs::set_permissions(&trust.file, std::fs::Permissions::from_mode(0o644)).unwrap();
+    let server = document["server_id"].as_str().unwrap().to_owned();
+    f.runner.answer(
+        "backup_run",
+        json!({"outcome": "succeeded", "backup_id": BACKUP_B,
+               "backup_digest_hex": "ab".repeat(32), "size_bytes": 1234}),
+    );
+    f.runner.answer("backup_prune", json!({"deleted": []}));
+    tick_at(&f, &s, "2026-09-23T03:00:05Z").await;
+    let artifact: BackupArtifact = f
+        .deps
+        .ops
+        .get(RecordKind::Artifact, BACKUP_B)
+        .unwrap()
+        .decode()
+        .unwrap();
+    assert_eq!(
+        artifact.location,
+        format!("/var/lib/permanu/backups/permanu/v1/{server}/{PG}/{BACKUP_B}.age")
     );
 }
 
@@ -174,7 +220,7 @@ async fn a_manual_backup_records_its_artifact_from_the_runners_run_result_line()
         artifact.location,
         format!(
             "/var/lib/permanu/backups/permanu/v1/{}/{PG}/{BACKUP_B}.age",
-            f.deps.server_id
+            f.deps.server_id.get()
         )
     );
     assert_eq!(artifact.size_bytes, 4321);

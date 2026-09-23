@@ -902,10 +902,6 @@ fn start_schedulers(
     trust: &TrustPaths,
 ) -> Option<sched::Schedulers> {
     let ops = ops?;
-    let server_id = match trust.load() {
-        TrustState::Valid(store) => store.server_id,
-        _ => String::new(),
-    };
     let source: Arc<dyn sched::alerts::AlertSource> = match &telemetry {
         Some(store) => Arc::new(sched::source::StoreSource::new(store.clone())),
         None => Arc::new(sched::alerts::NoSource),
@@ -920,7 +916,8 @@ fn start_schedulers(
             telemetry,
             host: hostname(),
         },
-        server_id,
+        // server.add writes the trust store after the agent started.
+        server_id: sched::ServerId::Trust(trust.clone()),
         consumed_log: Some(sched::ConsumedLogRef {
             path: core.consumed_log.clone(),
             owner_uid: core.consumed_log_owner,

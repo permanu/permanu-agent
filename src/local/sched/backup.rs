@@ -818,7 +818,14 @@ impl BackupScheduler {
         let location = defs
             .destinations
             .get(&policy.destination_ref)
-            .map(|dest| location(dest, &self.deps.server_id, &policy.resource_id, backup_id))
+            .map(|dest| {
+                location(
+                    dest,
+                    &self.deps.server_id.get(),
+                    &policy.resource_id,
+                    backup_id,
+                )
+            })
             .unwrap_or_default();
         let mut recipients = vec![fingerprint(&self.server_recipient)];
         if let Some(recovery) = &defs.recovery_recipient {

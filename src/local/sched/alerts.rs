@@ -764,8 +764,9 @@ impl AlertEvaluator {
         if !event.value.is_nan() && event.value != 0.0 {
             text.push_str(&format!(" (value {})", event.value));
         }
-        if !self.deps.server_id.is_empty() {
-            text.push_str(&format!(" on server {}", self.deps.server_id));
+        let server_id = self.deps.server_id.get();
+        if !server_id.is_empty() {
+            text.push_str(&format!(" on server {server_id}"));
         }
         bounded(&text, MAX_TEXT_BYTES)
     }
@@ -778,7 +779,7 @@ impl AlertEvaluator {
         json!({
             "version": 1,
             "type": "alert",
-            "server_id": self.deps.server_id,
+            "server_id": self.deps.server_id.get(),
             "event": {
                 "id": event.id,
                 "ruleId": event.rule_id,
