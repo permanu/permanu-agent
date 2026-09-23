@@ -291,6 +291,35 @@ async fn bootstrap_refuses_a_plan_pinned_to_another_host_key() {
     h.stop().await;
 }
 
+/// v1.0.5 (D-045): the bootstrap `server.add` signs the fingerprint of the
+/// recipient the user confirmed; a server with another recipient refuses it
+/// before the runner is asked.
+#[tokio::test]
+async fn bootstrap_refuses_a_plan_signed_for_another_age_recipient() {
+    let case = plan_vector("server-add-bootstrap");
+    let host_key = case["plan"]["actions"][0]["params"]["ssh_host_key_digest_hex"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let h = Harness::with(
+        "boot-age",
+        Options {
+            host_keys: vec![host_key],
+            age_recipient: Some(age::x25519::Identity::generate().to_public().to_string()),
+            ..Default::default()
+        },
+    )
+    .await;
+    let status = ChangeServiceClient::new(h.channel.clone())
+        .submit_signed_plan(submit(signed(&case)))
+        .await
+        .unwrap_err();
+    assert_eq!(trailer(&status, PLAN_ERROR_HEADER), "E_BOOTSTRAP");
+    assert!(!h.trust_file.exists());
+    assert!(h.runner.requests.lock().unwrap().is_empty());
+    h.stop().await;
+}
+
 #[tokio::test]
 async fn rejections_carry_the_contract_codes_and_admit_nothing() {
     let trust = serde_json::to_string(&vector("policy-cases")["context"]["trusted_keys"]).unwrap();

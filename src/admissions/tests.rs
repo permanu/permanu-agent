@@ -14,7 +14,7 @@ const NOW: &str = "2026-09-23T10:05:00Z";
 const USER_DEPLOY_HEAD_BEFORE: &str =
     "4a98af3eeae054bf7585746ce20fa5907ec9c079ee1b049a7d01146d1c92ebfb";
 const USER_DEPLOY_HEAD_AFTER: &str =
-    "2667f951c69c97b62787014df252d190d4216b33547776aee4c049bc54bede9c";
+    "b896fd0b423eabc4f460209d90a216ab3df487eea383c0d5133ffbf6de9e6b30";
 const PROJECT: &str = "01a0cdb5-3500-70b1-8000-000000000001";
 
 fn now() -> i64 {
@@ -232,7 +232,7 @@ fn admits_the_user_deploy_vector_advances_the_head_and_dedupes() {
     assert!(!admission.deduplicated);
     assert_eq!(
         admission.plan_digest_hex,
-        "4764d0506dfacf4f8c036562fac7184e6a7a1faae7a45916772be562310a2d76"
+        "a878a86e93e31c3f2551ac3e8355a75efe24e7517580357b83960057bac55e1a"
     );
     assert_eq!(admission.admitted_at, NOW);
     assert_eq!(admission.deployment_ids.len(), 1);
@@ -547,7 +547,7 @@ fn runner_read_queries_work_on_the_agent_store() {
     let spec: String = conn
         .query_row(
             "SELECT spec_jcs FROM specs WHERE spec_digest_hex = ?1",
-            params!["8ab54d633eff45b8a42f096f2f42f9837fba778f2cf8a884d73d34b70619f607"],
+            params!["7ca8d02473932190ad0735cc3a55b4035280f34ed003dcaa4f2f3caeebb1dab2"],
             |r| r.get(0),
         )
         .unwrap();

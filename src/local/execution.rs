@@ -211,6 +211,9 @@ pub struct ChangeCore {
     pub clock: Arc<dyn Clock>,
     pub consumed_log: PathBuf,
     pub consumed_log_owner: u32,
+    /// `AgentInfo.age_recipient` (empty when unreadable): a bootstrap
+    /// `server.add` must sign its fingerprint (v1.0.5, D-045).
+    pub age_recipient: String,
     timing: Timing,
     operations: broadcast::Sender<OperationEvent>,
     execution: tokio::sync::Mutex<()>,
@@ -235,6 +238,7 @@ pub struct ChangeCoreParts {
     pub clock: Arc<dyn Clock>,
     pub consumed_log: PathBuf,
     pub consumed_log_owner: u32,
+    pub age_recipient: String,
     pub timing: Timing,
 }
 
@@ -272,6 +276,7 @@ impl ChangeCore {
             clock: parts.clock,
             consumed_log: parts.consumed_log,
             consumed_log_owner: parts.consumed_log_owner,
+            age_recipient: parts.age_recipient,
             timing: parts.timing,
             operations: broadcast::channel(1_024).0,
             execution: tokio::sync::Mutex::new(()),
@@ -326,8 +331,12 @@ impl ChangeCore {
         self.store.check_quarantine(self.now())?;
         // Section 7.3 step 3 including the time window (D-033): an expired
         // or foreign server.add never reaches the runner.
-        let bootstrap =
-            verify_bootstrap(envelope, &self.probe.ssh_host_key_digests_hex(), self.now())?;
+        let bootstrap = verify_bootstrap(
+            envelope,
+            &self.probe.ssh_host_key_digests_hex(),
+            &self.age_recipient,
+            self.now(),
+        )?;
         info!(server_id = %bootstrap.server_id, "server.add bootstrap verified; asking the runner to write trusted-keys.json");
         let text = std::str::from_utf8(envelope).map_err(|_| PlanCode::Parse)?;
         // The runner (root) re-runs the checks and writes the file (D-030).
@@ -406,6 +415,7 @@ impl ChangeCore {
                 let bootstrap = verify_bootstrap(
                     &submission.envelope,
                     &self.probe.ssh_host_key_digests_hex(),
+                    &self.age_recipient,
                     self.now(),
                 )?;
                 let (plan, _) = parse_envelope(&submission.envelope)?;

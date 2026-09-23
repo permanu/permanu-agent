@@ -219,6 +219,12 @@ pub(crate) const SPEC: Shape = Shape::Object(&[
     ),
     // v1.0.2 (D-027): secrets only as files under /run/secrets.
     ("secrets_as_files_only", Shape::Bool),
+    // v1.0.5 (D-045): the Engine API ServiceKind, written into the
+    // permanu.service_kind label. Never elevates the spec.
+    (
+        "service_kind",
+        Shape::Enum(&["web", "worker", "database", "bucket", "cron", "static"]),
+    ),
 ]);
 
 fn image_repository(value: &Value) -> bool {

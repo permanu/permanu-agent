@@ -549,6 +549,7 @@ pub async fn run(
         clock: Arc::new(execution::SystemClock),
         consumed_log: cfg.consumed_log.clone(),
         consumed_log_owner: cfg.file_owner_uid,
+        age_recipient: age_recipient.clone(),
         timing: execution::Timing::default(),
     });
     if report.recreated {

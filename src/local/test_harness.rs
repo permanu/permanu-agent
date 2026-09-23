@@ -29,7 +29,7 @@ use super::{age_recipient, events::EventBus, socket, AgentIdentity, LocalServer}
 use crate::admissions::{AdmissionStore, StoreConfig};
 use crate::config::AgentMode;
 use crate::proto::agent::v2::{Container, ServerFacts};
-use crate::signed_plan::test_support::temp_dir;
+use crate::signed_plan::test_support::{temp_dir, vector};
 use crate::signed_plan::text::{format_timestamp, timestamp};
 use crate::signed_plan::trust::{TrustChange, TrustMode, TrustPaths};
 use crate::signed_plan::verify::verify_bootstrap;
@@ -121,6 +121,7 @@ pub struct FakeRunner {
     pub admissions_db: PathBuf,
     pub trust: TrustPaths,
     pub host_keys: Vec<String>,
+    pub age_recipient: String,
     /// Every request, in arrival order.
     pub requests: Mutex<Vec<Value>>,
     pub fail_bind_with: Mutex<Option<PlanCode>>,
@@ -375,7 +376,12 @@ impl FakeRunner {
         let text = request["payload"]["signed_plan"]
             .as_str()
             .unwrap_or_default();
-        match verify_bootstrap(text.as_bytes(), &self.host_keys, self.clock.now()) {
+        match verify_bootstrap(
+            text.as_bytes(),
+            &self.host_keys,
+            &self.age_recipient,
+            self.clock.now(),
+        ) {
             Ok(plan) => match self.trust.write_change(&TrustChange::Bootstrap {
                 server_id: &plan.server_id,
                 owner_key: &plan.owner_key,
@@ -554,6 +560,10 @@ pub struct Options {
     /// Whether the store is created as after a store loss (quarantine).
     pub store_lost: bool,
     pub start_timeout: Duration,
+    /// The age recipient bootstrap compares with; `None` = the bootstrap
+    /// vectors' own (`policy-cases.json` `bootstrap_cases[].age_recipient`,
+    /// D-045).
+    pub age_recipient: Option<String>,
 }
 
 impl Default for Options {
@@ -563,6 +573,7 @@ impl Default for Options {
             host_keys: vec!["ab".repeat(32)],
             store_lost: false,
             start_timeout: Duration::from_secs(300),
+            age_recipient: None,
         }
     }
 }
@@ -632,6 +643,15 @@ impl Harness {
         // SAFETY: geteuid has no preconditions.
         let age_recipient =
             age_recipient::read_recipient(&recipient_file, unsafe { libc::geteuid() }).unwrap();
+        // The recipient the bootstrap check compares with (D-045). The
+        // vectors sign the fingerprint of a placeholder that is not valid
+        // bech32, so it cannot live in the recipient file Hello reads.
+        let bootstrap_recipient = options.age_recipient.clone().unwrap_or_else(|| {
+            vector("policy-cases")["bootstrap_cases"][0]["age_recipient"]
+                .as_str()
+                .unwrap()
+                .to_owned()
+        });
         fs::create_dir_all(dir.join("runner")).unwrap();
         fs::create_dir_all(dir.join("run")).unwrap();
         let runner = Arc::new(FakeRunner {
@@ -639,6 +659,7 @@ impl Harness {
             admissions_db,
             trust: trust.clone(),
             host_keys: options.host_keys.clone(),
+            age_recipient: bootstrap_recipient.clone(),
             requests: Mutex::new(Vec::new()),
             fail_bind_with: Mutex::new(None),
             behaviors: Mutex::new(HashMap::new()),
@@ -677,6 +698,7 @@ impl Harness {
             consumed_log: dir.join("runner/consumed.log"),
             // SAFETY: geteuid has no preconditions.
             consumed_log_owner: unsafe { libc::geteuid() },
+            age_recipient: bootstrap_recipient,
             timing: Timing {
                 start_timeout: options.start_timeout,
                 op_timeout: Duration::from_secs(30),

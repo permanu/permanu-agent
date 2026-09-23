@@ -1,4 +1,4 @@
-//! Contract vectors (contracts-v1.0.4): JCS, digests, signatures, the trust
+//! Contract vectors (contracts-v1.0.5): JCS, digests, signatures, the trust
 //! store, every policy case through the full ordered verifier (steps 1–12)
 //! and the bootstrap cases.
 
@@ -50,11 +50,11 @@ fn plan_vectors_match_jcs_digest_specs_and_signatures() {
 #[test]
 fn state_head_chain_matches_the_worked_vector() {
     let before = "4a98af3eeae054bf7585746ce20fa5907ec9c079ee1b049a7d01146d1c92ebfb";
-    let digest = "4764d0506dfacf4f8c036562fac7184e6a7a1faae7a45916772be562310a2d76";
+    let digest = "a878a86e93e31c3f2551ac3e8355a75efe24e7517580357b83960057bac55e1a";
     let after = next_head(before, digest);
     assert_eq!(
         after,
-        "2667f951c69c97b62787014df252d190d4216b33547776aee4c049bc54bede9c"
+        "b896fd0b423eabc4f460209d90a216ab3df487eea383c0d5133ffbf6de9e6b30"
     );
     assert_eq!(
         vector("plans")["extras"]["state_head_after_user_deploy_hex"],
@@ -138,7 +138,9 @@ fn every_policy_case_returns_the_contract_code() {
 #[test]
 fn bootstrap_cases_match() {
     let cases = vector("policy-cases");
-    for case in cases["bootstrap_cases"].as_array().unwrap() {
+    let cases = cases["bootstrap_cases"].as_array().unwrap();
+    assert_eq!(cases.len(), 5);
+    for case in cases {
         let digests: Vec<String> = case["host_key_digests_hex"]
             .as_array()
             .unwrap()
@@ -146,11 +148,17 @@ fn bootstrap_cases_match() {
             .map(|d| d.as_str().unwrap().to_owned())
             .collect();
         let now = crate::signed_plan::text::timestamp(case["now"].as_str().unwrap()).unwrap();
-        let actual = verify_bootstrap(case["input"].as_str().unwrap().as_bytes(), &digests, now)
-            .map(|plan| {
-                assert_eq!(plan.server_id, case["server_id"].as_str().unwrap());
-                "OK"
-            });
+        let age_recipient = case["age_recipient"].as_str().unwrap();
+        let actual = verify_bootstrap(
+            case["input"].as_str().unwrap().as_bytes(),
+            &digests,
+            age_recipient,
+            now,
+        )
+        .map(|plan| {
+            assert_eq!(plan.server_id, case["server_id"].as_str().unwrap());
+            "OK"
+        });
         assert_eq!(
             actual,
             expected(case["expect"].as_str().unwrap()),
