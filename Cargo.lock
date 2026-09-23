@@ -1713,6 +1713,7 @@ dependencies = [
  "anyhow",
  "base64",
  "bollard",
+ "curve25519-dalek",
  "flate2",
  "futures",
  "futures-core",

@@ -12,3 +12,11 @@ Production builds of every verifier and of the app reject these key ids (signed-
 (v1.0.5, D-041 to D-043) test the runner's `bind_plan` checks 1–3 and the scope fold against a stored admissions view:
 each case names the bound `{plan_id, plan_digest_hex}`, the runner's `now`, its `first_consumed_at` for the plan (or
 null) and any `extra_admissions` rows, and the runner must return `expect` (reference `verify_runner_bound`).
+
+v1.0.7 (M2): `build_cases` test the runner's `build_image` checks on `runner_context` (reference
+`verify_build_bound`); `schedule_context` and `schedule_cases` test the schedule binding of scheduled cron and backup
+runs against the runner's rows and its own consumed log (reference `verify_schedule_bound`). `release-keys.json`
+holds three **public TEST Ed25519 release keys** (seeds included) and a sample `/etc/permanu/release-keys.json`;
+production builds refuse their key ids `cl98Xxg2voSKlukyuAPKJg`, `RE1jopVSq8Moy0jDftg6Kg` and
+`MA975uwluIeABZVJLGWMaA` (signed-plan.md §3.9). The real release key is generated offline by the user and never
+appears here. `artifact-cases.json` tests the artifact trust verification order (reference `verify_artifact`).

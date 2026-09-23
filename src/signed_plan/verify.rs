@@ -47,9 +47,23 @@ pub const TID_KINDS: &[&str] = &[
     "bucket.delete",
     "bucket.credentials.rotate",
     "backup.delete",
+    // v1.0.7 (D-049, D-051): recovery recipient, backup destination
+    // credential, environment protection, release keys.
+    "recovery_recipient.set",
+    "backup.destination.set",
+    "env.protection.set",
+    "release_key.add",
+    "release_key.revoke",
+    // v1.0.9 (D-057): repository credentials.
+    "repo.credential.set",
+    "repo.credential.delete",
 ];
 /// Kinds only an owner may sign (TID kinds plus the owner-only presence kinds).
-const OWNER_ONLY_PRESENCE: &[&str] = &["db.upgrade", "backup.policy.delete"];
+const OWNER_ONLY_PRESENCE: &[&str] = &[
+    "db.upgrade",
+    "backup.policy.delete",
+    "backup.destination.delete",
+];
 const CI_KINDS: &[&str] = &["deploy", "rollback", "restart", "operation.cancel"];
 const RULE_ELIGIBLE: &[&str] = &["deploy"];
 
@@ -98,7 +112,13 @@ pub struct DeliveryRecord {
     pub received_at: String,
     pub verified: bool,
     pub consumed_by_rule_ids: Vec<String>,
+    /// v1.0.8: the environments whose webhook secret matched.
+    pub environments: Vec<String>,
 }
+
+/// The signed scope `(project_id, environment, environment_id)` of an
+/// admitted object, `""` for server-level fields (section 6.4).
+pub type SignedScope = (String, String, String);
 
 /// The server's own state, read by steps 6r–12. Nothing here comes from the
 /// request. Store failures are `PlanCode::Internal` (fail closed).
@@ -129,6 +149,24 @@ pub trait PolicyContext {
         service_id: &str,
         r#ref: &str,
     ) -> Result<Option<(String, String)>, PlanCode>;
+    /// contracts v1.1.0: the signed scope of the admission with this id and
+    /// digest (an `operation.cancel` takes the cancelled plan's scope).
+    fn admission_scope(
+        &self,
+        plan_id: &str,
+        plan_digest_hex: &str,
+    ) -> Result<Option<SignedScope>, PlanCode>;
+    /// contracts v1.1.0: the signed scope of an admitted spec of the service.
+    fn service_scope(&self, service_id: &str) -> Result<Option<SignedScope>, PlanCode>;
+    /// contracts v1.1.0: the signed scope of the job's admitted `cron.create`.
+    fn cron_scope(&self, cron_id: &str) -> Result<Option<SignedScope>, PlanCode>;
+    /// contracts v1.1.0: the backup policies (`backup.policy.set` params) a
+    /// new policy of the resource must not narrow without a fresh owner
+    /// signature: the recorded one and any admitted after it.
+    fn backup_policies(&self, resource_id: &str) -> Result<Vec<Value>, PlanCode>;
+    /// v1.0.7: whether `env.protection.set` protects the scope (recorded, or
+    /// admitted and not yet applied).
+    fn environment_protected(&self, project_id: &str, environment: &str) -> Result<bool, PlanCode>;
 }
 
 /// A plan that passed steps 1–12.
@@ -361,7 +399,7 @@ pub fn verify_signed_plan(
         .as_array()
         .map(|a| a.iter().filter_map(|x| x["kind"].as_str()).collect())
         .unwrap_or_default();
-    if kinds.iter().any(|kind| TID_KINDS.contains(kind))
+    if (kinds.iter().any(|kind| TID_KINDS.contains(kind)) || policy_narrows(&plan, ctx)?)
         && (is_rule
             || !signers
                 .iter()
@@ -385,6 +423,18 @@ pub fn verify_signed_plan(
             .iter()
             .filter(|s| role_allows(s["role"].as_str().unwrap_or_default(), kind))
             .collect();
+        if *kind == "operation.cancel" {
+            // contracts v1.1.0: the cancel plan's signed scope is the
+            // cancelled plan's, environment_id included.
+            let params = &plan["actions"][0]["params"];
+            let cancelled = ctx.admission_scope(
+                params["plan_id"].as_str().unwrap_or_default(),
+                params["plan_digest_hex"].as_str().unwrap_or_default(),
+            )?;
+            if cancelled.is_some_and(|scope| scope != signed_scope(&plan)) {
+                return Err(PlanCode::ScopeMismatch);
+            }
+        }
         if *kind == "operation.cancel" && allowed.iter().any(|s| s["role"] == "ci") {
             // A ci key counts only for a cancel of an admitted plan it signed
             // itself (section 6.1 step 11, D-033).
@@ -408,6 +458,12 @@ pub fn verify_signed_plan(
         if !allowed.iter().any(|s| scope_covers(s, &plan)) {
             return Err(PlanCode::KeyScope);
         }
+    }
+
+    // contracts v1.1.0: a named service, resource or cron job of another
+    // scope. An unknown name is not decided here.
+    if rule.is_none() && !names_in_scope(&plan, ctx)? {
+        return Err(PlanCode::ScopeMismatch);
     }
 
     // Step 12.
@@ -513,6 +569,80 @@ fn scope_covers(signer: &Value, plan: &Value) -> bool {
     contains("project_ids", &plan["project_id"]) && contains("environments", &plan["environment"])
 }
 
+/// `(project_id, environment, environment_id)` of a plan, `""` for null.
+fn signed_scope(plan: &Value) -> SignedScope {
+    let field = |name: &str| plan[name].as_str().unwrap_or_default().to_owned();
+    (
+        field("project_id"),
+        field("environment"),
+        field("environment_id"),
+    )
+}
+
+/// Kinds whose service or resource must belong to the plan's scope.
+const SERVICE_PARAM_KINDS: &[(&str, &str)] = &[
+    ("cron.create", "service_id"),
+    ("cron.update", "service_id"),
+    ("backup.run", "resource_id"),
+    ("backup.verify", "resource_id"),
+    ("backup.policy.set", "resource_id"),
+    ("backup.policy.delete", "resource_id"),
+    ("backup.delete", "resource_id"),
+    ("restore", "resource_id"),
+];
+/// Kinds whose `cron_id` must be a job of the plan's scope.
+const CRON_ID_KINDS: &[&str] = &[
+    "cron.update",
+    "cron.delete",
+    "cron.pause",
+    "cron.resume",
+    "cron.run",
+];
+
+fn names_in_scope(plan: &Value, ctx: &dyn PolicyContext) -> Result<bool, PlanCode> {
+    let scope = signed_scope(plan);
+    for action in plan["actions"].as_array().map_or(&[][..], Vec::as_slice) {
+        let kind = action["kind"].as_str().unwrap_or_default();
+        let params = &action["params"];
+        if let Some((_, field)) = SERVICE_PARAM_KINDS.iter().find(|(k, _)| *k == kind) {
+            let id = params[*field].as_str().unwrap_or_default();
+            if ctx.service_scope(id)?.is_some_and(|found| found != scope) {
+                return Ok(false);
+            }
+        }
+        if CRON_ID_KINDS.contains(&kind) {
+            let id = params["cron_id"].as_str().unwrap_or_default();
+            if ctx.cron_scope(id)?.is_some_and(|found| found != scope) {
+                return Ok(false);
+            }
+        }
+    }
+    Ok(true)
+}
+
+/// contracts v1.1.0: a `backup.policy.set` that lowers a `keep_*` value of,
+/// or changes the destination of, a policy of the resource is always-fresh.
+fn policy_narrows(plan: &Value, ctx: &dyn PolicyContext) -> Result<bool, PlanCode> {
+    for action in plan["actions"].as_array().map_or(&[][..], Vec::as_slice) {
+        if action["kind"] != "backup.policy.set" {
+            continue;
+        }
+        let params = &action["params"];
+        let resource = params["resource_id"].as_str().unwrap_or_default();
+        for current in ctx.backup_policies(resource)? {
+            let lower = ["keep_daily", "keep_weekly", "keep_monthly"]
+                .iter()
+                .any(|keep| {
+                    params[*keep].as_i64().unwrap_or(0) < current[*keep].as_i64().unwrap_or(0)
+                });
+            if lower || params["destination_ref"] != current["destination_ref"] {
+                return Ok(true);
+            }
+        }
+    }
+    Ok(false)
+}
+
 fn ref_matches(r#ref: &str, pattern: &str) -> bool {
     r#ref == pattern
         || pattern.strip_suffix('*').is_some_and(|prefix| {
@@ -560,7 +690,9 @@ fn check_rule(
                 )
             })
         });
-    if !scope_ok {
+    let project = plan["project_id"].as_str().unwrap_or_default();
+    let environment = plan["environment"].as_str().unwrap_or_default();
+    if !scope_ok || ctx.environment_protected(project, environment)? {
         return Err(PlanCode::RuleScope);
     }
     let actions = plan["actions"].as_array().map_or(&[][..], Vec::as_slice);
@@ -588,6 +720,7 @@ fn check_rule(
         .ok_or(PlanCode::RuleEvidence)?;
     let matches = |field: &str, value: &str| evidence[field] == value;
     if delivery.consumed_by_rule_ids.iter().any(|id| id == rule_id)
+        || !delivery.environments.iter().any(|env| env == environment)
         || !matches("body_digest_hex", &delivery.body_digest_hex)
         || !matches("repo", &delivery.repo)
         || !matches("ref", &delivery.r#ref)

@@ -176,7 +176,7 @@ const MOUNT: Shape = Shape::Object(&[
     ("mount_path", PATH),
     ("read_only", Shape::Bool),
 ]);
-pub(crate) const SPEC: Shape = Shape::Object(&[
+const SPEC_FIELDS: &[(&str, Shape)] = &[
     ("version", Shape::Int(1, 1)),
     ("service_id", UUID7),
     ("image_repository", Shape::Custom(image_repository)),
@@ -225,7 +225,29 @@ pub(crate) const SPEC: Shape = Shape::Object(&[
         "service_kind",
         Shape::Enum(&["web", "worker", "database", "bucket", "cron", "static"]),
     ),
-]);
+    // v1.0.7 (D-053): `false` opts the service out of the runner-derived
+    // OpenTelemetry environment (section 14.7).
+    ("otel_inject", Shape::Bool),
+];
+
+/// A `ServiceSpec` (section 3.7): every field of `SPEC_FIELDS`, plus the
+/// optional member `build` (v1.0.9, D-056), which is never `null`.
+pub(crate) const SPEC: Shape = Shape::Custom(spec_shape);
+
+fn spec_shape(value: &Value) -> bool {
+    let Some(map) = value.as_object() else {
+        return false;
+    };
+    match map.get("build") {
+        None => check(&Shape::Object(SPEC_FIELDS), value),
+        Some(recipe) => {
+            let mut rest = map.clone();
+            rest.remove("build");
+            spec_build::build_recipe(recipe)
+                && check(&Shape::Object(SPEC_FIELDS), &Value::Object(rest))
+        }
+    }
+}
 
 fn image_repository(value: &Value) -> bool {
     value
@@ -285,6 +307,8 @@ pub(crate) fn spec_elevated(spec: &Value) -> bool {
 }
 
 mod actions;
+mod actions_m2;
+mod spec_build;
 pub(crate) use actions::{rollback_target, validate_plan, SPEC_KINDS};
 
 const EVIDENCE: Shape = Shape::Object(&[
