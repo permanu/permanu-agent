@@ -474,6 +474,9 @@ fn fresh_deploy(signer: &TestSigner, id_tail: &str, nonce: &str, head: &str) -> 
     plan["id"] = Value::String(format!("01a0cdb5-3500-7001-8000-{id_tail}"));
     plan["nonce"] = Value::String(nonce.to_owned());
     plan["base"]["heads"][SERVER_A] = Value::String(head.to_owned());
+    // D-035: every deploy carries its own engine-minted deployment id.
+    plan["actions"][0]["params"]["deployment_id"] =
+        Value::String(format!("01a0cdb5-3500-70c7-8000-{id_tail}"));
     let spec_digest = crate::signed_plan::crypto::hex(
         &crate::signed_plan::crypto::prefixed_digest(SPEC_PREFIX, &spec),
     );

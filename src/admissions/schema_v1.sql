@@ -53,7 +53,8 @@ CREATE TABLE admission_actions (
                CHECK (outcome IN ('', 'succeeded', 'failed', 'rolled_back', 'cancelled', 'expired')),
   consumed_seq INTEGER,                                            -- consumed.log seq of the lines
   result_seq   INTEGER,
-  deployment_id TEXT,        -- UUIDv7 minted at admission for deploy/rollback/restart/scale; NULL for other kinds
+  deployment_id TEXT,        -- R  v1.0.3 (D-035): copied from the signed plan, never minted (deploy = params.deployment_id,
+                             --    rollback = params.to_deployment_id or to_release_id); NULL for every other kind
   PRIMARY KEY (plan_id, action_index)
 );
 

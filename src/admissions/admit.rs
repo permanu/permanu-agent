@@ -24,8 +24,6 @@ use crate::signed_plan::PlanCode;
 const MAX_SEALED_SECRETS: usize = 64;
 const MAX_SEALED_SECRET_BYTES: usize = 64 * 1024;
 const AGE_HEADER: &[u8] = b"age-encryption.org/v1\n";
-/// Kinds that mint a deployment id at admission (section 6.4).
-const DEPLOYMENT_KINDS: &[&str] = &["deploy", "rollback", "restart", "scale"];
 /// Kinds whose spec becomes the service's last admitted spec (section 3.7).
 const LAST_SPEC_KINDS: &[&str] = &["deploy", "rollback", "scale"];
 
@@ -393,6 +391,21 @@ fn execution_preconditions(
                 }
             }
             "operation.cancel" => check_cancel(ctx, params)?,
+            // v1.0.3 (D-035): an id already admitted on this server names
+            // another release; the agent never reuses one.
+            "deploy" => {
+                let taken: i64 = ctx
+                    .tx
+                    .query_row(
+                        "SELECT COUNT(*) FROM admission_actions WHERE deployment_id = ?1",
+                        params![params["deployment_id"].as_str()],
+                        |r| r.get(0),
+                    )
+                    .map_err(internal)?;
+                if taken != 0 {
+                    return Err(PlanCode::ExecPrecondition);
+                }
+            }
             "restart" => {
                 // restart MUST name the service's currently admitted spec.
                 let current: Option<String> = ctx
@@ -533,6 +546,18 @@ fn check_cancel(ctx: &TxContext<'_>, params: &Value) -> Result<(), PlanCode> {
     }
 }
 
+/// `admission_actions.deployment_id`, copied from the signed plan and never
+/// minted (v1.0.3, D-035): a deploy's own id, the release a rollback returns
+/// to; `None` for every other kind (restart and scale act on the active
+/// release).
+fn signed_deployment_id(kind: &str, params: &Value) -> Option<String> {
+    match kind {
+        "deploy" => params["deployment_id"].as_str().map(str::to_owned),
+        "rollback" => crate::signed_plan::schema::rollback_target(params).map(str::to_owned),
+        _ => None,
+    }
+}
+
 fn write_admission(
     tx: &Transaction<'_>,
     verified: &VerifiedPlan,
@@ -617,10 +642,9 @@ fn write_admission(
     .map_err(|_| PlanCode::Replay)?;
 
     let mut deployment_ids = Vec::new();
+    let actions = plan["actions"].as_array().map_or(&[][..], Vec::as_slice);
     for (index, kind) in kinds.iter().enumerate() {
-        let deployment_id = DEPLOYMENT_KINDS
-            .contains(&kind.as_str())
-            .then(|| new_uuid7(unix_ms));
+        let deployment_id = signed_deployment_id(kind, &actions[index]["params"]);
         tx.execute(
             "INSERT INTO admission_actions (plan_id, action_index, kind, deployment_id) \
              VALUES (?1, ?2, ?3, ?4)",

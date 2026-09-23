@@ -59,6 +59,8 @@ pub const PROTOCOL_VERSION: &str = "2.0";
 pub const CAPABILITY_SIGNED_PLANS: &str = "signed_plans.v1";
 pub const CAPABILITY_ADMISSIONS: &str = "admissions.v1";
 pub const CAPABILITY_AGE: &str = "age.v1";
+/// v2.0.3 (D-035): the agent copies signed deployment ids and never mints.
+pub const CAPABILITY_DEPLOYMENT_IDS: &str = "deployment_ids.v1";
 pub const ERROR_REASON_HEADER: &str = "permanu-error-reason";
 /// agent-protocol.md section 7.
 pub const MAX_MESSAGE_BYTES: usize = 4 * 1024 * 1024;
@@ -242,6 +244,7 @@ fn capabilities(age_recipient: &str) -> Vec<String> {
     let mut ids = vec![
         CAPABILITY_SIGNED_PLANS.to_string(),
         CAPABILITY_ADMISSIONS.to_string(),
+        CAPABILITY_DEPLOYMENT_IDS.to_string(),
     ];
     if !age_recipient.is_empty() {
         ids.push(CAPABILITY_AGE.to_string());
@@ -580,10 +583,18 @@ mod tests {
 
     #[test]
     fn age_capability_needs_a_recipient() {
-        assert_eq!(capabilities(""), vec!["signed_plans.v1", "admissions.v1"]);
+        assert_eq!(
+            capabilities(""),
+            vec!["signed_plans.v1", "admissions.v1", "deployment_ids.v1"]
+        );
         assert_eq!(
             capabilities("age1xyz"),
-            vec!["signed_plans.v1", "admissions.v1", "age.v1"]
+            vec![
+                "signed_plans.v1",
+                "admissions.v1",
+                "deployment_ids.v1",
+                "age.v1"
+            ]
         );
     }
 
@@ -630,7 +641,12 @@ mod tests {
         assert_eq!(hello.session_id.len(), 32);
         assert_eq!(
             hello.capabilities,
-            vec!["signed_plans.v1", "admissions.v1", "age.v1"]
+            vec![
+                "signed_plans.v1",
+                "admissions.v1",
+                "deployment_ids.v1",
+                "age.v1"
+            ]
         );
 
         let facts = client
