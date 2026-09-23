@@ -19,6 +19,11 @@ import "agent/v2/common.proto";
 service ChangeService {
   // SubmitSignedPlan verifies, admits and enqueues a plan. Returns once
   // admitted; execution progress is observed with WatchOperation.
+  // v2.0.2 (D-025): the agent drives execution. Its executor binds each
+  // admitted action on the runner and runs that kind's op sequence
+  // (signed-plan.md 14.6); clients never call runner ops. The engine
+  // advances its copy of the state head only after this call succeeds
+  // (D-031).
   // Re-submitting an admitted plan (same id and digest) is an idempotent
   // success: the original plan_id and operation_id with deduplicated=true.
   // Nothing returned is a secret. Rule-backed plans are refused
@@ -36,6 +41,8 @@ service ChangeService {
   // user-signed plan whose only action is "operation.cancel" with plan_id and
   // plan_digest_hex of the operation's plan (presence; owner, deployer, or
   // the ci key that signed that plan). Admitted like any plan.
+  // v2.0.2 (D-033): returns the cancel plan's own operation; the cancelled
+  // operation ends CANCELLED and is observed with WatchOperation.
   rpc CancelOperation(CancelOperationRequest) returns (Operation);
 
   // GetStateHead returns the current state head for one scope, which the
@@ -125,6 +132,15 @@ message Operation {
   string plan_id = 13;
 }
 
+// OperationStep.name vocabulary (v2.0.2, signed-plan.md 14.6), mapped by
+// the engine to Engine API DeploymentStep / DeploymentState:
+//   admitted, queued, bound                      - lifecycle of the plan/action
+//   prepare_release, verify_health, activate_release, rollback_release,
+//   restart_release, cleanup_candidate, cancel_execution, install_artifact,
+//   update_trusted_keys                          - the runner op being run
+//   succeeded, failed, rolled_back, cancelled, expired
+//                                                - final step of one action
+// Clients show an unknown name as a generic step.
 message OperationStep {
   uint32 index = 1;
   string name = 2;
@@ -136,6 +152,14 @@ message OperationStep {
   string error = 7;
   // Index into plan.actions.
   uint32 action_index = 8;
+  // v2.0.2. admission_actions.deployment_id of the action (UUIDv7 minted at
+  // admission for deploy/rollback/restart/scale); empty for other kinds.
+  string deployment_id = 9;
+  // v2.0.2. Engine API DeployFailureCode when the step failed ("build",
+  // "prepare", "start", "candidate_health", "activate", "public_health",
+  // "recovery"); "start" also when the start timeout (default 300 s)
+  // expired. Empty otherwise.
+  string failure_code = 10;
 }
 
 message GetOperationRequest {
@@ -252,6 +276,8 @@ message Admission {
   // "client" (SubmitSignedPlan) or "agent_webhook" (rule plans).
   string submitter = 16;
   string operation_id = 17;
+  // v2.0.2. plan.environment_id (UUIDv7); empty for server-level plans.
+  string environment_id = 18;
 }
 
 // StandingRuleInfo describes an installed standing rule. The rule is returned
