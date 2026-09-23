@@ -455,6 +455,53 @@ fn reconciles_the_consumed_log_into_actions_and_outcome() {
     fs::remove_dir_all(dir).unwrap();
 }
 
+/// v1.0.5 (D-044): a cancelled action's `result` line carries `cleanup`,
+/// and readers ignore fields they do not know (section 14.5).
+#[test]
+fn a_cancelled_result_carries_its_cleanup_and_unknown_fields_are_ignored() {
+    let dir = temp_dir("store-cleanup");
+    let (store, _) = AdmissionStore::open(&config(&dir), false, now()).unwrap();
+    seed_head(&store, USER_DEPLOY_HEAD_BEFORE);
+    let (envelope, specs) = user_deploy();
+    let admission = store
+        .admit(&test_trust(), &input(&envelope, &specs, now()))
+        .unwrap();
+    let (id, digest) = (&admission.plan_id, &admission.plan_digest_hex);
+    let log = dir.join("consumed.log");
+    let uid = unsafe { libc::geteuid() };
+    let mut cleanup = serde_json::from_str::<Value>(&line(3, "op", id, digest, None)).unwrap();
+    cleanup["op"] = Value::String("cleanup_candidate".to_owned());
+    cleanup["future_field"] = Value::Bool(true);
+    let mut cancelled =
+        serde_json::from_str::<Value>(&line(4, "result", id, digest, Some("cancelled"))).unwrap();
+    cancelled["cleanup"] = Value::String("done".to_owned());
+    write_log(
+        &log,
+        &[
+            line(1, "consumed", id, digest, None),
+            line(2, "op", id, digest, None),
+            cleanup.to_string(),
+            cancelled.to_string(),
+        ],
+        false,
+    );
+    let read = read_consumed_log(&log, uid);
+    assert!(read.problems.is_empty(), "{:?}", read.problems);
+    assert_eq!(read.lines[3].cleanup.as_deref(), Some("done"));
+    let effects = store.reconcile(&read, now()).unwrap();
+    assert!(effects.contains(&ReconcileEffect::ActionFinished {
+        plan_id: id.clone(),
+        action_index: 0,
+        outcome: "cancelled".to_owned(),
+        cleanup: Some("done".to_owned()),
+    }));
+    assert!(!effects
+        .iter()
+        .any(|e| matches!(e, ReconcileEffect::Unexplained { .. })));
+    assert_eq!(store.admission(id).unwrap().unwrap().outcome, "cancelled");
+    fs::remove_dir_all(dir).unwrap();
+}
+
 #[test]
 fn window_expiry_marks_unconsumed_actions() {
     let dir = temp_dir("store-expire");

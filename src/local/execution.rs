@@ -64,6 +64,15 @@ impl Clock for SystemClock {
 /// agent-protocol.md section 7: 10 submissions per minute.
 const SUBMISSIONS_PER_MINUTE: usize = 10;
 const MAX_SEALED_SECRETS: usize = 64;
+/// Cancelled actions logged from one `cancel_execution` result (a plan
+/// holds at most 64 actions).
+const MAX_LOGGED_CANCELLED: usize = 64;
+
+/// A runner-supplied id that is safe to echo into a step log.
+fn text_id(id: &str) -> bool {
+    (1..=64).contains(&id.len()) && id.bytes().all(|b| b.is_ascii_hexdigit() || b == b'-')
+}
+
 /// D-033: a deploy's start phase fails `start` after this many seconds.
 pub const DEFAULT_START_TIMEOUT_SECONDS: u64 = 300;
 
@@ -668,6 +677,49 @@ impl ChangeCore {
         }
     }
 
+    /// v1.0.5 (D-044, section 14.6): the `cleanup_candidate` step of a
+    /// cancelled deploy whose prepared candidate `cancel_execution` cleaned
+    /// up. It carries no failure code (the deployment ends `cancelled`); a
+    /// cleanup that could not finish names the leftover candidate in the
+    /// step error.
+    fn cancel_cleanup_step(&self, record: &AdmissionRecord, action: &ActionRecord, cleanup: &str) {
+        let deployment_id = action.deployment_id.clone().unwrap_or_default();
+        match cleanup {
+            "done" => {
+                self.step(
+                    record,
+                    Some(action),
+                    "cleanup_candidate",
+                    OperationState::Succeeded,
+                    "",
+                    "",
+                );
+                self.log_line(
+                    record,
+                    action,
+                    "cleanup_candidate",
+                    &format!("cancelled candidate {deployment_id} removed with its secrets"),
+                );
+            }
+            "failed" => {
+                let error = format!(
+                    "the cancel could not clean up candidate {deployment_id}: its containers or \
+                     /run/permanu/secrets/{deployment_id}/ may remain on the server"
+                );
+                warn!(plan_id = %record.plan_id, %deployment_id, "cancel cleanup failed");
+                self.step(
+                    record,
+                    Some(action),
+                    "cleanup_candidate",
+                    OperationState::Failed,
+                    &error,
+                    "",
+                );
+            }
+            _ => {}
+        }
+    }
+
     /// The final step of one action and its deploy status.
     fn final_step(
         &self,
@@ -935,6 +987,20 @@ impl ChangeCore {
         op: &str,
         timeout: Duration,
     ) -> Result<(), RunnerFailure> {
+        self.op_result(record, plan, action, op, timeout)
+            .await
+            .map(|_| ())
+    }
+
+    /// `op`, returning the runner's `result` line.
+    async fn op_result(
+        &self,
+        record: &AdmissionRecord,
+        plan: &Value,
+        action: &ActionRecord,
+        op: &str,
+        timeout: Duration,
+    ) -> Result<Value, RunnerFailure> {
         let auto_rollback = action.kind == "deploy";
         let phase = match op {
             "prepare_release" | "restart_release" => Some(Phase::Starting),
@@ -969,7 +1035,7 @@ impl ChangeCore {
                 }
             }
         }
-        result.map(|_| ())
+        result.map(|done| done.result)
     }
 
     /// A fixed op sequence (every kind but `deploy`).
@@ -1028,8 +1094,8 @@ impl ChangeCore {
         let target = params["plan_id"].as_str().unwrap_or_default().to_owned();
         let newly = locked(&self.cancelled).insert(target.clone());
         if !done.iter().any(|d| d == "cancel_execution") {
-            if let Err(failure) = self
-                .op(
+            match self
+                .op_result(
                     record,
                     plan,
                     action,
@@ -1038,10 +1104,13 @@ impl ChangeCore {
                 )
                 .await
             {
-                if newly {
-                    locked(&self.cancelled).remove(&target);
+                Ok(result) => self.log_cancelled(record, action, &result),
+                Err(failure) => {
+                    if newly {
+                        locked(&self.cancelled).remove(&target);
+                    }
+                    return Outcome::with("failed", "", describe(&failure));
                 }
-                return Outcome::with("failed", "", describe(&failure));
             }
         }
         self.reconcile_once().await;
@@ -1061,6 +1130,30 @@ impl ChangeCore {
         }
         info!(canceller = %record.plan_id, target = %target, "operation cancelled");
         Outcome::succeeded()
+    }
+
+    /// The `cancel_execution` result lists each cancelled action as
+    /// `{action_index, deployment_id, cleanup}` (v1.0.5, D-044); it is logged
+    /// on the cancel's step. The cancelled plan's own steps come from the
+    /// consumed log, which is authoritative (section 14.5).
+    fn log_cancelled(&self, record: &AdmissionRecord, action: &ActionRecord, result: &Value) {
+        let Some(cancelled) = result["cancelled"].as_array() else {
+            return;
+        };
+        for entry in cancelled.iter().take(MAX_LOGGED_CANCELLED) {
+            let index = entry["action_index"].as_u64().unwrap_or_default();
+            let cleanup = entry["cleanup"]
+                .as_str()
+                .filter(|c| matches!(*c, "done" | "failed" | "none"))
+                .unwrap_or("unknown");
+            let line = match entry["deployment_id"].as_str().filter(|id| text_id(id)) {
+                Some(deployment_id) => format!(
+                    "cancelled action {index} (deployment {deployment_id}): cleanup {cleanup}"
+                ),
+                None => format!("cancelled action {index}: cleanup {cleanup}"),
+            };
+            self.log_line(record, action, "cancel_execution", &line);
+        }
     }
 
     /// `deploy`: the start phase (`prepare_release`, `verify_health`) within
@@ -1265,8 +1358,12 @@ impl ChangeCore {
                 plan_id,
                 action_index,
                 outcome,
+                cleanup,
             } => {
                 if let Some((record, plan, action)) = self.action_context(&plan_id, action_index) {
+                    if let Some(cleanup) = cleanup {
+                        self.cancel_cleanup_step(&record, &action, &cleanup);
+                    }
                     self.final_step(&record, &plan, &action, &outcome);
                 }
             }

@@ -122,6 +122,9 @@ pub struct FakeRunner {
     pub trust: TrustPaths,
     pub host_keys: Vec<String>,
     pub age_recipient: String,
+    /// What `cancel_execution` reports for a prepared, unactivated deploy
+    /// candidate it cleans up (D-044): `done` or `failed`.
+    pub cancel_cleanup: Mutex<&'static str>,
     /// Every request, in arrival order.
     pub requests: Mutex<Vec<Value>>,
     pub fail_bind_with: Mutex<Option<PlanCode>>,
@@ -235,20 +238,73 @@ impl FakeRunner {
 
     /// The runner finishing an action (its `result` line), once.
     pub fn result(&self, plan_id: &str, digest: &str, index: u32, outcome: &str) {
-        if self
+        self.result_with(plan_id, digest, index, json!({"outcome": outcome}));
+    }
+
+    /// A `result` line with extra fields; false when the action had one.
+    fn result_with(&self, plan_id: &str, digest: &str, index: u32, fields: Value) -> bool {
+        let first = self
             .finished
             .lock()
             .unwrap()
-            .insert((plan_id.to_owned(), index))
-        {
-            self.append(
-                "result",
-                plan_id,
-                digest,
-                index,
-                json!({"outcome": outcome}),
-            );
+            .insert((plan_id.to_owned(), index));
+        if first {
+            self.append("result", plan_id, digest, index, fields);
         }
+        first
+    }
+
+    /// `cancel_execution` (sections 14.3, 14.6, v1.0.5 D-044): ends every
+    /// unfinished action of the target `cancelled`, cleaning up a deploy's
+    /// prepared, unactivated candidate first; returns the wire `cancelled`
+    /// list.
+    fn cancel_target(&self, target: &str) -> Vec<Value> {
+        let Some((digest, plan, count)) = self.admitted(target) else {
+            return Vec::new();
+        };
+        let mut cancelled = Vec::new();
+        for index in 0..count as u32 {
+            if self
+                .finished
+                .lock()
+                .unwrap()
+                .contains(&(target.to_owned(), index))
+            {
+                continue;
+            }
+            let action = &plan["actions"][index as usize];
+            let ops = self
+                .ops
+                .lock()
+                .unwrap()
+                .get(&(target.to_owned(), index))
+                .cloned()
+                .unwrap_or_default();
+            let prepared = ops.iter().any(|o| o == "prepare_release")
+                && !ops.iter().any(|o| o == "activate_release");
+            let cleanup = if action["kind"] == "deploy" && prepared {
+                self.append(
+                    "op",
+                    target,
+                    &digest,
+                    index,
+                    json!({"op": "cleanup_candidate"}),
+                );
+                *self.cancel_cleanup.lock().unwrap()
+            } else {
+                "none"
+            };
+            if self.result_with(
+                target,
+                &digest,
+                index,
+                json!({"outcome": "cancelled", "cleanup": cleanup}),
+            ) {
+                cancelled.push(json!({"action_index": index,
+                    "deployment_id": action["params"]["deployment_id"], "cleanup": cleanup}));
+            }
+        }
+        cancelled
     }
 
     /// Reads the admitted plan, as the real runner does (read-only).
@@ -460,12 +516,12 @@ impl FakeRunner {
                     .as_str()
                     .unwrap_or_default()
                     .to_owned();
-                if let Some((target_digest, _, count)) = self.admitted(&target) {
-                    for victim in 0..count as u32 {
-                        self.result(&target, &target_digest, victim, "cancelled");
-                    }
-                }
+                let cancelled = self.cancel_target(&target);
                 self.release.notify_waiters();
+                if self.write_results.load(Ordering::SeqCst) {
+                    self.result(plan_id, digest, index, "succeeded");
+                }
+                return json!({"ok": true, "cancelled": cancelled});
             }
             _ => {}
         }
@@ -660,6 +716,7 @@ impl Harness {
             trust: trust.clone(),
             host_keys: options.host_keys.clone(),
             age_recipient: bootstrap_recipient.clone(),
+            cancel_cleanup: Mutex::new("done"),
             requests: Mutex::new(Vec::new()),
             fail_bind_with: Mutex::new(None),
             behaviors: Mutex::new(HashMap::new()),

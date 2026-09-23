@@ -17,9 +17,9 @@ use crate::signed_plan::text::format_timestamp;
 
 const MAX_LOG_BYTES: u64 = 33 * 1024 * 1024 + 1024 * 1024;
 
-/// One line of the consumed log (section 14.5).
+/// One line of the consumed log (section 14.5). Unknown fields are ignored
+/// (v1.0.5: "readers ignore unknown fields").
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
-#[serde(deny_unknown_fields)]
 pub struct ConsumedLine {
     pub v: u32,
     pub seq: u64,
@@ -34,6 +34,11 @@ pub struct ConsumedLine {
     pub release_id: Option<String>,
     #[serde(default)]
     pub outcome: Option<String>,
+    /// v1.0.5 (D-044): on a `cancelled` result, whether `cancel_execution`
+    /// cleaned up the deploy's prepared candidate: `done`, `failed` or
+    /// `none`.
+    #[serde(default)]
+    pub cleanup: Option<String>,
 }
 
 /// What a reconciliation pass changed, for events.
@@ -47,6 +52,8 @@ pub enum ReconcileEffect {
         plan_id: String,
         action_index: u32,
         outcome: String,
+        /// The `cleanup` of a cancelled action (D-044), when the line has one.
+        cleanup: Option<String>,
     },
     AdmissionFinished {
         plan_id: String,
@@ -139,6 +146,8 @@ pub fn read_consumed_log(path: &Path, owner_uid: u32) -> LogRead {
 }
 
 const OUTCOMES: &[&str] = &["succeeded", "failed", "rolled_back", "cancelled", "expired"];
+/// v1.0.5 (D-044): `cleanup` values of a cancelled result.
+const CLEANUPS: &[&str] = &["done", "failed", "none"];
 
 impl AdmissionStore {
     /// Applies the new lines of `read` in one transaction with the cursor.
@@ -248,6 +257,11 @@ fn apply_line(
                 plan_id: line.plan_id.clone(),
                 action_index: line.action_index,
                 outcome: outcome.to_owned(),
+                cleanup: line
+                    .cleanup
+                    .as_deref()
+                    .filter(|c| outcome == "cancelled" && CLEANUPS.contains(c))
+                    .map(str::to_owned),
             });
             if let Some(outcome) = finish_admission_if_done(tx, &line.plan_id)? {
                 effects.push(ReconcileEffect::AdmissionFinished {

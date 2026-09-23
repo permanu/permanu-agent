@@ -9,6 +9,7 @@ use tokio_stream::StreamExt;
 use tonic::Code;
 
 use super::errors::PLAN_ERROR_HEADER;
+use super::execution::decode_event;
 use super::test_harness::{Harness, OpBehavior, Options};
 use super::ERROR_REASON_HEADER;
 use crate::proto::agent::v2::{
@@ -1215,19 +1216,30 @@ async fn inputs_are_bound_and_take_the_composed_deploy_outcome() {
     h.stop().await;
 }
 
-#[tokio::test]
-async fn cancel_stops_a_running_deploy_and_returns_the_cancel_operation() {
-    let Some(owner) = TestSigner::load("owner") else {
-        eprintln!("skipped: docs keys.json not found");
-        return;
-    };
-    let h = Harness::start("cancel", Some(&vector_trust())).await;
+/// Every `StepLog` line recorded for an operation, including lines recorded
+/// after its `finished` event (which a WatchOperation replay stops at).
+fn step_logs(h: &Harness, operation_id: &str) -> Vec<String> {
+    h.core
+        .store
+        .operation_events_after(operation_id, 0)
+        .unwrap()
+        .into_iter()
+        .filter_map(|(_, text)| match decode_event(&text)?.event {
+            Some(operation_event::Event::Log(log)) => Some(log.line),
+            _ => None,
+        })
+        .collect()
+}
+
+/// A deploy cancelled inside `prepare_release` (its candidate is prepared,
+/// never activated). Returns the deploy and the cancel plan's operation.
+async fn cancel_in_prepare(h: &Harness, owner: &TestSigner) -> (OperationRef, Operation) {
     h.runner.behave("prepare_release", OpBehavior::Hang);
     let mut change = ChangeServiceClient::new(h.channel.clone());
     let deploy = submit_ok(
-        &h,
+        h,
         fresh_deploy(
-            &owner,
+            owner,
             "0000000000f1",
             "DDDDDDDDDDDDDDDDDDDDDA",
             GENESIS_HEAD,
@@ -1282,8 +1294,8 @@ async fn cancel_stops_a_running_deploy_and_returns_the_cancel_operation() {
     // D-033: the cancel plan's own operation.
     assert_ne!(cancel.id, deploy.operation_id);
     assert_eq!(cancel.actions, vec!["operation.cancel"]);
-    wait_for_state(&h, &cancel.id, OperationState::Succeeded).await;
-    wait_for_state(&h, &deploy.operation_id, OperationState::Cancelled).await;
+    wait_for_state(h, &cancel.id, OperationState::Succeeded).await;
+    wait_for_state(h, &deploy.operation_id, OperationState::Cancelled).await;
     assert!(h
         .runner
         .ops_for(&cancel.plan_id)
@@ -1293,7 +1305,84 @@ async fn cancel_stops_a_running_deploy_and_returns_the_cancel_operation() {
         h.runner.ops_for(&deploy.plan_id),
         vec![("prepare_release".to_owned(), 0)]
     );
+    (deploy, cancel)
+}
+
+#[tokio::test]
+async fn cancel_stops_a_running_deploy_and_returns_the_cancel_operation() {
+    let Some(owner) = TestSigner::load("owner") else {
+        eprintln!("skipped: docs keys.json not found");
+        return;
+    };
+    let h = Harness::start("cancel", Some(&vector_trust())).await;
+    let (deploy, cancel) = cancel_in_prepare(&h, &owner).await;
+    // D-044: the runner cleaned up the prepared candidate within the cancel;
+    // the deploy's steps show it, and the deployment stays `cancelled`.
     let op = operation(&h, &deploy.operation_id).await;
+    assert_eq!(
+        names(&op, 0),
+        vec![
+            "queued",
+            "bound",
+            "prepare_release",
+            "cleanup_candidate",
+            "cancelled"
+        ]
+    );
+    let cleanup = op
+        .steps
+        .iter()
+        .find(|s| s.name == "cleanup_candidate")
+        .unwrap();
+    assert_eq!(cleanup.state, OperationState::Succeeded as i32);
+    assert_eq!(cleanup.failure_code, "");
+    assert_eq!(op.state, OperationState::Cancelled as i32);
+    // The cancel plan's own step logs what the runner cancelled. The
+    // runner's result line can finish the operation before the executor
+    // logs the wire result, so wait for the line in the store.
+    let expected = format!(
+        "cancelled action 0 (deployment {}): cleanup done",
+        cleanup.deployment_id
+    );
+    let mut lines = Vec::new();
+    for _ in 0..200 {
+        lines = step_logs(&h, &cancel.id);
+        if lines.contains(&expected) {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    assert!(lines.contains(&expected), "{lines:?}");
+    h.stop().await;
+}
+
+/// D-044: a cleanup the runner could not finish still ends the deploy
+/// `cancelled`, and the leftover candidate is reported in the step error.
+#[tokio::test]
+async fn a_cancel_whose_cleanup_failed_reports_the_leftover_candidate() {
+    let Some(owner) = TestSigner::load("owner") else {
+        eprintln!("skipped: docs keys.json not found");
+        return;
+    };
+    let h = Harness::start("cancel-leftover", Some(&vector_trust())).await;
+    *h.runner.cancel_cleanup.lock().unwrap() = "failed";
+    let (deploy, _) = cancel_in_prepare(&h, &owner).await;
+    let op = operation(&h, &deploy.operation_id).await;
+    assert_eq!(op.state, OperationState::Cancelled as i32);
+    let cleanup = op
+        .steps
+        .iter()
+        .find(|s| s.name == "cleanup_candidate")
+        .unwrap();
+    assert_eq!(cleanup.state, OperationState::Failed as i32);
+    assert_eq!(cleanup.failure_code, "");
+    assert!(
+        cleanup.error.contains(&cleanup.deployment_id),
+        "{}",
+        cleanup.error
+    );
+    assert!(!cleanup.deployment_id.is_empty());
+    assert!(op.error.contains("candidate"), "{}", op.error);
     assert_eq!(names(&op, 0).last().unwrap(), "cancelled");
     h.stop().await;
 }
