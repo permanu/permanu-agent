@@ -1,3 +1,4 @@
+mod admissions;
 mod agent_crypto;
 mod app_lifecycle;
 mod backup_lifecycle;
@@ -24,6 +25,7 @@ mod proto;
 mod route_metrics;
 mod self_update;
 mod service_lifecycle;
+mod signed_plan;
 mod spool;
 mod sre_tools;
 mod system;

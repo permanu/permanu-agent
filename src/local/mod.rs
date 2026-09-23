@@ -1,15 +1,22 @@
 //! Local mode: agent protocol v2 served on a unix socket (agent-protocol.md).
 //!
-//! This slice serves `InfoService` (Hello, GetServerFacts, Ping) and
-//! `StateService.ListContainers`. Every other v2 RPC answers `UNIMPLEMENTED`
-//! with the `permanu-error-reason: ERROR_REASON_CAPABILITY_MISSING` trailer.
-//! Nothing served here mutates the host.
+//! Served: `InfoService` (Hello with trust state and age recipient,
+//! GetServerFacts, Ping), `StateService.ListContainers`, `ChangeService`
+//! (signed-plan admission, operations, heads, admissions, rules, trusted
+//! keys) and `EventService.Subscribe`. Every other v2 RPC answers
+//! `UNIMPLEMENTED` with the `ERROR_REASON_CAPABILITY_MISSING` trailer. The
+//! only path that changes the host is an admitted signed plan.
 
+pub mod age_identity;
+pub mod change;
+pub mod errors;
+pub mod events;
+pub mod execution;
 pub mod facts;
+pub mod runner;
 pub mod socket;
 
 use std::{
-    path::PathBuf,
     sync::Arc,
     time::{Duration, SystemTime},
 };
@@ -26,17 +33,21 @@ use tonic::{
 use tracing::{info, warn};
 
 use crate::{
+    admissions::{AdmissionStore, StoreConfig, StoreOwner},
     config::{AgentMode, LocalConfig},
     proto::agent::v2::{
         agent_info,
+        change_service_server::ChangeServiceServer,
+        event_service_server::EventServiceServer,
         info_service_server::{InfoService, InfoServiceServer},
         state_service_server::{StateService, StateServiceServer},
+        trusted_keys_summary::TrustState as TrustStateProto,
         AgentInfo, ClockInfo, Container, ErrorReason, GetServerFactsRequest,
         GetStateSnapshotRequest, HelloRequest, HelloResponse, ListContainersRequest,
         ListContainersResponse, PageInfo, PingRequest, PingResponse, ServerFacts, StateSnapshot,
         TrustedKeysSummary,
     },
-    trusted_keys,
+    signed_plan::trust::{fingerprint, TrustPaths, TrustState},
 };
 
 use facts::{timestamp, HostProbe};
@@ -97,22 +108,45 @@ pub fn status_with_reason(code: Code, message: &str, reason: ErrorReason) -> Sta
 pub struct InfoSvc {
     probe: Arc<dyn HostProbe>,
     identity: AgentIdentity,
-    trusted_keys_path: PathBuf,
-    require_root_owned_trust_file: bool,
+    trust: TrustPaths,
+    age_recipient: String,
 }
 
-impl InfoSvc {
-    fn trusted_keys(&self) -> Option<trusted_keys::TrustedKeysSummary> {
-        match trusted_keys::read_summary(
-            &self.trusted_keys_path,
-            self.require_root_owned_trust_file,
-        ) {
-            Ok(summary) => summary,
-            Err(err) => {
-                warn!(error = %err, "trusted-keys file unreadable; Hello reports no trust set");
-                None
-            }
-        }
+/// `AgentInfo.server_id` and `HelloResponse.trusted_keys` from the trust
+/// state (signed-plan.md 7.2, v1.0.1).
+fn trust_summary(state: &TrustState) -> (String, TrustedKeysSummary) {
+    match state {
+        TrustState::Absent => (
+            String::new(),
+            TrustedKeysSummary {
+                state: TrustStateProto::Absent as i32,
+                ..Default::default()
+            },
+        ),
+        TrustState::Valid(store) => (
+            store.server_id.clone(),
+            TrustedKeysSummary {
+                fingerprint_digest_hex: store.fingerprint_digest_hex(),
+                key_count: store.active_key_count(),
+                generation: store.generation(),
+                state: TrustStateProto::Valid as i32,
+                invalid_reason: String::new(),
+            },
+        ),
+        TrustState::Invalid { reason, document } => (
+            document
+                .as_ref()
+                .and_then(|d| d["server_id"].as_str())
+                .filter(|id| crate::signed_plan::text::uuid7(id))
+                .unwrap_or_default()
+                .to_owned(),
+            TrustedKeysSummary {
+                fingerprint_digest_hex: document.as_ref().map(fingerprint).unwrap_or_default(),
+                state: TrustStateProto::Invalid as i32,
+                invalid_reason: reason.clone(),
+                ..Default::default()
+            },
+        ),
     }
 }
 
@@ -132,7 +166,11 @@ impl InfoService for InfoSvc {
             ));
         }
         let now = SystemTime::now();
-        let trust = self.trusted_keys();
+        let trust = self.trust.load();
+        if let TrustState::Invalid { reason, .. } = &trust {
+            warn!(%reason, "trusted-keys file is invalid; every admission fails");
+        }
+        let (server_id, trusted_keys) = trust_summary(&trust);
         let estimated_skew = req.client_time.as_ref().map(|client| {
             let agent = timestamp(now);
             let mut seconds = agent.seconds - client.seconds;
@@ -160,19 +198,13 @@ impl InfoService for InfoSvc {
                 started_at: Some(timestamp(self.identity.started_at)),
                 quarantined: false,
                 quarantine_reason: String::new(),
-                server_id: trust
-                    .as_ref()
-                    .map(|t| t.server_id.clone())
-                    .unwrap_or_default(),
+                server_id,
                 ssh_host_key_digests_hex: self.probe.ssh_host_key_digests_hex(),
+                age_recipient: self.age_recipient.clone(),
             }),
             capabilities: Vec::new(),
             server: Some(self.probe.server_facts().await),
-            trusted_keys: trust.map(|t| TrustedKeysSummary {
-                fingerprint_digest_hex: t.fingerprint_digest_hex,
-                key_count: t.key_count,
-                generation: t.generation,
-            }),
+            trusted_keys: Some(trusted_keys),
             clock: Some(ClockInfo {
                 agent_time: Some(timestamp(now)),
                 ntp_synchronized: self.probe.ntp_synchronized(),
@@ -283,7 +315,7 @@ fn capability_missing() -> Status {
     )
 }
 
-fn log_peer<T>(request: &Request<T>, rpc: &str) {
+pub(crate) fn log_peer<T>(request: &Request<T>, rpc: &str) {
     let peer = request
         .extensions()
         .get::<tonic::transport::server::UdsConnectInfo>()
@@ -318,8 +350,9 @@ fn tag_unimplemented<B>(mut response: http::Response<B>) -> http::Response<B> {
 pub struct LocalServer {
     pub probe: Arc<dyn HostProbe>,
     pub identity: AgentIdentity,
-    pub trusted_keys_path: PathBuf,
-    pub require_root_owned_trust_file: bool,
+    pub trust: TrustPaths,
+    pub age_recipient: String,
+    pub core: Arc<execution::ChangeCore>,
 }
 
 impl LocalServer {
@@ -332,12 +365,25 @@ impl LocalServer {
         let info_svc = InfoServiceServer::new(InfoSvc {
             probe: self.probe.clone(),
             identity: self.identity,
-            trusted_keys_path: self.trusted_keys_path,
-            require_root_owned_trust_file: self.require_root_owned_trust_file,
+            trust: self.trust,
+            age_recipient: self.age_recipient,
         })
         .max_decoding_message_size(MAX_MESSAGE_BYTES)
         .max_encoding_message_size(MAX_MESSAGE_BYTES);
         let state_svc = StateServiceServer::new(StateSvc { probe: self.probe })
+            .max_decoding_message_size(MAX_MESSAGE_BYTES)
+            .max_encoding_message_size(MAX_MESSAGE_BYTES);
+        let events = self.core.events.clone();
+        let bus = events.clone();
+        let shutdown = async move {
+            shutdown.await;
+            // End open Subscribe/WatchOperation streams so the server drains.
+            bus.close();
+        };
+        let change_svc = ChangeServiceServer::new(change::ChangeSvc { core: self.core })
+            .max_decoding_message_size(MAX_MESSAGE_BYTES)
+            .max_encoding_message_size(MAX_MESSAGE_BYTES);
+        let event_svc = EventServiceServer::new(events::EventSvc { bus: events })
             .max_decoding_message_size(MAX_MESSAGE_BYTES)
             .max_encoding_message_size(MAX_MESSAGE_BYTES);
 
@@ -348,6 +394,8 @@ impl LocalServer {
             .layer(tower::util::MapResponseLayer::new(tag_unimplemented))
             .add_service(info_svc)
             .add_service(state_svc)
+            .add_service(change_svc)
+            .add_service(event_svc)
             .serve_with_incoming_shutdown(logged_incoming(listener), shutdown)
             .await
     }
@@ -370,6 +418,30 @@ fn logged_incoming(
     })
 }
 
+/// `permanu-agent:permanu-runner` when the agent runs as root and both
+/// exist (D-022); otherwise the store keeps the process's own ids.
+fn store_owner(cfg: &LocalConfig) -> Option<StoreOwner> {
+    // SAFETY: geteuid has no preconditions.
+    if unsafe { libc::geteuid() } != 0 {
+        return None;
+    }
+    let uid = socket::resolve_user(&cfg.store_user);
+    let gid = socket::resolve_group(&cfg.store_group);
+    match (uid, gid) {
+        (Ok(uid), Ok(gid)) => Some(StoreOwner { uid, gid }),
+        (uid, gid) => {
+            warn!(
+                user = %cfg.store_user,
+                group = %cfg.store_group,
+                user_found = uid.is_ok(),
+                group_found = gid.is_ok(),
+                "store owner or group missing; admissions.db stays root-owned (the runner, as root, can still read it)"
+            );
+            gid.ok().map(|gid| StoreOwner { uid: 0, gid })
+        }
+    }
+}
+
 /// Binds the configured socket and serves v2 until `shutdown` resolves.
 pub async fn run(
     cfg: LocalConfig,
@@ -381,156 +453,80 @@ pub async fn run(
         .as_deref()
         .map(socket::resolve_group)
         .transpose()?;
+    let trust = TrustPaths::production(cfg.trusted_keys_path.clone());
+    let trust_state = trust.load();
+    let server_id = match &trust_state {
+        TrustState::Valid(store) => store.server_id.clone(),
+        _ => String::new(),
+    };
+    let now = execution::Clock::now(&execution::SystemClock);
+    let owner = store_owner(&cfg);
+    let (store, report) = AdmissionStore::open(
+        &StoreConfig {
+            path: cfg.admissions_db.clone(),
+            owner,
+        },
+        !matches!(trust_state, TrustState::Absent),
+        now,
+    )?;
+    let age_recipient =
+        match age_identity::load_or_generate(&cfg.age_identity_path, owner.map(|o| (o.uid, o.gid)))
+        {
+            Ok(recipient) => recipient,
+            Err(err) => {
+                warn!(error = %err, "no age identity; secrets cannot be sealed for this server");
+                String::new()
+            }
+        };
+    let probe: Arc<dyn HostProbe> = Arc::new(facts::SystemProbe { server_id });
+    let core = execution::ChangeCore::new(execution::ChangeCoreParts {
+        store: Arc::new(store),
+        trust: trust.clone(),
+        probe: probe.clone(),
+        runner: Arc::new(runner::StdioRunner::new(cfg.runner_path.clone())),
+        events: events::EventBus::new(),
+        clock: Arc::new(execution::SystemClock),
+        consumed_log: cfg.consumed_log.clone(),
+        consumed_log_owner: 0,
+    });
+    if report.recreated {
+        warn!(
+            moved_aside = ?report.moved_aside,
+            "admissions.db was lost or corrupt and was recreated; admissions are quarantined for 20 minutes"
+        );
+        core.store_recreated();
+    }
+    let background = core.spawn_background();
     let listener = socket::bind(&cfg.socket_path, gid)?;
-    let server_id = trusted_keys::read_summary(&cfg.trusted_keys_path, true)
-        .ok()
-        .flatten()
-        .map(|s| s.server_id)
-        .unwrap_or_default();
     info!(socket = %cfg.socket_path.display(), "serving agent protocol v2");
-    LocalServer {
-        probe: Arc::new(facts::SystemProbe { server_id }),
+    let result = LocalServer {
+        probe,
         identity: AgentIdentity::current(mode),
-        trusted_keys_path: cfg.trusted_keys_path,
-        require_root_owned_trust_file: true,
+        trust,
+        age_recipient,
+        core,
     }
     .serve(listener, shutdown)
-    .await?;
+    .await;
+    background.abort();
+    result?;
     Ok(())
 }
+
+#[cfg(test)]
+mod change_tests;
+#[cfg(test)]
+pub(crate) mod test_harness;
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::proto::agent::v2::{
-        change_service_client::ChangeServiceClient, info_service_client::InfoServiceClient,
-        state_service_client::StateServiceClient, GetStateHeadRequest, PageRequest, Scope,
+        info_service_client::InfoServiceClient, state_service_client::StateServiceClient,
+        PageRequest, Scope,
     };
-    use hyper_util::rt::TokioIo;
-    use std::{fs, os::unix::fs::PermissionsExt, path::Path};
-    use tonic::transport::{Channel, Endpoint};
 
-    struct FakeProbe;
-
-    #[tonic::async_trait]
-    impl HostProbe for FakeProbe {
-        async fn server_facts(&self) -> ServerFacts {
-            ServerFacts {
-                hostname: "fake-host".to_string(),
-                arch: "arm64".to_string(),
-                memory_total_bytes: 42,
-                ..Default::default()
-            }
-        }
-
-        async fn containers(&self, include_stopped: bool) -> Result<Vec<Container>, Status> {
-            let mut all = vec![
-                container("c3", "web-3", "p1", "s1", "running"),
-                container("c1", "web-1", "p1", "s1", "running"),
-                container("c2", "web-2", "p1", "s1", "running"),
-                container("c4", "db-1", "p2", "s2", "running"),
-            ];
-            if include_stopped {
-                all.push(container("c5", "old-1", "p1", "s1", "exited"));
-            }
-            Ok(all)
-        }
-
-        fn ssh_host_key_digests_hex(&self) -> Vec<String> {
-            vec!["ab".repeat(32)]
-        }
-
-        fn ntp_synchronized(&self) -> bool {
-            true
-        }
-
-        fn timezone(&self) -> String {
-            "Etc/UTC".to_string()
-        }
-    }
-
-    fn container(id: &str, name: &str, project: &str, service: &str, state: &str) -> Container {
-        Container {
-            container_id: id.to_string(),
-            name: name.to_string(),
-            project_id: project.to_string(),
-            service_id: service.to_string(),
-            environment: "production".to_string(),
-            state: state.to_string(),
-            ..Default::default()
-        }
-    }
-
-    struct Harness {
-        dir: PathBuf,
-        channel: Channel,
-        shutdown: Option<tokio::sync::oneshot::Sender<()>>,
-        task: tokio::task::JoinHandle<()>,
-    }
-
-    impl Harness {
-        async fn start(name: &str, trusted_keys: Option<&str>) -> Self {
-            let dir = PathBuf::from("/tmp").join(format!(
-                "pa-v2-{name}-{}-{}",
-                std::process::id(),
-                crate::timeutil::now_unix_nanos() % 1_000_000_000
-            ));
-            fs::create_dir_all(&dir).unwrap();
-            let trusted_keys_path = dir.join("trusted-keys.json");
-            if let Some(raw) = trusted_keys {
-                fs::write(&trusted_keys_path, raw).unwrap();
-                fs::set_permissions(&trusted_keys_path, fs::Permissions::from_mode(0o644)).unwrap();
-            }
-            let socket_path = dir.join("run").join("agent.sock");
-            let listener = socket::bind(&socket_path, None).unwrap();
-            let (tx, rx) = tokio::sync::oneshot::channel::<()>();
-            let server = LocalServer {
-                probe: Arc::new(FakeProbe),
-                identity: AgentIdentity {
-                    version: "test-1".to_string(),
-                    binary_digest_hex: "cd".repeat(32),
-                    mode: AgentMode::Local,
-                    started_at: SystemTime::now(),
-                },
-                trusted_keys_path,
-                require_root_owned_trust_file: false,
-            };
-            let task = tokio::spawn(async move {
-                server
-                    .serve(listener, async {
-                        let _ = rx.await;
-                    })
-                    .await
-                    .unwrap();
-            });
-            let channel = connect(&socket_path).await;
-            Self {
-                dir,
-                channel,
-                shutdown: Some(tx),
-                task,
-            }
-        }
-
-        async fn stop(mut self) {
-            drop(self.channel);
-            let _ = self.shutdown.take().unwrap().send(());
-            self.task.await.unwrap();
-            fs::remove_dir_all(&self.dir).unwrap();
-        }
-    }
-
-    async fn connect(path: &Path) -> Channel {
-        let path = path.to_path_buf();
-        Endpoint::try_from("http://[::]:50051")
-            .unwrap()
-            .connect_with_connector(tower::service_fn(move |_: tonic::transport::Uri| {
-                let path = path.clone();
-                async move { Ok::<_, std::io::Error>(TokioIo::new(UnixStream::connect(path).await?)) }
-            }))
-            .await
-            .unwrap()
-    }
+    use test_harness::Harness;
 
     fn hello_request(versions: &[&str]) -> HelloRequest {
         HelloRequest {
@@ -551,8 +547,10 @@ mod tests {
 
     #[tokio::test]
     async fn hello_round_trip_over_unix_socket() {
-        let trust = r#"{"version":1,"server_id":"01a0cdb5-3500-70a1-8000-000000000001","keys":[{"key_id":"k1"}],"revocations":[]}"#;
-        let h = Harness::start("hello", Some(trust)).await;
+        let trust =
+            serde_json::to_string(&crate::signed_plan::test_support::vector("trusted-keys"))
+                .unwrap();
+        let h = Harness::start("hello", Some(&trust)).await;
         let mut client = InfoServiceClient::new(h.channel.clone());
 
         let hello = client
@@ -570,10 +568,18 @@ mod tests {
         assert_eq!(agent.ssh_host_key_digests_hex, vec!["ab".repeat(32)]);
         assert!(agent.started_at.is_some());
         assert_eq!(hello.server.unwrap().hostname, "fake-host");
+        assert_eq!(agent.age_recipient, h.age_recipient);
+        assert!(agent.age_recipient.starts_with("age1"));
         let trusted = hello.trusted_keys.unwrap();
-        assert_eq!(trusted.key_count, 1);
-        assert_eq!(trusted.generation, 1);
-        assert_eq!(trusted.fingerprint_digest_hex.len(), 64);
+        assert_eq!(trusted.state, TrustStateProto::Valid as i32);
+        assert_eq!(trusted.invalid_reason, "");
+        // Four keys, one revoked directly; generation counts every entry.
+        assert_eq!(trusted.key_count, 3);
+        assert_eq!(trusted.generation, 5);
+        assert_eq!(
+            trusted.fingerprint_digest_hex,
+            fingerprint(&crate::signed_plan::test_support::vector("trusted-keys"))
+        );
         let clock = hello.clock.unwrap();
         assert!(clock.agent_time.is_some());
         assert!(clock.ntp_synchronized);
@@ -603,7 +609,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn hello_without_trusted_keys_reports_none() {
+    async fn hello_without_trusted_keys_reports_absent() {
         let h = Harness::start("notrust", None).await;
         let mut client = InfoServiceClient::new(h.channel.clone());
         let hello = client
@@ -611,8 +617,36 @@ mod tests {
             .await
             .unwrap()
             .into_inner();
-        assert!(hello.trusted_keys.is_none());
+        let trusted = hello.trusted_keys.unwrap();
+        assert_eq!(trusted.state, TrustStateProto::Absent as i32);
+        assert_eq!(trusted.fingerprint_digest_hex, "");
+        assert_eq!(trusted.key_count, 0);
         assert_eq!(hello.agent.unwrap().server_id, "");
+        h.stop().await;
+    }
+
+    #[tokio::test]
+    async fn hello_reports_an_invalid_trust_file_with_its_reason() {
+        let mut file = crate::signed_plan::test_support::vector("trusted-keys");
+        file["keys"][1]["label"] = serde_json::Value::String("Tampered".to_owned());
+        let h = Harness::start("badtrust", Some(&file.to_string())).await;
+        let mut client = InfoServiceClient::new(h.channel.clone());
+        let hello = client
+            .hello(hello_request(&["2.0"]))
+            .await
+            .unwrap()
+            .into_inner();
+        let trusted = hello.trusted_keys.unwrap();
+        assert_eq!(trusted.state, TrustStateProto::Invalid as i32);
+        assert_eq!(
+            trusted.invalid_reason,
+            "added_by is not a valid earlier owner signature"
+        );
+        assert_eq!(trusted.fingerprint_digest_hex, fingerprint(&file));
+        assert_eq!(
+            hello.agent.unwrap().server_id,
+            "01a0cdb5-3500-70a1-8000-000000000001"
+        );
         h.stop().await;
     }
 
@@ -700,6 +734,9 @@ mod tests {
     #[tokio::test]
     async fn other_v2_rpcs_are_unimplemented_with_capability_missing() {
         let h = Harness::start("unimpl", None).await;
+        use crate::proto::agent::v2::{
+            telemetry_service_client::TelemetryServiceClient, ListMetricsRequest,
+        };
 
         let mut state = StateServiceClient::new(h.channel.clone());
         let status = state
@@ -712,9 +749,9 @@ mod tests {
             Some("ERROR_REASON_CAPABILITY_MISSING")
         );
 
-        let mut change = ChangeServiceClient::new(h.channel.clone());
-        let status = change
-            .get_state_head(GetStateHeadRequest::default())
+        let mut telemetry = TelemetryServiceClient::new(h.channel.clone());
+        let status = telemetry
+            .list_metrics(ListMetricsRequest::default())
             .await
             .unwrap_err();
         assert_eq!(status.code(), Code::Unimplemented);

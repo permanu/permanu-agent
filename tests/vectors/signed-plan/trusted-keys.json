@@ -1,0 +1,86 @@
+{
+  "version": 1,
+  "server_id": "01a0cdb5-3500-70a1-8000-000000000001",
+  "keys": [
+    {
+      "key_id": "dYLNItf797wK7n5moGt2cw",
+      "alg": "ES256-raw",
+      "spki": "MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAE6XWYQLf32I8syOd1sqHM4D2tbpXOK1fVZEbCbpWsmAqwTuhnKjwSKXaU8KedoSJM6fLNIf1vGqa1EEmRdCc4kw==",
+      "label": "Arvee's MacBook Pro (TEST)",
+      "role": "owner",
+      "presence": "biometry",
+      "scope": null,
+      "added_at": "2026-09-01T08:00:00Z",
+      "added_by": null
+    },
+    {
+      "key_id": "Hph9XRkn48eogeehAgeI9A",
+      "alg": "ES256-raw",
+      "spki": "MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAEdmRf38x23xyGMpgTwTalEnHxfavPlG8Il3hzc5zBRSeeRHeJkHcobVI/Kin6aG6to57fKD7zjrq8DS1+yJFAVQ==",
+      "label": "Studio Mac (TEST)",
+      "role": "deployer",
+      "presence": "user_presence",
+      "scope": {
+        "project_ids": [
+          "01a0cdb5-3500-70b1-8000-000000000001"
+        ],
+        "environments": [
+          "production"
+        ],
+        "server_level": true
+      },
+      "added_at": "2026-09-10T12:00:00Z",
+      "added_by": {
+        "key_id": "dYLNItf797wK7n5moGt2cw",
+        "sig": "52ACAd0NawsSN-H0CteLoqblic5UUGWQaYj_HReJTCG0PprOMtdSS1SNempVhTmQUdW8z7x4scxAP1srZ3fKDg"
+      }
+    },
+    {
+      "key_id": "AqhPUHwy5byXy_JwVWyl7w",
+      "alg": "ES256-raw",
+      "spki": "MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAEME5qI5QrPbOSD0pekV3fTo5SDAxLc5CpPH09uqL/qXqTOhjqcAqRu56n3CVO4Ka2DQhpB/o6HynP33CWiPdGNQ==",
+      "label": "Old MacBook (TEST, revoked)",
+      "role": "owner",
+      "presence": "biometry",
+      "scope": null,
+      "added_at": "2026-09-02T08:00:00Z",
+      "added_by": {
+        "key_id": "dYLNItf797wK7n5moGt2cw",
+        "sig": "_knxPVRS90g9Bnc66ayFCa9Qrdc7SXSeXuzPfmzJKQvlze4fZEEjx7KeU2sFPosb0fnYrMVniWuFi8Szo_sTrA"
+      }
+    },
+    {
+      "key_id": "TTnId5ZJWi6UIgsNoJGjLA",
+      "alg": "ES256-raw",
+      "spki": "MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAEPMgsRby0yne5cirRvDRF5V7Tdugzb6eWlsbNMvdJtnmTQzIkLLmszzGS0V5Aiv+AS97oyzdl6kf4eJ21RZ8ETA==",
+      "label": "GitHub Actions deploy key (TEST)",
+      "role": "ci",
+      "presence": "none",
+      "scope": {
+        "project_ids": [
+          "01a0cdb5-3500-70b1-8000-000000000001"
+        ],
+        "environments": [
+          "production"
+        ],
+        "server_level": false
+      },
+      "added_at": "2026-09-12T09:00:00Z",
+      "added_by": {
+        "key_id": "dYLNItf797wK7n5moGt2cw",
+        "sig": "oaciEupOKrGySYjPAP109XIJEXqccn49QqPYAZqgjX9Myhi6EBG6-xdBMbWATPf3BGPqweZ1hwR9wzlXOa0jSw"
+      }
+    }
+  ],
+  "revocations": [
+    {
+      "key_id": "AqhPUHwy5byXy_JwVWyl7w",
+      "revoked_at": "2026-09-20T08:00:00Z",
+      "reason": "lost",
+      "revoked_by": {
+        "key_id": "dYLNItf797wK7n5moGt2cw",
+        "sig": "kOYGcDhdebCyPEc5C3TSBq2e6YalIF_UQ2pTLJMcRlG1hhoFCBorvY7R3kgVG6FwnnFu9b_wDuuQlYfGZi8EGg"
+      }
+    }
+  ]
+}

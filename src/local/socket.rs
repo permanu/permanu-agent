@@ -15,6 +15,35 @@ use tokio::net::UnixListener;
 pub const SOCKET_MODE: u32 = 0o660;
 pub const DIR_MODE: u32 = 0o750;
 
+/// Resolves a user name to its uid (`permanu-agent` for the store files).
+pub fn resolve_user(name: &str) -> io::Result<u32> {
+    let c_name = CString::new(name).map_err(|_| io::Error::other("user name contains NUL"))?;
+    let mut buf = vec![0 as libc::c_char; 16 * 1024];
+    let mut user: libc::passwd = unsafe { std::mem::zeroed() };
+    let mut result: *mut libc::passwd = std::ptr::null_mut();
+    // SAFETY: all pointers are valid for the duration of the call and buf.len()
+    // is the true buffer size.
+    let rc = unsafe {
+        libc::getpwnam_r(
+            c_name.as_ptr(),
+            &mut user,
+            buf.as_mut_ptr(),
+            buf.len(),
+            &mut result,
+        )
+    };
+    if rc != 0 {
+        return Err(io::Error::from_raw_os_error(rc));
+    }
+    if result.is_null() {
+        return Err(io::Error::new(
+            ErrorKind::NotFound,
+            format!("user {name:?} does not exist"),
+        ));
+    }
+    Ok(user.pw_uid)
+}
+
 /// Resolves a group name to its gid.
 pub fn resolve_group(name: &str) -> io::Result<u32> {
     let c_name = CString::new(name).map_err(|_| io::Error::other("group name contains NUL"))?;

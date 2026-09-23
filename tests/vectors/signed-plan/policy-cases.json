@@ -1,0 +1,1026 @@
+{
+  "context": {
+    "server_id": "01a0cdb5-3500-70a1-8000-000000000001",
+    "now": "2026-09-23T10:05:00Z",
+    "trusted_keys": {
+      "version": 1,
+      "server_id": "01a0cdb5-3500-70a1-8000-000000000001",
+      "keys": [
+        {
+          "key_id": "dYLNItf797wK7n5moGt2cw",
+          "alg": "ES256-raw",
+          "spki": "MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAE6XWYQLf32I8syOd1sqHM4D2tbpXOK1fVZEbCbpWsmAqwTuhnKjwSKXaU8KedoSJM6fLNIf1vGqa1EEmRdCc4kw==",
+          "label": "Arvee's MacBook Pro (TEST)",
+          "role": "owner",
+          "presence": "biometry",
+          "scope": null,
+          "added_at": "2026-09-01T08:00:00Z",
+          "added_by": null
+        },
+        {
+          "key_id": "Hph9XRkn48eogeehAgeI9A",
+          "alg": "ES256-raw",
+          "spki": "MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAEdmRf38x23xyGMpgTwTalEnHxfavPlG8Il3hzc5zBRSeeRHeJkHcobVI/Kin6aG6to57fKD7zjrq8DS1+yJFAVQ==",
+          "label": "Studio Mac (TEST)",
+          "role": "deployer",
+          "presence": "user_presence",
+          "scope": {
+            "project_ids": [
+              "01a0cdb5-3500-70b1-8000-000000000001"
+            ],
+            "environments": [
+              "production"
+            ],
+            "server_level": true
+          },
+          "added_at": "2026-09-10T12:00:00Z",
+          "added_by": {
+            "key_id": "dYLNItf797wK7n5moGt2cw",
+            "sig": "52ACAd0NawsSN-H0CteLoqblic5UUGWQaYj_HReJTCG0PprOMtdSS1SNempVhTmQUdW8z7x4scxAP1srZ3fKDg"
+          }
+        },
+        {
+          "key_id": "AqhPUHwy5byXy_JwVWyl7w",
+          "alg": "ES256-raw",
+          "spki": "MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAEME5qI5QrPbOSD0pekV3fTo5SDAxLc5CpPH09uqL/qXqTOhjqcAqRu56n3CVO4Ka2DQhpB/o6HynP33CWiPdGNQ==",
+          "label": "Old MacBook (TEST, revoked)",
+          "role": "owner",
+          "presence": "biometry",
+          "scope": null,
+          "added_at": "2026-09-02T08:00:00Z",
+          "added_by": {
+            "key_id": "dYLNItf797wK7n5moGt2cw",
+            "sig": "_knxPVRS90g9Bnc66ayFCa9Qrdc7SXSeXuzPfmzJKQvlze4fZEEjx7KeU2sFPosb0fnYrMVniWuFi8Szo_sTrA"
+          }
+        },
+        {
+          "key_id": "TTnId5ZJWi6UIgsNoJGjLA",
+          "alg": "ES256-raw",
+          "spki": "MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAEPMgsRby0yne5cirRvDRF5V7Tdugzb6eWlsbNMvdJtnmTQzIkLLmszzGS0V5Aiv+AS97oyzdl6kf4eJ21RZ8ETA==",
+          "label": "GitHub Actions deploy key (TEST)",
+          "role": "ci",
+          "presence": "none",
+          "scope": {
+            "project_ids": [
+              "01a0cdb5-3500-70b1-8000-000000000001"
+            ],
+            "environments": [
+              "production"
+            ],
+            "server_level": false
+          },
+          "added_at": "2026-09-12T09:00:00Z",
+          "added_by": {
+            "key_id": "dYLNItf797wK7n5moGt2cw",
+            "sig": "oaciEupOKrGySYjPAP109XIJEXqccn49QqPYAZqgjX9Myhi6EBG6-xdBMbWATPf3BGPqweZ1hwR9wzlXOa0jSw"
+          }
+        }
+      ],
+      "revocations": [
+        {
+          "key_id": "AqhPUHwy5byXy_JwVWyl7w",
+          "revoked_at": "2026-09-20T08:00:00Z",
+          "reason": "lost",
+          "revoked_by": {
+            "key_id": "dYLNItf797wK7n5moGt2cw",
+            "sig": "kOYGcDhdebCyPEc5C3TSBq2e6YalIF_UQ2pTLJMcRlG1hhoFCBorvY7R3kgVG6FwnnFu9b_wDuuQlYfGZi8EGg"
+          }
+        }
+      ]
+    },
+    "heads": [
+      {
+        "project_id": "01a0cdb5-3500-70b1-8000-000000000001",
+        "environment": "production",
+        "head_digest_hex": "4a98af3eeae054bf7585746ce20fa5907ec9c079ee1b049a7d01146d1c92ebfb"
+      }
+    ],
+    "seen": {
+      "nonces": [
+        "u-ZvoqWVeyCp6dDlf5kl7Q",
+        "oDIjJ31dWLEYEvW71G_o-Q"
+      ],
+      "plan_ids": [
+        "01a0cdb5-3500-7001-8000-00000000003c"
+      ]
+    },
+    "admissions": [
+      {
+        "plan_id": "01a0cdb5-3500-7001-8000-00000000003c",
+        "plan_digest_hex": "027b37e41331b0d1796555f79e5c7183d24e5434df7fdf3662fdb9f4f20e194e"
+      }
+    ],
+    "rules": [
+      {
+        "rule": {
+          "version": 1,
+          "id": "01a0cdb5-3500-70f1-8000-000000000001",
+          "label": "Auto-deploy main to production",
+          "trigger": "git.push",
+          "scope": {
+            "project_id": "01a0cdb5-3500-70b1-8000-000000000001",
+            "environment": "production",
+            "service_ids": [
+              "01a0cdb5-3500-70c1-8000-000000000001"
+            ],
+            "server_ids": [
+              "01a0cdb5-3500-70a1-8000-000000000001"
+            ],
+            "repo": "github.com/acme/web",
+            "branch_patterns": [
+              "refs/heads/main"
+            ]
+          },
+          "allowed_kinds": [
+            "deploy"
+          ],
+          "limits": {
+            "max_replicas": 4,
+            "max_invocations_per_hour": 30
+          },
+          "not_before": "2026-09-01T00:00:00Z",
+          "expires_at": "2027-09-01T00:00:00Z"
+        },
+        "rule_digest_hex": "42931b7b326d2bf54bf2e038076808f13fda19a46e9da1af363536a59ff00e90",
+        "created_by_key_id": "dYLNItf797wK7n5moGt2cw",
+        "revoked": false
+      },
+      {
+        "rule": {
+          "version": 1,
+          "id": "01a0cdb5-3500-70f1-8000-000000000002",
+          "label": "Old rule",
+          "trigger": "git.push",
+          "scope": {
+            "project_id": "01a0cdb5-3500-70b1-8000-000000000001",
+            "environment": "production",
+            "service_ids": [
+              "01a0cdb5-3500-70c1-8000-000000000001"
+            ],
+            "server_ids": [
+              "01a0cdb5-3500-70a1-8000-000000000001"
+            ],
+            "repo": "github.com/acme/web",
+            "branch_patterns": [
+              "refs/heads/main"
+            ]
+          },
+          "allowed_kinds": [
+            "deploy"
+          ],
+          "limits": {
+            "max_replicas": 4,
+            "max_invocations_per_hour": 30
+          },
+          "not_before": "2025-01-01T00:00:00Z",
+          "expires_at": "2025-06-01T00:00:00Z"
+        },
+        "rule_digest_hex": "09fb82b4659c111c3cea99dd2857f546bc0ad9f59944c245dfb5b719da9152a1",
+        "created_by_key_id": "dYLNItf797wK7n5moGt2cw",
+        "revoked": false
+      },
+      {
+        "rule": {
+          "version": 1,
+          "id": "01a0cdb5-3500-70f1-8000-000000000003",
+          "label": "Revoked rule",
+          "trigger": "git.push",
+          "scope": {
+            "project_id": "01a0cdb5-3500-70b1-8000-000000000001",
+            "environment": "production",
+            "service_ids": [
+              "01a0cdb5-3500-70c1-8000-000000000001"
+            ],
+            "server_ids": [
+              "01a0cdb5-3500-70a1-8000-000000000001"
+            ],
+            "repo": "github.com/acme/web",
+            "branch_patterns": [
+              "refs/heads/main"
+            ]
+          },
+          "allowed_kinds": [
+            "deploy"
+          ],
+          "limits": {
+            "max_replicas": 4,
+            "max_invocations_per_hour": 30
+          },
+          "not_before": "2026-09-01T00:00:00Z",
+          "expires_at": "2027-09-01T00:00:00Z"
+        },
+        "rule_digest_hex": "e9293926797219ce1681234a6b61b870f908c3620e082ec5f4a47273163d8761",
+        "created_by_key_id": "dYLNItf797wK7n5moGt2cw",
+        "revoked": true
+      }
+    ],
+    "verified_deliveries": [
+      {
+        "delivery_id": "gh-delivery-1",
+        "body_digest_hex": "50589ee7eeb3e7adedddd36ea89e9350aaddc30bdf3574ecda5194e845594cd6",
+        "repo": "github.com/acme/web",
+        "ref": "refs/heads/main",
+        "commit_sha": "4f2a9c1e8b7d6a5f4e3d2c1b0a9f8e7d6c5b4a39",
+        "commit_time": "2026-09-23T09:59:30Z",
+        "received_at": "2026-09-23T09:59:58Z",
+        "consumed_by_rule_ids": []
+      },
+      {
+        "delivery_id": "gh-delivery-dev",
+        "body_digest_hex": "1b989280dbeea4e6e8c5103ce3f06ac96256ffe301b0380f4ae73450171fe1fb",
+        "repo": "github.com/acme/web",
+        "ref": "refs/heads/dev",
+        "commit_sha": "0123456789abcdef0123456789abcdef01234567",
+        "commit_time": "2026-09-23T09:59:30Z",
+        "received_at": "2026-09-23T09:59:58Z",
+        "consumed_by_rule_ids": []
+      },
+      {
+        "delivery_id": "gh-delivery-stale",
+        "body_digest_hex": "2a5f15e21f9b37732fd74395a4cf1922a824d5bb6a42442abd026e64b1876e6a",
+        "repo": "github.com/acme/web",
+        "ref": "refs/heads/main",
+        "commit_sha": "4f2a9c1e8b7d6a5f4e3d2c1b0a9f8e7d6c5b4a39",
+        "commit_time": "2026-09-23T09:59:30Z",
+        "received_at": "2026-09-23T09:45:00Z",
+        "consumed_by_rule_ids": []
+      },
+      {
+        "delivery_id": "gh-delivery-used",
+        "body_digest_hex": "8d1765a8d391cdceb4f06aed1536a940919167a7106f493836e27e38ad6dad4d",
+        "repo": "github.com/acme/web",
+        "ref": "refs/heads/main",
+        "commit_sha": "4f2a9c1e8b7d6a5f4e3d2c1b0a9f8e7d6c5b4a39",
+        "commit_time": "2026-09-23T09:59:30Z",
+        "received_at": "2026-09-23T09:59:58Z",
+        "consumed_by_rule_ids": [
+          "01a0cdb5-3500-70f1-8000-000000000001"
+        ]
+      }
+    ],
+    "rule_invocations_last_hour": {
+      "01a0cdb5-3500-70f1-8000-000000000001": 3
+    },
+    "admitted_specs": {
+      "01a0cdb5-3500-70c1-8000-000000000001": {
+        "version": 1,
+        "service_id": "01a0cdb5-3500-70c1-8000-000000000001",
+        "image_repository": "registry.permanu.internal/acme/web",
+        "image_digest_hex": "97db6c9091eee82a42e8b2bea76caa45687c1fb40a760a84c71500d520c07987",
+        "entrypoint": null,
+        "command": [
+          "node",
+          "server.js"
+        ],
+        "working_dir": "/app",
+        "user": "1000:1000",
+        "env": {
+          "DATABASE_URL": {
+            "kind": "secret",
+            "ref": "DATABASE_URL"
+          },
+          "NODE_ENV": {
+            "kind": "plain",
+            "ref": null
+          },
+          "REDIS_URL": {
+            "kind": "reference",
+            "ref": "01a0cdb5-3500-70d1-8000-000000000001.REDIS_URL"
+          }
+        },
+        "ports": [
+          {
+            "container_port": 3000,
+            "protocol": "tcp",
+            "public": true
+          }
+        ],
+        "mounts": [],
+        "resources": {
+          "cpu_millis": 1000,
+          "memory_bytes": 536870912,
+          "pids_limit": 512
+        },
+        "privileged": false,
+        "cap_add": [],
+        "network": {
+          "mode": "project",
+          "aliases": []
+        },
+        "healthcheck": {
+          "kind": "http",
+          "path": "/healthz",
+          "port": 3000,
+          "command": null,
+          "interval_seconds": 10,
+          "timeout_seconds": 3,
+          "retries": 3,
+          "start_period_seconds": 5
+        },
+        "replicas": 2,
+        "placement": {
+          "server_ids": [
+            "01a0cdb5-3500-70a1-8000-000000000001"
+          ]
+        }
+      }
+    },
+    "builds": [
+      {
+        "service_id": "01a0cdb5-3500-70c1-8000-000000000001",
+        "commit_sha": "4f2a9c1e8b7d6a5f4e3d2c1b0a9f8e7d6c5b4a39",
+        "image_digest_hex": "87ebc0f19e05e181dc22921cf7dbcf9f30e348d432da95fd36aea5ef8044a960"
+      },
+      {
+        "service_id": "01a0cdb5-3500-70c1-8000-000000000001",
+        "commit_sha": "0123456789abcdef0123456789abcdef01234567",
+        "image_digest_hex": "13234a75cc6c087b23d87e9ba5b381e5b2309907ee37a0bf73d15f6500c9ecee"
+      }
+    ],
+    "deployed_commits": [
+      {
+        "service_id": "01a0cdb5-3500-70c1-8000-000000000001",
+        "ref": "refs/heads/main",
+        "commit_sha": "89abcdef0123456789abcdef0123456789abcdef",
+        "commit_time": "2026-09-22T12:00:00Z"
+      }
+    ]
+  },
+  "cases": [
+    {
+      "name": "ok_user_deploy",
+      "input": "{\"plan\": {\"version\": 1, \"id\": \"01a0cdb5-3500-7001-8000-000000000001\", \"project_id\": \"01a0cdb5-3500-70b1-8000-000000000001\", \"environment\": \"production\", \"service_ids\": [\"01a0cdb5-3500-70c1-8000-000000000001\"], \"targets\": [\"01a0cdb5-3500-70a1-8000-000000000001\"], \"actions\": [{\"kind\": \"deploy\", \"params\": {\"service_id\": \"01a0cdb5-3500-70c1-8000-000000000001\", \"commit_sha\": \"4f2a9c1e8b7d6a5f4e3d2c1b0a9f8e7d6c5b4a39\", \"spec_digest_hex\": \"f9e2f5ba422e79750428675b3191f942f6d85747981184a232a08b369e4da410\"}}], \"base\": {\"force\": false, \"heads\": {\"01a0cdb5-3500-70a1-8000-000000000001\": \"4a98af3eeae054bf7585746ce20fa5907ec9c079ee1b049a7d01146d1c92ebfb\"}}, \"created_at\": \"2026-09-23T10:00:00Z\", \"expires_at\": \"2026-09-23T10:10:00Z\", \"nonce\": \"SG86F2cYlLnxQtwmsiISuA\", \"author\": {\"kind\": \"user\", \"agent_session_id\": null}, \"invocation\": null}, \"signatures\": [{\"key_id\": \"dYLNItf797wK7n5moGt2cw\", \"alg\": \"ES256-raw\", \"sig\": \"8QXNRwjZwSyiyryh02PHjeNB2v591D9QSm6NLX03UuoDXQ_vKo66-BBbVLqJr8mV-QDNUDbW8ITauDGB6sF5Ew\", \"signed_at\": \"2026-09-23T10:00:05Z\"}]}",
+      "specs": [
+        "{\"cap_add\":[],\"command\":[\"node\",\"server.js\"],\"entrypoint\":null,\"env\":{\"DATABASE_URL\":{\"kind\":\"secret\",\"ref\":\"DATABASE_URL\"},\"NODE_ENV\":{\"kind\":\"plain\",\"ref\":null},\"REDIS_URL\":{\"kind\":\"reference\",\"ref\":\"01a0cdb5-3500-70d1-8000-000000000001.REDIS_URL\"}},\"healthcheck\":{\"command\":null,\"interval_seconds\":10,\"kind\":\"http\",\"path\":\"/healthz\",\"port\":3000,\"retries\":3,\"start_period_seconds\":5,\"timeout_seconds\":3},\"image_digest_hex\":\"87ebc0f19e05e181dc22921cf7dbcf9f30e348d432da95fd36aea5ef8044a960\",\"image_repository\":\"registry.permanu.internal/acme/web\",\"mounts\":[],\"network\":{\"aliases\":[],\"mode\":\"project\"},\"placement\":{\"server_ids\":[\"01a0cdb5-3500-70a1-8000-000000000001\"]},\"ports\":[{\"container_port\":3000,\"protocol\":\"tcp\",\"public\":true}],\"privileged\":false,\"replicas\":2,\"resources\":{\"cpu_millis\":1000,\"memory_bytes\":536870912,\"pids_limit\":512},\"service_id\":\"01a0cdb5-3500-70c1-8000-000000000001\",\"user\":\"1000:1000\",\"version\":1,\"working_dir\":\"/app\"}"
+      ],
+      "submitter": "client",
+      "mode": "test",
+      "expect": "OK"
+    },
+    {
+      "name": "ok_reordered_whitespace_input",
+      "input": "{\n \"signatures\": [\n  {\n   \"key_id\": \"dYLNItf797wK7n5moGt2cw\",\n   \"alg\": \"ES256-raw\",\n   \"sig\": \"8QXNRwjZwSyiyryh02PHjeNB2v591D9QSm6NLX03UuoDXQ_vKo66-BBbVLqJr8mV-QDNUDbW8ITauDGB6sF5Ew\",\n   \"signed_at\": \"2026-09-23T10:00:05Z\"\n  }\n ],\n \"plan\": {\n  \"invocation\": null,\n  \"author\": {\n   \"kind\": \"user\",\n   \"agent_session_id\": null\n  },\n  \"nonce\": \"SG86F2cYlLnxQtwmsiISuA\",\n  \"expires_at\": \"2026-09-23T10:10:00Z\",\n  \"created_at\": \"2026-09-23T10:00:00Z\",\n  \"base\": {\n   \"force\": false,\n   \"heads\": {\n    \"01a0cdb5-3500-70a1-8000-000000000001\": \"4a98af3eeae054bf7585746ce20fa5907ec9c079ee1b049a7d01146d1c92ebfb\"\n   }\n  },\n  \"actions\": [\n   {\n    \"kind\": \"deploy\",\n    \"params\": {\n     \"service_id\": \"01a0cdb5-3500-70c1-8000-000000000001\",\n     \"commit_sha\": \"4f2a9c1e8b7d6a5f4e3d2c1b0a9f8e7d6c5b4a39\",\n     \"spec_digest_hex\": \"f9e2f5ba422e79750428675b3191f942f6d85747981184a232a08b369e4da410\"\n    }\n   }\n  ],\n  \"targets\": [\n   \"01a0cdb5-3500-70a1-8000-000000000001\"\n  ],\n  \"service_ids\": [\n   \"01a0cdb5-3500-70c1-8000-000000000001\"\n  ],\n  \"environment\": \"production\",\n  \"project_id\": \"01a0cdb5-3500-70b1-8000-000000000001\",\n  \"id\": \"01a0cdb5-3500-7001-8000-000000000001\",\n  \"version\": 1\n }\n}",
+      "specs": [
+        "{\"cap_add\":[],\"command\":[\"node\",\"server.js\"],\"entrypoint\":null,\"env\":{\"DATABASE_URL\":{\"kind\":\"secret\",\"ref\":\"DATABASE_URL\"},\"NODE_ENV\":{\"kind\":\"plain\",\"ref\":null},\"REDIS_URL\":{\"kind\":\"reference\",\"ref\":\"01a0cdb5-3500-70d1-8000-000000000001.REDIS_URL\"}},\"healthcheck\":{\"command\":null,\"interval_seconds\":10,\"kind\":\"http\",\"path\":\"/healthz\",\"port\":3000,\"retries\":3,\"start_period_seconds\":5,\"timeout_seconds\":3},\"image_digest_hex\":\"87ebc0f19e05e181dc22921cf7dbcf9f30e348d432da95fd36aea5ef8044a960\",\"image_repository\":\"registry.permanu.internal/acme/web\",\"mounts\":[],\"network\":{\"aliases\":[],\"mode\":\"project\"},\"placement\":{\"server_ids\":[\"01a0cdb5-3500-70a1-8000-000000000001\"]},\"ports\":[{\"container_port\":3000,\"protocol\":\"tcp\",\"public\":true}],\"privileged\":false,\"replicas\":2,\"resources\":{\"cpu_millis\":1000,\"memory_bytes\":536870912,\"pids_limit\":512},\"service_id\":\"01a0cdb5-3500-70c1-8000-000000000001\",\"user\":\"1000:1000\",\"version\":1,\"working_dir\":\"/app\"}"
+      ],
+      "submitter": "client",
+      "mode": "test",
+      "expect": "OK"
+    },
+    {
+      "name": "ok_s_negated",
+      "input": "{\"plan\": {\"version\": 1, \"id\": \"01a0cdb5-3500-7001-8000-000000000001\", \"project_id\": \"01a0cdb5-3500-70b1-8000-000000000001\", \"environment\": \"production\", \"service_ids\": [\"01a0cdb5-3500-70c1-8000-000000000001\"], \"targets\": [\"01a0cdb5-3500-70a1-8000-000000000001\"], \"actions\": [{\"kind\": \"deploy\", \"params\": {\"service_id\": \"01a0cdb5-3500-70c1-8000-000000000001\", \"commit_sha\": \"4f2a9c1e8b7d6a5f4e3d2c1b0a9f8e7d6c5b4a39\", \"spec_digest_hex\": \"f9e2f5ba422e79750428675b3191f942f6d85747981184a232a08b369e4da410\"}}], \"base\": {\"force\": false, \"heads\": {\"01a0cdb5-3500-70a1-8000-000000000001\": \"4a98af3eeae054bf7585746ce20fa5907ec9c079ee1b049a7d01146d1c92ebfb\"}}, \"created_at\": \"2026-09-23T10:00:00Z\", \"expires_at\": \"2026-09-23T10:10:00Z\", \"nonce\": \"SG86F2cYlLnxQtwmsiISuA\", \"author\": {\"kind\": \"user\", \"agent_session_id\": null}, \"invocation\": null}, \"signatures\": [{\"key_id\": \"dYLNItf797wK7n5moGt2cw\", \"alg\": \"ES256-raw\", \"sig\": \"8QXNRwjZwSyiyryh02PHjeNB2v591D9QSm6NLX03Uur8ovAP1XFFCO-kq0V2UDZpw-YtXXBArgAZAZlBEaGsPg\", \"signed_at\": \"2026-09-23T10:00:05Z\"}]}",
+      "specs": [
+        "{\"cap_add\":[],\"command\":[\"node\",\"server.js\"],\"entrypoint\":null,\"env\":{\"DATABASE_URL\":{\"kind\":\"secret\",\"ref\":\"DATABASE_URL\"},\"NODE_ENV\":{\"kind\":\"plain\",\"ref\":null},\"REDIS_URL\":{\"kind\":\"reference\",\"ref\":\"01a0cdb5-3500-70d1-8000-000000000001.REDIS_URL\"}},\"healthcheck\":{\"command\":null,\"interval_seconds\":10,\"kind\":\"http\",\"path\":\"/healthz\",\"port\":3000,\"retries\":3,\"start_period_seconds\":5,\"timeout_seconds\":3},\"image_digest_hex\":\"87ebc0f19e05e181dc22921cf7dbcf9f30e348d432da95fd36aea5ef8044a960\",\"image_repository\":\"registry.permanu.internal/acme/web\",\"mounts\":[],\"network\":{\"aliases\":[],\"mode\":\"project\"},\"placement\":{\"server_ids\":[\"01a0cdb5-3500-70a1-8000-000000000001\"]},\"ports\":[{\"container_port\":3000,\"protocol\":\"tcp\",\"public\":true}],\"privileged\":false,\"replicas\":2,\"resources\":{\"cpu_millis\":1000,\"memory_bytes\":536870912,\"pids_limit\":512},\"service_id\":\"01a0cdb5-3500-70c1-8000-000000000001\",\"user\":\"1000:1000\",\"version\":1,\"working_dir\":\"/app\"}"
+      ],
+      "submitter": "client",
+      "mode": "test",
+      "expect": "OK"
+    },
+    {
+      "name": "ok_agent_draft_secret_set",
+      "input": "{\"plan\": {\"version\": 1, \"id\": \"01a0cdb5-3500-7001-8000-000000000002\", \"project_id\": \"01a0cdb5-3500-70b1-8000-000000000001\", \"environment\": \"production\", \"service_ids\": [\"01a0cdb5-3500-70c1-8000-000000000001\"], \"targets\": [\"01a0cdb5-3500-70a1-8000-000000000001\"], \"actions\": [{\"kind\": \"secret.set\", \"params\": {\"service_id\": \"01a0cdb5-3500-70c1-8000-000000000001\", \"name\": \"DATABASE_URL\", \"ciphertext_digest_hex\": \"49d342afdeab639cf6d39649075a3e5b372d44dfa01e945d4aee9d0595dced66\"}}], \"base\": {\"force\": false, \"heads\": {\"01a0cdb5-3500-70a1-8000-000000000001\": \"4a98af3eeae054bf7585746ce20fa5907ec9c079ee1b049a7d01146d1c92ebfb\"}}, \"created_at\": \"2026-09-23T10:00:00Z\", \"expires_at\": \"2026-09-23T10:10:00Z\", \"nonce\": \"rip3isu6Bs-j5p2Ddo5ySw\", \"author\": {\"kind\": \"agent-draft\", \"agent_session_id\": \"01a0cdb5-3500-70e1-8000-000000000001\"}, \"invocation\": null}, \"signatures\": [{\"key_id\": \"dYLNItf797wK7n5moGt2cw\", \"alg\": \"ES256-raw\", \"sig\": \"cGRdLSSqm1Yr8ucAzHJgpeW1ywqXREzEM9iEdyni1ecs6ljFlfWiGFAtAD9btDRwfmM0GbXlxClnogLORYG-Tg\", \"signed_at\": \"2026-09-23T10:00:05Z\"}]}",
+      "specs": [],
+      "submitter": "client",
+      "mode": "test",
+      "expect": "OK"
+    },
+    {
+      "name": "ok_deployer_restart",
+      "input": "{\"plan\": {\"version\": 1, \"id\": \"01a0cdb5-3500-7001-8000-000000000006\", \"project_id\": \"01a0cdb5-3500-70b1-8000-000000000001\", \"environment\": \"production\", \"service_ids\": [\"01a0cdb5-3500-70c1-8000-000000000001\"], \"targets\": [\"01a0cdb5-3500-70a1-8000-000000000001\"], \"actions\": [{\"kind\": \"restart\", \"params\": {\"service_id\": \"01a0cdb5-3500-70c1-8000-000000000001\", \"spec_digest_hex\": \"b78adc95a654038d554689569fc43f2f7db6fece4c5049d3dab17370f21ec1bf\"}}], \"base\": {\"force\": false, \"heads\": {\"01a0cdb5-3500-70a1-8000-000000000001\": \"4a98af3eeae054bf7585746ce20fa5907ec9c079ee1b049a7d01146d1c92ebfb\"}}, \"created_at\": \"2026-09-23T10:00:00Z\", \"expires_at\": \"2026-09-23T10:10:00Z\", \"nonce\": \"vzb_7w-95W5zFyFVITl9xw\", \"author\": {\"kind\": \"user\", \"agent_session_id\": null}, \"invocation\": null}, \"signatures\": [{\"key_id\": \"Hph9XRkn48eogeehAgeI9A\", \"alg\": \"ES256-raw\", \"sig\": \"jq_y2pLx31XKxdk59jI_hB7Q8mCFUxxXlyoM8MmTLFqPXt7jRkwW4bsOebZtgbhsNcHhgEebATSYGsEndwfBVQ\", \"signed_at\": \"2026-09-23T10:00:05Z\"}]}",
+      "specs": [
+        "{\"cap_add\":[],\"command\":[\"node\",\"server.js\"],\"entrypoint\":null,\"env\":{\"DATABASE_URL\":{\"kind\":\"secret\",\"ref\":\"DATABASE_URL\"},\"NODE_ENV\":{\"kind\":\"plain\",\"ref\":null},\"REDIS_URL\":{\"kind\":\"reference\",\"ref\":\"01a0cdb5-3500-70d1-8000-000000000001.REDIS_URL\"}},\"healthcheck\":{\"command\":null,\"interval_seconds\":10,\"kind\":\"http\",\"path\":\"/healthz\",\"port\":3000,\"retries\":3,\"start_period_seconds\":5,\"timeout_seconds\":3},\"image_digest_hex\":\"97db6c9091eee82a42e8b2bea76caa45687c1fb40a760a84c71500d520c07987\",\"image_repository\":\"registry.permanu.internal/acme/web\",\"mounts\":[],\"network\":{\"aliases\":[],\"mode\":\"project\"},\"placement\":{\"server_ids\":[\"01a0cdb5-3500-70a1-8000-000000000001\"]},\"ports\":[{\"container_port\":3000,\"protocol\":\"tcp\",\"public\":true}],\"privileged\":false,\"replicas\":2,\"resources\":{\"cpu_millis\":1000,\"memory_bytes\":536870912,\"pids_limit\":512},\"service_id\":\"01a0cdb5-3500-70c1-8000-000000000001\",\"user\":\"1000:1000\",\"version\":1,\"working_dir\":\"/app\"}"
+      ],
+      "submitter": "client",
+      "mode": "test",
+      "expect": "OK"
+    },
+    {
+      "name": "ok_rule_create",
+      "input": "{\"plan\": {\"version\": 1, \"id\": \"01a0cdb5-3500-7001-8000-000000000003\", \"project_id\": \"01a0cdb5-3500-70b1-8000-000000000001\", \"environment\": \"production\", \"service_ids\": [], \"targets\": [\"01a0cdb5-3500-70a1-8000-000000000001\"], \"actions\": [{\"kind\": \"rule.create\", \"params\": {\"rule\": {\"version\": 1, \"id\": \"01a0cdb5-3500-70f1-8000-000000000001\", \"label\": \"Auto-deploy main to production\", \"trigger\": \"git.push\", \"scope\": {\"project_id\": \"01a0cdb5-3500-70b1-8000-000000000001\", \"environment\": \"production\", \"service_ids\": [\"01a0cdb5-3500-70c1-8000-000000000001\"], \"server_ids\": [\"01a0cdb5-3500-70a1-8000-000000000001\"], \"repo\": \"github.com/acme/web\", \"branch_patterns\": [\"refs/heads/main\"]}, \"allowed_kinds\": [\"deploy\"], \"limits\": {\"max_replicas\": 4, \"max_invocations_per_hour\": 30}, \"not_before\": \"2026-09-01T00:00:00Z\", \"expires_at\": \"2027-09-01T00:00:00Z\"}}}], \"base\": {\"force\": false, \"heads\": {\"01a0cdb5-3500-70a1-8000-000000000001\": \"4a98af3eeae054bf7585746ce20fa5907ec9c079ee1b049a7d01146d1c92ebfb\"}}, \"created_at\": \"2026-09-23T10:00:00Z\", \"expires_at\": \"2026-09-23T10:10:00Z\", \"nonce\": \"8T5_vf08KTHVNoBQwIEYyw\", \"author\": {\"kind\": \"user\", \"agent_session_id\": null}, \"invocation\": null}, \"signatures\": [{\"key_id\": \"dYLNItf797wK7n5moGt2cw\", \"alg\": \"ES256-raw\", \"sig\": \"iwg_OyJDU5Xjs9BCVUjUrMB2Uz7VmUrEMwpiIt3LBySnyfV3HFZhYv1eMpEANzCRTTdIHVB47T1H-D-khdQ1Mw\", \"signed_at\": \"2026-09-23T10:00:05Z\"}]}",
+      "specs": [],
+      "submitter": "client",
+      "mode": "test",
+      "expect": "OK"
+    },
+    {
+      "name": "ok_rule_invocation",
+      "input": "{\"plan\": {\"version\": 1, \"id\": \"01a0cdb5-3500-7001-8000-000000000014\", \"project_id\": \"01a0cdb5-3500-70b1-8000-000000000001\", \"environment\": \"production\", \"service_ids\": [\"01a0cdb5-3500-70c1-8000-000000000001\"], \"targets\": [\"01a0cdb5-3500-70a1-8000-000000000001\"], \"actions\": [{\"kind\": \"deploy\", \"params\": {\"service_id\": \"01a0cdb5-3500-70c1-8000-000000000001\", \"commit_sha\": \"4f2a9c1e8b7d6a5f4e3d2c1b0a9f8e7d6c5b4a39\", \"spec_digest_hex\": \"f9e2f5ba422e79750428675b3191f942f6d85747981184a232a08b369e4da410\"}}], \"base\": {\"force\": false, \"heads\": {\"01a0cdb5-3500-70a1-8000-000000000001\": \"4a98af3eeae054bf7585746ce20fa5907ec9c079ee1b049a7d01146d1c92ebfb\"}}, \"created_at\": \"2026-09-23T10:00:00Z\", \"expires_at\": \"2026-09-23T10:10:00Z\", \"nonce\": \"JsrUae6gxqizeDHjOtaURQ\", \"author\": {\"kind\": \"rule\", \"agent_session_id\": null}, \"invocation\": {\"rule_id\": \"01a0cdb5-3500-70f1-8000-000000000001\", \"rule_digest_hex\": \"42931b7b326d2bf54bf2e038076808f13fda19a46e9da1af363536a59ff00e90\", \"trigger\": \"git.push\", \"evidence\": {\"provider\": \"github\", \"repo\": \"github.com/acme/web\", \"ref\": \"refs/heads/main\", \"commit_sha\": \"4f2a9c1e8b7d6a5f4e3d2c1b0a9f8e7d6c5b4a39\", \"commit_time\": \"2026-09-23T09:59:30Z\", \"delivery_id\": \"gh-delivery-1\", \"body_digest_hex\": \"50589ee7eeb3e7adedddd36ea89e9350aaddc30bdf3574ecda5194e845594cd6\", \"received_at\": \"2026-09-23T09:59:58Z\"}}}, \"signatures\": []}",
+      "specs": [
+        "{\"cap_add\":[],\"command\":[\"node\",\"server.js\"],\"entrypoint\":null,\"env\":{\"DATABASE_URL\":{\"kind\":\"secret\",\"ref\":\"DATABASE_URL\"},\"NODE_ENV\":{\"kind\":\"plain\",\"ref\":null},\"REDIS_URL\":{\"kind\":\"reference\",\"ref\":\"01a0cdb5-3500-70d1-8000-000000000001.REDIS_URL\"}},\"healthcheck\":{\"command\":null,\"interval_seconds\":10,\"kind\":\"http\",\"path\":\"/healthz\",\"port\":3000,\"retries\":3,\"start_period_seconds\":5,\"timeout_seconds\":3},\"image_digest_hex\":\"87ebc0f19e05e181dc22921cf7dbcf9f30e348d432da95fd36aea5ef8044a960\",\"image_repository\":\"registry.permanu.internal/acme/web\",\"mounts\":[],\"network\":{\"aliases\":[],\"mode\":\"project\"},\"placement\":{\"server_ids\":[\"01a0cdb5-3500-70a1-8000-000000000001\"]},\"ports\":[{\"container_port\":3000,\"protocol\":\"tcp\",\"public\":true}],\"privileged\":false,\"replicas\":2,\"resources\":{\"cpu_millis\":1000,\"memory_bytes\":536870912,\"pids_limit\":512},\"service_id\":\"01a0cdb5-3500-70c1-8000-000000000001\",\"user\":\"1000:1000\",\"version\":1,\"working_dir\":\"/app\"}"
+      ],
+      "submitter": "agent_webhook",
+      "mode": "test",
+      "expect": "OK"
+    },
+    {
+      "name": "ok_force_owner",
+      "input": "{\"plan\": {\"version\": 1, \"id\": \"01a0cdb5-3500-7001-8000-000000000015\", \"project_id\": \"01a0cdb5-3500-70b1-8000-000000000001\", \"environment\": \"production\", \"service_ids\": [\"01a0cdb5-3500-70c1-8000-000000000001\"], \"targets\": [\"01a0cdb5-3500-70a1-8000-000000000001\"], \"actions\": [{\"kind\": \"deploy\", \"params\": {\"service_id\": \"01a0cdb5-3500-70c1-8000-000000000001\", \"commit_sha\": \"4f2a9c1e8b7d6a5f4e3d2c1b0a9f8e7d6c5b4a39\", \"spec_digest_hex\": \"f9e2f5ba422e79750428675b3191f942f6d85747981184a232a08b369e4da410\"}}], \"base\": {\"force\": true, \"heads\": {\"01a0cdb5-3500-70a1-8000-000000000001\": \"0000000000000000000000000000000000000000000000000000000000000000\"}}, \"created_at\": \"2026-09-23T10:00:00Z\", \"expires_at\": \"2026-09-23T10:10:00Z\", \"nonce\": \"igYVU90cm2lV1TPStGBMog\", \"author\": {\"kind\": \"user\", \"agent_session_id\": null}, \"invocation\": null}, \"signatures\": [{\"key_id\": \"dYLNItf797wK7n5moGt2cw\", \"alg\": \"ES256-raw\", \"sig\": \"YLrfhhZDYvyFkxXO2kjKMbHU3jZLsXYPQeADdLgiXRX13giD88Zh_v2XxHlfYyUSdH4ddW-iEksBJIGnK_D9kw\", \"signed_at\": \"2026-09-23T10:00:05Z\"}]}",
+      "specs": [
+        "{\"cap_add\":[],\"command\":[\"node\",\"server.js\"],\"entrypoint\":null,\"env\":{\"DATABASE_URL\":{\"kind\":\"secret\",\"ref\":\"DATABASE_URL\"},\"NODE_ENV\":{\"kind\":\"plain\",\"ref\":null},\"REDIS_URL\":{\"kind\":\"reference\",\"ref\":\"01a0cdb5-3500-70d1-8000-000000000001.REDIS_URL\"}},\"healthcheck\":{\"command\":null,\"interval_seconds\":10,\"kind\":\"http\",\"path\":\"/healthz\",\"port\":3000,\"retries\":3,\"start_period_seconds\":5,\"timeout_seconds\":3},\"image_digest_hex\":\"87ebc0f19e05e181dc22921cf7dbcf9f30e348d432da95fd36aea5ef8044a960\",\"image_repository\":\"registry.permanu.internal/acme/web\",\"mounts\":[],\"network\":{\"aliases\":[],\"mode\":\"project\"},\"placement\":{\"server_ids\":[\"01a0cdb5-3500-70a1-8000-000000000001\"]},\"ports\":[{\"container_port\":3000,\"protocol\":\"tcp\",\"public\":true}],\"privileged\":false,\"replicas\":2,\"resources\":{\"cpu_millis\":1000,\"memory_bytes\":536870912,\"pids_limit\":512},\"service_id\":\"01a0cdb5-3500-70c1-8000-000000000001\",\"user\":\"1000:1000\",\"version\":1,\"working_dir\":\"/app\"}"
+      ],
+      "submitter": "client",
+      "mode": "test",
+      "expect": "OK"
+    },
+    {
+      "name": "dedupe_admitted_plan",
+      "input": "{\"plan\": {\"version\": 1, \"id\": \"01a0cdb5-3500-7001-8000-00000000003c\", \"project_id\": \"01a0cdb5-3500-70b1-8000-000000000001\", \"environment\": \"production\", \"service_ids\": [\"01a0cdb5-3500-70c1-8000-000000000001\"], \"targets\": [\"01a0cdb5-3500-70a1-8000-000000000001\"], \"actions\": [{\"kind\": \"deploy\", \"params\": {\"service_id\": \"01a0cdb5-3500-70c1-8000-000000000001\", \"commit_sha\": \"4f2a9c1e8b7d6a5f4e3d2c1b0a9f8e7d6c5b4a39\", \"spec_digest_hex\": \"f9e2f5ba422e79750428675b3191f942f6d85747981184a232a08b369e4da410\"}}], \"base\": {\"force\": false, \"heads\": {\"01a0cdb5-3500-70a1-8000-000000000001\": \"4a98af3eeae054bf7585746ce20fa5907ec9c079ee1b049a7d01146d1c92ebfb\"}}, \"created_at\": \"2026-09-23T10:00:00Z\", \"expires_at\": \"2026-09-23T10:10:00Z\", \"nonce\": \"oDIjJ31dWLEYEvW71G_o-Q\", \"author\": {\"kind\": \"user\", \"agent_session_id\": null}, \"invocation\": null}, \"signatures\": [{\"key_id\": \"dYLNItf797wK7n5moGt2cw\", \"alg\": \"ES256-raw\", \"sig\": \"EKn9PsOIdQm-b9u0NPPD4ZG70UZKiCDzOsyJia2P06h3G5bDaN9YM6T2KiytZRX3e_UCDY9kNsCdjM02kQOdZQ\", \"signed_at\": \"2026-09-23T10:00:05Z\"}]}",
+      "specs": [
+        "{\"cap_add\":[],\"command\":[\"node\",\"server.js\"],\"entrypoint\":null,\"env\":{\"DATABASE_URL\":{\"kind\":\"secret\",\"ref\":\"DATABASE_URL\"},\"NODE_ENV\":{\"kind\":\"plain\",\"ref\":null},\"REDIS_URL\":{\"kind\":\"reference\",\"ref\":\"01a0cdb5-3500-70d1-8000-000000000001.REDIS_URL\"}},\"healthcheck\":{\"command\":null,\"interval_seconds\":10,\"kind\":\"http\",\"path\":\"/healthz\",\"port\":3000,\"retries\":3,\"start_period_seconds\":5,\"timeout_seconds\":3},\"image_digest_hex\":\"87ebc0f19e05e181dc22921cf7dbcf9f30e348d432da95fd36aea5ef8044a960\",\"image_repository\":\"registry.permanu.internal/acme/web\",\"mounts\":[],\"network\":{\"aliases\":[],\"mode\":\"project\"},\"placement\":{\"server_ids\":[\"01a0cdb5-3500-70a1-8000-000000000001\"]},\"ports\":[{\"container_port\":3000,\"protocol\":\"tcp\",\"public\":true}],\"privileged\":false,\"replicas\":2,\"resources\":{\"cpu_millis\":1000,\"memory_bytes\":536870912,\"pids_limit\":512},\"service_id\":\"01a0cdb5-3500-70c1-8000-000000000001\",\"user\":\"1000:1000\",\"version\":1,\"working_dir\":\"/app\"}"
+      ],
+      "submitter": "client",
+      "mode": "test",
+      "expect": "DEDUPED"
+    },
+    {
+      "name": "parse_duplicate_key",
+      "input": "{\"plan\": {\"version\": 1, \"version\": 1, \"id\": \"01a0cdb5-3500-7001-8000-000000000001\", \"project_id\": \"01a0cdb5-3500-70b1-8000-000000000001\", \"environment\": \"production\", \"service_ids\": [\"01a0cdb5-3500-70c1-8000-000000000001\"], \"targets\": [\"01a0cdb5-3500-70a1-8000-000000000001\"], \"actions\": [{\"kind\": \"deploy\", \"params\": {\"service_id\": \"01a0cdb5-3500-70c1-8000-000000000001\", \"commit_sha\": \"4f2a9c1e8b7d6a5f4e3d2c1b0a9f8e7d6c5b4a39\", \"spec_digest_hex\": \"f9e2f5ba422e79750428675b3191f942f6d85747981184a232a08b369e4da410\"}}], \"base\": {\"force\": false, \"heads\": {\"01a0cdb5-3500-70a1-8000-000000000001\": \"4a98af3eeae054bf7585746ce20fa5907ec9c079ee1b049a7d01146d1c92ebfb\"}}, \"created_at\": \"2026-09-23T10:00:00Z\", \"expires_at\": \"2026-09-23T10:10:00Z\", \"nonce\": \"SG86F2cYlLnxQtwmsiISuA\", \"author\": {\"kind\": \"user\", \"agent_session_id\": null}, \"invocation\": null}, \"signatures\": [{\"key_id\": \"dYLNItf797wK7n5moGt2cw\", \"alg\": \"ES256-raw\", \"sig\": \"8QXNRwjZwSyiyryh02PHjeNB2v591D9QSm6NLX03UuoDXQ_vKo66-BBbVLqJr8mV-QDNUDbW8ITauDGB6sF5Ew\", \"signed_at\": \"2026-09-23T10:00:05Z\"}]}",
+      "specs": [
+        "{\"cap_add\":[],\"command\":[\"node\",\"server.js\"],\"entrypoint\":null,\"env\":{\"DATABASE_URL\":{\"kind\":\"secret\",\"ref\":\"DATABASE_URL\"},\"NODE_ENV\":{\"kind\":\"plain\",\"ref\":null},\"REDIS_URL\":{\"kind\":\"reference\",\"ref\":\"01a0cdb5-3500-70d1-8000-000000000001.REDIS_URL\"}},\"healthcheck\":{\"command\":null,\"interval_seconds\":10,\"kind\":\"http\",\"path\":\"/healthz\",\"port\":3000,\"retries\":3,\"start_period_seconds\":5,\"timeout_seconds\":3},\"image_digest_hex\":\"87ebc0f19e05e181dc22921cf7dbcf9f30e348d432da95fd36aea5ef8044a960\",\"image_repository\":\"registry.permanu.internal/acme/web\",\"mounts\":[],\"network\":{\"aliases\":[],\"mode\":\"project\"},\"placement\":{\"server_ids\":[\"01a0cdb5-3500-70a1-8000-000000000001\"]},\"ports\":[{\"container_port\":3000,\"protocol\":\"tcp\",\"public\":true}],\"privileged\":false,\"replicas\":2,\"resources\":{\"cpu_millis\":1000,\"memory_bytes\":536870912,\"pids_limit\":512},\"service_id\":\"01a0cdb5-3500-70c1-8000-000000000001\",\"user\":\"1000:1000\",\"version\":1,\"working_dir\":\"/app\"}"
+      ],
+      "submitter": "client",
+      "mode": "test",
+      "expect": "E_PARSE"
+    },
+    {
+      "name": "parse_float",
+      "input": "{\"plan\": {\"version\": 1.0, \"id\": \"01a0cdb5-3500-7001-8000-000000000001\", \"project_id\": \"01a0cdb5-3500-70b1-8000-000000000001\", \"environment\": \"production\", \"service_ids\": [\"01a0cdb5-3500-70c1-8000-000000000001\"], \"targets\": [\"01a0cdb5-3500-70a1-8000-000000000001\"], \"actions\": [{\"kind\": \"deploy\", \"params\": {\"service_id\": \"01a0cdb5-3500-70c1-8000-000000000001\", \"commit_sha\": \"4f2a9c1e8b7d6a5f4e3d2c1b0a9f8e7d6c5b4a39\", \"spec_digest_hex\": \"f9e2f5ba422e79750428675b3191f942f6d85747981184a232a08b369e4da410\"}}], \"base\": {\"force\": false, \"heads\": {\"01a0cdb5-3500-70a1-8000-000000000001\": \"4a98af3eeae054bf7585746ce20fa5907ec9c079ee1b049a7d01146d1c92ebfb\"}}, \"created_at\": \"2026-09-23T10:00:00Z\", \"expires_at\": \"2026-09-23T10:10:00Z\", \"nonce\": \"SG86F2cYlLnxQtwmsiISuA\", \"author\": {\"kind\": \"user\", \"agent_session_id\": null}, \"invocation\": null}, \"signatures\": [{\"key_id\": \"dYLNItf797wK7n5moGt2cw\", \"alg\": \"ES256-raw\", \"sig\": \"8QXNRwjZwSyiyryh02PHjeNB2v591D9QSm6NLX03UuoDXQ_vKo66-BBbVLqJr8mV-QDNUDbW8ITauDGB6sF5Ew\", \"signed_at\": \"2026-09-23T10:00:05Z\"}]}",
+      "specs": [
+        "{\"cap_add\":[],\"command\":[\"node\",\"server.js\"],\"entrypoint\":null,\"env\":{\"DATABASE_URL\":{\"kind\":\"secret\",\"ref\":\"DATABASE_URL\"},\"NODE_ENV\":{\"kind\":\"plain\",\"ref\":null},\"REDIS_URL\":{\"kind\":\"reference\",\"ref\":\"01a0cdb5-3500-70d1-8000-000000000001.REDIS_URL\"}},\"healthcheck\":{\"command\":null,\"interval_seconds\":10,\"kind\":\"http\",\"path\":\"/healthz\",\"port\":3000,\"retries\":3,\"start_period_seconds\":5,\"timeout_seconds\":3},\"image_digest_hex\":\"87ebc0f19e05e181dc22921cf7dbcf9f30e348d432da95fd36aea5ef8044a960\",\"image_repository\":\"registry.permanu.internal/acme/web\",\"mounts\":[],\"network\":{\"aliases\":[],\"mode\":\"project\"},\"placement\":{\"server_ids\":[\"01a0cdb5-3500-70a1-8000-000000000001\"]},\"ports\":[{\"container_port\":3000,\"protocol\":\"tcp\",\"public\":true}],\"privileged\":false,\"replicas\":2,\"resources\":{\"cpu_millis\":1000,\"memory_bytes\":536870912,\"pids_limit\":512},\"service_id\":\"01a0cdb5-3500-70c1-8000-000000000001\",\"user\":\"1000:1000\",\"version\":1,\"working_dir\":\"/app\"}"
+      ],
+      "submitter": "client",
+      "mode": "test",
+      "expect": "E_PARSE"
+    },
+    {
+      "name": "parse_missing_null_field",
+      "input": "{\"plan\": {\"version\": 1, \"id\": \"01a0cdb5-3500-7001-8000-000000000001\", \"project_id\": \"01a0cdb5-3500-70b1-8000-000000000001\", \"environment\": \"production\", \"service_ids\": [\"01a0cdb5-3500-70c1-8000-000000000001\"], \"targets\": [\"01a0cdb5-3500-70a1-8000-000000000001\"], \"actions\": [{\"kind\": \"deploy\", \"params\": {\"service_id\": \"01a0cdb5-3500-70c1-8000-000000000001\", \"spec_digest_hex\": \"f9e2f5ba422e79750428675b3191f942f6d85747981184a232a08b369e4da410\"}}], \"base\": {\"force\": false, \"heads\": {\"01a0cdb5-3500-70a1-8000-000000000001\": \"4a98af3eeae054bf7585746ce20fa5907ec9c079ee1b049a7d01146d1c92ebfb\"}}, \"created_at\": \"2026-09-23T10:00:00Z\", \"expires_at\": \"2026-09-23T10:10:00Z\", \"nonce\": \"SG86F2cYlLnxQtwmsiISuA\", \"author\": {\"kind\": \"user\", \"agent_session_id\": null}, \"invocation\": null}, \"signatures\": [{\"key_id\": \"dYLNItf797wK7n5moGt2cw\", \"alg\": \"ES256-raw\", \"sig\": \"8QXNRwjZwSyiyryh02PHjeNB2v591D9QSm6NLX03UuoDXQ_vKo66-BBbVLqJr8mV-QDNUDbW8ITauDGB6sF5Ew\", \"signed_at\": \"2026-09-23T10:00:05Z\"}]}",
+      "specs": [
+        "{\"cap_add\":[],\"command\":[\"node\",\"server.js\"],\"entrypoint\":null,\"env\":{\"DATABASE_URL\":{\"kind\":\"secret\",\"ref\":\"DATABASE_URL\"},\"NODE_ENV\":{\"kind\":\"plain\",\"ref\":null},\"REDIS_URL\":{\"kind\":\"reference\",\"ref\":\"01a0cdb5-3500-70d1-8000-000000000001.REDIS_URL\"}},\"healthcheck\":{\"command\":null,\"interval_seconds\":10,\"kind\":\"http\",\"path\":\"/healthz\",\"port\":3000,\"retries\":3,\"start_period_seconds\":5,\"timeout_seconds\":3},\"image_digest_hex\":\"87ebc0f19e05e181dc22921cf7dbcf9f30e348d432da95fd36aea5ef8044a960\",\"image_repository\":\"registry.permanu.internal/acme/web\",\"mounts\":[],\"network\":{\"aliases\":[],\"mode\":\"project\"},\"placement\":{\"server_ids\":[\"01a0cdb5-3500-70a1-8000-000000000001\"]},\"ports\":[{\"container_port\":3000,\"protocol\":\"tcp\",\"public\":true}],\"privileged\":false,\"replicas\":2,\"resources\":{\"cpu_millis\":1000,\"memory_bytes\":536870912,\"pids_limit\":512},\"service_id\":\"01a0cdb5-3500-70c1-8000-000000000001\",\"user\":\"1000:1000\",\"version\":1,\"working_dir\":\"/app\"}"
+      ],
+      "submitter": "client",
+      "mode": "test",
+      "expect": "E_PARSE"
+    },
+    {
+      "name": "parse_unknown_field",
+      "input": "{\"plan\": {\"version\": 1, \"id\": \"01a0cdb5-3500-7001-8000-000000000001\", \"project_id\": \"01a0cdb5-3500-70b1-8000-000000000001\", \"environment\": \"production\", \"service_ids\": [\"01a0cdb5-3500-70c1-8000-000000000001\"], \"targets\": [\"01a0cdb5-3500-70a1-8000-000000000001\"], \"actions\": [{\"kind\": \"deploy\", \"params\": {\"service_id\": \"01a0cdb5-3500-70c1-8000-000000000001\", \"commit_sha\": \"4f2a9c1e8b7d6a5f4e3d2c1b0a9f8e7d6c5b4a39\", \"spec_digest_hex\": \"f9e2f5ba422e79750428675b3191f942f6d85747981184a232a08b369e4da410\"}}], \"base\": {\"force\": false, \"heads\": {\"01a0cdb5-3500-70a1-8000-000000000001\": \"4a98af3eeae054bf7585746ce20fa5907ec9c079ee1b049a7d01146d1c92ebfb\"}}, \"created_at\": \"2026-09-23T10:00:00Z\", \"expires_at\": \"2026-09-23T10:10:00Z\", \"nonce\": \"SG86F2cYlLnxQtwmsiISuA\", \"author\": {\"kind\": \"user\", \"agent_session_id\": null}, \"invocation\": null, \"priority\": \"high\"}, \"signatures\": [{\"key_id\": \"dYLNItf797wK7n5moGt2cw\", \"alg\": \"ES256-raw\", \"sig\": \"8QXNRwjZwSyiyryh02PHjeNB2v591D9QSm6NLX03UuoDXQ_vKo66-BBbVLqJr8mV-QDNUDbW8ITauDGB6sF5Ew\", \"signed_at\": \"2026-09-23T10:00:05Z\"}]}",
+      "specs": [
+        "{\"cap_add\":[],\"command\":[\"node\",\"server.js\"],\"entrypoint\":null,\"env\":{\"DATABASE_URL\":{\"kind\":\"secret\",\"ref\":\"DATABASE_URL\"},\"NODE_ENV\":{\"kind\":\"plain\",\"ref\":null},\"REDIS_URL\":{\"kind\":\"reference\",\"ref\":\"01a0cdb5-3500-70d1-8000-000000000001.REDIS_URL\"}},\"healthcheck\":{\"command\":null,\"interval_seconds\":10,\"kind\":\"http\",\"path\":\"/healthz\",\"port\":3000,\"retries\":3,\"start_period_seconds\":5,\"timeout_seconds\":3},\"image_digest_hex\":\"87ebc0f19e05e181dc22921cf7dbcf9f30e348d432da95fd36aea5ef8044a960\",\"image_repository\":\"registry.permanu.internal/acme/web\",\"mounts\":[],\"network\":{\"aliases\":[],\"mode\":\"project\"},\"placement\":{\"server_ids\":[\"01a0cdb5-3500-70a1-8000-000000000001\"]},\"ports\":[{\"container_port\":3000,\"protocol\":\"tcp\",\"public\":true}],\"privileged\":false,\"replicas\":2,\"resources\":{\"cpu_millis\":1000,\"memory_bytes\":536870912,\"pids_limit\":512},\"service_id\":\"01a0cdb5-3500-70c1-8000-000000000001\",\"user\":\"1000:1000\",\"version\":1,\"working_dir\":\"/app\"}"
+      ],
+      "submitter": "client",
+      "mode": "test",
+      "expect": "E_PARSE"
+    },
+    {
+      "name": "parse_der_signature",
+      "input": "{\"plan\": {\"version\": 1, \"id\": \"01a0cdb5-3500-7001-8000-000000000001\", \"project_id\": \"01a0cdb5-3500-70b1-8000-000000000001\", \"environment\": \"production\", \"service_ids\": [\"01a0cdb5-3500-70c1-8000-000000000001\"], \"targets\": [\"01a0cdb5-3500-70a1-8000-000000000001\"], \"actions\": [{\"kind\": \"deploy\", \"params\": {\"service_id\": \"01a0cdb5-3500-70c1-8000-000000000001\", \"commit_sha\": \"4f2a9c1e8b7d6a5f4e3d2c1b0a9f8e7d6c5b4a39\", \"spec_digest_hex\": \"f9e2f5ba422e79750428675b3191f942f6d85747981184a232a08b369e4da410\"}}], \"base\": {\"force\": false, \"heads\": {\"01a0cdb5-3500-70a1-8000-000000000001\": \"4a98af3eeae054bf7585746ce20fa5907ec9c079ee1b049a7d01146d1c92ebfb\"}}, \"created_at\": \"2026-09-23T10:00:00Z\", \"expires_at\": \"2026-09-23T10:10:00Z\", \"nonce\": \"SG86F2cYlLnxQtwmsiISuA\", \"author\": {\"kind\": \"user\", \"agent_session_id\": null}, \"invocation\": null}, \"signatures\": [{\"key_id\": \"dYLNItf797wK7n5moGt2cw\", \"alg\": \"ES256-raw\", \"sig\": \"MEUCIQDxBc1HCNnBLKLKvKHTY8eN40Ha_n3UP1BKbo0tfTdS6gIgA10P7yqOuvgQW1S6ia_JlfkAzVA21vCE2rgxgerBeRM\", \"signed_at\": \"2026-09-23T10:00:05Z\"}]}",
+      "specs": [
+        "{\"cap_add\":[],\"command\":[\"node\",\"server.js\"],\"entrypoint\":null,\"env\":{\"DATABASE_URL\":{\"kind\":\"secret\",\"ref\":\"DATABASE_URL\"},\"NODE_ENV\":{\"kind\":\"plain\",\"ref\":null},\"REDIS_URL\":{\"kind\":\"reference\",\"ref\":\"01a0cdb5-3500-70d1-8000-000000000001.REDIS_URL\"}},\"healthcheck\":{\"command\":null,\"interval_seconds\":10,\"kind\":\"http\",\"path\":\"/healthz\",\"port\":3000,\"retries\":3,\"start_period_seconds\":5,\"timeout_seconds\":3},\"image_digest_hex\":\"87ebc0f19e05e181dc22921cf7dbcf9f30e348d432da95fd36aea5ef8044a960\",\"image_repository\":\"registry.permanu.internal/acme/web\",\"mounts\":[],\"network\":{\"aliases\":[],\"mode\":\"project\"},\"placement\":{\"server_ids\":[\"01a0cdb5-3500-70a1-8000-000000000001\"]},\"ports\":[{\"container_port\":3000,\"protocol\":\"tcp\",\"public\":true}],\"privileged\":false,\"replicas\":2,\"resources\":{\"cpu_millis\":1000,\"memory_bytes\":536870912,\"pids_limit\":512},\"service_id\":\"01a0cdb5-3500-70c1-8000-000000000001\",\"user\":\"1000:1000\",\"version\":1,\"working_dir\":\"/app\"}"
+      ],
+      "submitter": "client",
+      "mode": "test",
+      "expect": "E_PARSE"
+    },
+    {
+      "name": "parse_branch_pattern_dotdot",
+      "input": "{\"plan\": {\"version\": 1, \"id\": \"01a0cdb5-3500-7001-8000-00000000003d\", \"project_id\": \"01a0cdb5-3500-70b1-8000-000000000001\", \"environment\": \"production\", \"service_ids\": [], \"targets\": [\"01a0cdb5-3500-70a1-8000-000000000001\"], \"actions\": [{\"kind\": \"rule.create\", \"params\": {\"rule\": {\"version\": 1, \"id\": \"01a0cdb5-3500-70f1-8000-000000000005\", \"label\": \"Auto-deploy main to production\", \"trigger\": \"git.push\", \"scope\": {\"project_id\": \"01a0cdb5-3500-70b1-8000-000000000001\", \"environment\": \"production\", \"service_ids\": [\"01a0cdb5-3500-70c1-8000-000000000001\"], \"server_ids\": [\"01a0cdb5-3500-70a1-8000-000000000001\"], \"repo\": \"github.com/acme/web\", \"branch_patterns\": [\"refs/heads/re..lease/*\"]}, \"allowed_kinds\": [\"deploy\"], \"limits\": {\"max_replicas\": 4, \"max_invocations_per_hour\": 30}, \"not_before\": \"2026-09-01T00:00:00Z\", \"expires_at\": \"2027-09-01T00:00:00Z\"}}}], \"base\": {\"force\": false, \"heads\": {\"01a0cdb5-3500-70a1-8000-000000000001\": \"4a98af3eeae054bf7585746ce20fa5907ec9c079ee1b049a7d01146d1c92ebfb\"}}, \"created_at\": \"2026-09-23T10:00:00Z\", \"expires_at\": \"2026-09-23T10:10:00Z\", \"nonce\": \"W3dAp_lo2ZPGeU8mAE8hgQ\", \"author\": {\"kind\": \"user\", \"agent_session_id\": null}, \"invocation\": null}, \"signatures\": [{\"key_id\": \"dYLNItf797wK7n5moGt2cw\", \"alg\": \"ES256-raw\", \"sig\": \"NiymeVlDD3mNrp5JzB2ydbgQqWHEBtl2OUrOueDaArFU-VBLHaM9PyzaB7p75bOszrqd2C2RakexVhyQwVwcVw\", \"signed_at\": \"2026-09-23T10:00:05Z\"}]}",
+      "specs": [],
+      "submitter": "client",
+      "mode": "test",
+      "expect": "E_PARSE"
+    },
+    {
+      "name": "parse_label_bidi_override",
+      "input": "{\"plan\": {\"version\": 1, \"id\": \"01a0cdb5-3500-7001-8000-00000000003e\", \"project_id\": \"01a0cdb5-3500-70b1-8000-000000000001\", \"environment\": \"production\", \"service_ids\": [], \"targets\": [\"01a0cdb5-3500-70a1-8000-000000000001\"], \"actions\": [{\"kind\": \"rule.create\", \"params\": {\"rule\": {\"version\": 1, \"id\": \"01a0cdb5-3500-70f1-8000-000000000006\", \"label\": \"Auto-deploy ‮gnigats‬\", \"trigger\": \"git.push\", \"scope\": {\"project_id\": \"01a0cdb5-3500-70b1-8000-000000000001\", \"environment\": \"production\", \"service_ids\": [\"01a0cdb5-3500-70c1-8000-000000000001\"], \"server_ids\": [\"01a0cdb5-3500-70a1-8000-000000000001\"], \"repo\": \"github.com/acme/web\", \"branch_patterns\": [\"refs/heads/main\"]}, \"allowed_kinds\": [\"deploy\"], \"limits\": {\"max_replicas\": 4, \"max_invocations_per_hour\": 30}, \"not_before\": \"2026-09-01T00:00:00Z\", \"expires_at\": \"2027-09-01T00:00:00Z\"}}}], \"base\": {\"force\": false, \"heads\": {\"01a0cdb5-3500-70a1-8000-000000000001\": \"4a98af3eeae054bf7585746ce20fa5907ec9c079ee1b049a7d01146d1c92ebfb\"}}, \"created_at\": \"2026-09-23T10:00:00Z\", \"expires_at\": \"2026-09-23T10:10:00Z\", \"nonce\": \"ou7mtwtgQHNEDWIKmQTSpQ\", \"author\": {\"kind\": \"user\", \"agent_session_id\": null}, \"invocation\": null}, \"signatures\": [{\"key_id\": \"dYLNItf797wK7n5moGt2cw\", \"alg\": \"ES256-raw\", \"sig\": \"cia5JBtpH4L2_d9tbJL7_TXpKb6uspYICan1M1eB0-0vIkqupQrrAH-XK-klG5hdxFJemkHYnz11zqjPHE1a5g\", \"signed_at\": \"2026-09-23T10:00:05Z\"}]}",
+      "specs": [],
+      "submitter": "client",
+      "mode": "test",
+      "expect": "E_PARSE"
+    },
+    {
+      "name": "version_2",
+      "input": "{\"plan\": {\"version\": 2, \"id\": \"01a0cdb5-3500-7001-8000-000000000001\", \"project_id\": \"01a0cdb5-3500-70b1-8000-000000000001\", \"environment\": \"production\", \"service_ids\": [\"01a0cdb5-3500-70c1-8000-000000000001\"], \"targets\": [\"01a0cdb5-3500-70a1-8000-000000000001\"], \"actions\": [{\"kind\": \"deploy\", \"params\": {\"service_id\": \"01a0cdb5-3500-70c1-8000-000000000001\", \"commit_sha\": \"4f2a9c1e8b7d6a5f4e3d2c1b0a9f8e7d6c5b4a39\", \"spec_digest_hex\": \"f9e2f5ba422e79750428675b3191f942f6d85747981184a232a08b369e4da410\"}}], \"base\": {\"force\": false, \"heads\": {\"01a0cdb5-3500-70a1-8000-000000000001\": \"4a98af3eeae054bf7585746ce20fa5907ec9c079ee1b049a7d01146d1c92ebfb\"}}, \"created_at\": \"2026-09-23T10:00:00Z\", \"expires_at\": \"2026-09-23T10:10:00Z\", \"nonce\": \"SG86F2cYlLnxQtwmsiISuA\", \"author\": {\"kind\": \"user\", \"agent_session_id\": null}, \"invocation\": null}, \"signatures\": [{\"key_id\": \"dYLNItf797wK7n5moGt2cw\", \"alg\": \"ES256-raw\", \"sig\": \"8QXNRwjZwSyiyryh02PHjeNB2v591D9QSm6NLX03UuoDXQ_vKo66-BBbVLqJr8mV-QDNUDbW8ITauDGB6sF5Ew\", \"signed_at\": \"2026-09-23T10:00:05Z\"}]}",
+      "specs": [
+        "{\"cap_add\":[],\"command\":[\"node\",\"server.js\"],\"entrypoint\":null,\"env\":{\"DATABASE_URL\":{\"kind\":\"secret\",\"ref\":\"DATABASE_URL\"},\"NODE_ENV\":{\"kind\":\"plain\",\"ref\":null},\"REDIS_URL\":{\"kind\":\"reference\",\"ref\":\"01a0cdb5-3500-70d1-8000-000000000001.REDIS_URL\"}},\"healthcheck\":{\"command\":null,\"interval_seconds\":10,\"kind\":\"http\",\"path\":\"/healthz\",\"port\":3000,\"retries\":3,\"start_period_seconds\":5,\"timeout_seconds\":3},\"image_digest_hex\":\"87ebc0f19e05e181dc22921cf7dbcf9f30e348d432da95fd36aea5ef8044a960\",\"image_repository\":\"registry.permanu.internal/acme/web\",\"mounts\":[],\"network\":{\"aliases\":[],\"mode\":\"project\"},\"placement\":{\"server_ids\":[\"01a0cdb5-3500-70a1-8000-000000000001\"]},\"ports\":[{\"container_port\":3000,\"protocol\":\"tcp\",\"public\":true}],\"privileged\":false,\"replicas\":2,\"resources\":{\"cpu_millis\":1000,\"memory_bytes\":536870912,\"pids_limit\":512},\"service_id\":\"01a0cdb5-3500-70c1-8000-000000000001\",\"user\":\"1000:1000\",\"version\":1,\"working_dir\":\"/app\"}"
+      ],
+      "submitter": "client",
+      "mode": "test",
+      "expect": "E_VERSION"
+    },
+    {
+      "name": "spec_digest_mismatch",
+      "input": "{\"plan\": {\"version\": 1, \"id\": \"01a0cdb5-3500-7001-8000-000000000001\", \"project_id\": \"01a0cdb5-3500-70b1-8000-000000000001\", \"environment\": \"production\", \"service_ids\": [\"01a0cdb5-3500-70c1-8000-000000000001\"], \"targets\": [\"01a0cdb5-3500-70a1-8000-000000000001\"], \"actions\": [{\"kind\": \"deploy\", \"params\": {\"service_id\": \"01a0cdb5-3500-70c1-8000-000000000001\", \"commit_sha\": \"4f2a9c1e8b7d6a5f4e3d2c1b0a9f8e7d6c5b4a39\", \"spec_digest_hex\": \"f9e2f5ba422e79750428675b3191f942f6d85747981184a232a08b369e4da410\"}}], \"base\": {\"force\": false, \"heads\": {\"01a0cdb5-3500-70a1-8000-000000000001\": \"4a98af3eeae054bf7585746ce20fa5907ec9c079ee1b049a7d01146d1c92ebfb\"}}, \"created_at\": \"2026-09-23T10:00:00Z\", \"expires_at\": \"2026-09-23T10:10:00Z\", \"nonce\": \"SG86F2cYlLnxQtwmsiISuA\", \"author\": {\"kind\": \"user\", \"agent_session_id\": null}, \"invocation\": null}, \"signatures\": [{\"key_id\": \"dYLNItf797wK7n5moGt2cw\", \"alg\": \"ES256-raw\", \"sig\": \"8QXNRwjZwSyiyryh02PHjeNB2v591D9QSm6NLX03UuoDXQ_vKo66-BBbVLqJr8mV-QDNUDbW8ITauDGB6sF5Ew\", \"signed_at\": \"2026-09-23T10:00:05Z\"}]}",
+      "specs": [
+        "{\"cap_add\":[],\"command\":[\"node\",\"server.js\"],\"entrypoint\":null,\"env\":{\"DATABASE_URL\":{\"kind\":\"secret\",\"ref\":\"DATABASE_URL\"},\"NODE_ENV\":{\"kind\":\"plain\",\"ref\":null},\"REDIS_URL\":{\"kind\":\"reference\",\"ref\":\"01a0cdb5-3500-70d1-8000-000000000001.REDIS_URL\"}},\"healthcheck\":{\"command\":null,\"interval_seconds\":10,\"kind\":\"http\",\"path\":\"/healthz\",\"port\":3000,\"retries\":3,\"start_period_seconds\":5,\"timeout_seconds\":3},\"image_digest_hex\":\"13234a75cc6c087b23d87e9ba5b381e5b2309907ee37a0bf73d15f6500c9ecee\",\"image_repository\":\"registry.permanu.internal/acme/web\",\"mounts\":[],\"network\":{\"aliases\":[],\"mode\":\"project\"},\"placement\":{\"server_ids\":[\"01a0cdb5-3500-70a1-8000-000000000001\"]},\"ports\":[{\"container_port\":3000,\"protocol\":\"tcp\",\"public\":true}],\"privileged\":false,\"replicas\":2,\"resources\":{\"cpu_millis\":1000,\"memory_bytes\":536870912,\"pids_limit\":512},\"service_id\":\"01a0cdb5-3500-70c1-8000-000000000001\",\"user\":\"1000:1000\",\"version\":1,\"working_dir\":\"/app\"}"
+      ],
+      "submitter": "client",
+      "mode": "test",
+      "expect": "E_SPEC_MISMATCH"
+    },
+    {
+      "name": "spec_missing",
+      "input": "{\"plan\": {\"version\": 1, \"id\": \"01a0cdb5-3500-7001-8000-000000000001\", \"project_id\": \"01a0cdb5-3500-70b1-8000-000000000001\", \"environment\": \"production\", \"service_ids\": [\"01a0cdb5-3500-70c1-8000-000000000001\"], \"targets\": [\"01a0cdb5-3500-70a1-8000-000000000001\"], \"actions\": [{\"kind\": \"deploy\", \"params\": {\"service_id\": \"01a0cdb5-3500-70c1-8000-000000000001\", \"commit_sha\": \"4f2a9c1e8b7d6a5f4e3d2c1b0a9f8e7d6c5b4a39\", \"spec_digest_hex\": \"f9e2f5ba422e79750428675b3191f942f6d85747981184a232a08b369e4da410\"}}], \"base\": {\"force\": false, \"heads\": {\"01a0cdb5-3500-70a1-8000-000000000001\": \"4a98af3eeae054bf7585746ce20fa5907ec9c079ee1b049a7d01146d1c92ebfb\"}}, \"created_at\": \"2026-09-23T10:00:00Z\", \"expires_at\": \"2026-09-23T10:10:00Z\", \"nonce\": \"SG86F2cYlLnxQtwmsiISuA\", \"author\": {\"kind\": \"user\", \"agent_session_id\": null}, \"invocation\": null}, \"signatures\": [{\"key_id\": \"dYLNItf797wK7n5moGt2cw\", \"alg\": \"ES256-raw\", \"sig\": \"8QXNRwjZwSyiyryh02PHjeNB2v591D9QSm6NLX03UuoDXQ_vKo66-BBbVLqJr8mV-QDNUDbW8ITauDGB6sF5Ew\", \"signed_at\": \"2026-09-23T10:00:05Z\"}]}",
+      "specs": [],
+      "submitter": "client",
+      "mode": "test",
+      "expect": "E_SPEC_MISMATCH"
+    },
+    {
+      "name": "spec_elevated_without_elevate",
+      "input": "{\"plan\": {\"version\": 1, \"id\": \"01a0cdb5-3500-7001-8000-00000000003f\", \"project_id\": \"01a0cdb5-3500-70b1-8000-000000000001\", \"environment\": \"production\", \"service_ids\": [\"01a0cdb5-3500-70c1-8000-000000000001\"], \"targets\": [\"01a0cdb5-3500-70a1-8000-000000000001\"], \"actions\": [{\"kind\": \"deploy\", \"params\": {\"service_id\": \"01a0cdb5-3500-70c1-8000-000000000001\", \"commit_sha\": \"4f2a9c1e8b7d6a5f4e3d2c1b0a9f8e7d6c5b4a39\", \"spec_digest_hex\": \"30132247c725773cf0759c0d265b98e2111261678597deb04d082d680625d007\"}}], \"base\": {\"force\": false, \"heads\": {\"01a0cdb5-3500-70a1-8000-000000000001\": \"4a98af3eeae054bf7585746ce20fa5907ec9c079ee1b049a7d01146d1c92ebfb\"}}, \"created_at\": \"2026-09-23T10:00:00Z\", \"expires_at\": \"2026-09-23T10:10:00Z\", \"nonce\": \"GwxkYcliC15uc1XTP4orOA\", \"author\": {\"kind\": \"user\", \"agent_session_id\": null}, \"invocation\": null}, \"signatures\": [{\"key_id\": \"dYLNItf797wK7n5moGt2cw\", \"alg\": \"ES256-raw\", \"sig\": \"BaFKC8dnnJH9zZDW138fIuGnMxY3AXdqP4zNygjxtgpAHIZJmkJOjfpZDaFre2QlojVenHDd3GiB8CtA2lQP2w\", \"signed_at\": \"2026-09-23T10:00:05Z\"}]}",
+      "specs": [
+        "{\"cap_add\":[],\"command\":[\"node\",\"server.js\"],\"entrypoint\":null,\"env\":{\"DATABASE_URL\":{\"kind\":\"secret\",\"ref\":\"DATABASE_URL\"},\"NODE_ENV\":{\"kind\":\"plain\",\"ref\":null},\"REDIS_URL\":{\"kind\":\"reference\",\"ref\":\"01a0cdb5-3500-70d1-8000-000000000001.REDIS_URL\"}},\"healthcheck\":{\"command\":null,\"interval_seconds\":10,\"kind\":\"http\",\"path\":\"/healthz\",\"port\":3000,\"retries\":3,\"start_period_seconds\":5,\"timeout_seconds\":3},\"image_digest_hex\":\"87ebc0f19e05e181dc22921cf7dbcf9f30e348d432da95fd36aea5ef8044a960\",\"image_repository\":\"registry.permanu.internal/acme/web\",\"mounts\":[],\"network\":{\"aliases\":[],\"mode\":\"project\"},\"placement\":{\"server_ids\":[\"01a0cdb5-3500-70a1-8000-000000000001\"]},\"ports\":[{\"container_port\":3000,\"protocol\":\"tcp\",\"public\":true}],\"privileged\":true,\"replicas\":2,\"resources\":{\"cpu_millis\":1000,\"memory_bytes\":536870912,\"pids_limit\":512},\"service_id\":\"01a0cdb5-3500-70c1-8000-000000000001\",\"user\":\"1000:1000\",\"version\":1,\"working_dir\":\"/app\"}"
+      ],
+      "submitter": "client",
+      "mode": "test",
+      "expect": "E_SPEC_MISMATCH"
+    },
+    {
+      "name": "ok_spec_elevated_with_elevate",
+      "input": "{\"plan\": {\"version\": 1, \"id\": \"01a0cdb5-3500-7001-8000-000000000040\", \"project_id\": \"01a0cdb5-3500-70b1-8000-000000000001\", \"environment\": \"production\", \"service_ids\": [\"01a0cdb5-3500-70c1-8000-000000000001\"], \"targets\": [\"01a0cdb5-3500-70a1-8000-000000000001\"], \"actions\": [{\"kind\": \"service.elevate\", \"params\": {\"service_id\": \"01a0cdb5-3500-70c1-8000-000000000001\", \"spec_digest_hex\": \"30132247c725773cf0759c0d265b98e2111261678597deb04d082d680625d007\"}}, {\"kind\": \"deploy\", \"params\": {\"service_id\": \"01a0cdb5-3500-70c1-8000-000000000001\", \"commit_sha\": \"4f2a9c1e8b7d6a5f4e3d2c1b0a9f8e7d6c5b4a39\", \"spec_digest_hex\": \"30132247c725773cf0759c0d265b98e2111261678597deb04d082d680625d007\"}}], \"base\": {\"force\": false, \"heads\": {\"01a0cdb5-3500-70a1-8000-000000000001\": \"4a98af3eeae054bf7585746ce20fa5907ec9c079ee1b049a7d01146d1c92ebfb\"}}, \"created_at\": \"2026-09-23T10:00:00Z\", \"expires_at\": \"2026-09-23T10:10:00Z\", \"nonce\": \"g0b8YdaRgpg6Q-EcZYET1A\", \"author\": {\"kind\": \"user\", \"agent_session_id\": null}, \"invocation\": null}, \"signatures\": [{\"key_id\": \"dYLNItf797wK7n5moGt2cw\", \"alg\": \"ES256-raw\", \"sig\": \"CauZHNRbVUyi2VvjD2d5NB3vEgTGD60bxI_tzLyqZzDrpVNe_HEoR6Gbpc3eR5uakwvEzhGzam8Mx8F70jlOOQ\", \"signed_at\": \"2026-09-23T10:00:05Z\"}]}",
+      "specs": [
+        "{\"cap_add\":[],\"command\":[\"node\",\"server.js\"],\"entrypoint\":null,\"env\":{\"DATABASE_URL\":{\"kind\":\"secret\",\"ref\":\"DATABASE_URL\"},\"NODE_ENV\":{\"kind\":\"plain\",\"ref\":null},\"REDIS_URL\":{\"kind\":\"reference\",\"ref\":\"01a0cdb5-3500-70d1-8000-000000000001.REDIS_URL\"}},\"healthcheck\":{\"command\":null,\"interval_seconds\":10,\"kind\":\"http\",\"path\":\"/healthz\",\"port\":3000,\"retries\":3,\"start_period_seconds\":5,\"timeout_seconds\":3},\"image_digest_hex\":\"87ebc0f19e05e181dc22921cf7dbcf9f30e348d432da95fd36aea5ef8044a960\",\"image_repository\":\"registry.permanu.internal/acme/web\",\"mounts\":[],\"network\":{\"aliases\":[],\"mode\":\"project\"},\"placement\":{\"server_ids\":[\"01a0cdb5-3500-70a1-8000-000000000001\"]},\"ports\":[{\"container_port\":3000,\"protocol\":\"tcp\",\"public\":true}],\"privileged\":true,\"replicas\":2,\"resources\":{\"cpu_millis\":1000,\"memory_bytes\":536870912,\"pids_limit\":512},\"service_id\":\"01a0cdb5-3500-70c1-8000-000000000001\",\"user\":\"1000:1000\",\"version\":1,\"working_dir\":\"/app\"}"
+      ],
+      "submitter": "client",
+      "mode": "test",
+      "expect": "OK"
+    },
+    {
+      "name": "deployer_spec_elevate",
+      "input": "{\"plan\": {\"version\": 1, \"id\": \"01a0cdb5-3500-7001-8000-000000000041\", \"project_id\": \"01a0cdb5-3500-70b1-8000-000000000001\", \"environment\": \"production\", \"service_ids\": [\"01a0cdb5-3500-70c1-8000-000000000001\"], \"targets\": [\"01a0cdb5-3500-70a1-8000-000000000001\"], \"actions\": [{\"kind\": \"service.elevate\", \"params\": {\"service_id\": \"01a0cdb5-3500-70c1-8000-000000000001\", \"spec_digest_hex\": \"30132247c725773cf0759c0d265b98e2111261678597deb04d082d680625d007\"}}, {\"kind\": \"deploy\", \"params\": {\"service_id\": \"01a0cdb5-3500-70c1-8000-000000000001\", \"commit_sha\": \"4f2a9c1e8b7d6a5f4e3d2c1b0a9f8e7d6c5b4a39\", \"spec_digest_hex\": \"30132247c725773cf0759c0d265b98e2111261678597deb04d082d680625d007\"}}], \"base\": {\"force\": false, \"heads\": {\"01a0cdb5-3500-70a1-8000-000000000001\": \"4a98af3eeae054bf7585746ce20fa5907ec9c079ee1b049a7d01146d1c92ebfb\"}}, \"created_at\": \"2026-09-23T10:00:00Z\", \"expires_at\": \"2026-09-23T10:10:00Z\", \"nonce\": \"R-Vyet6MnKu3SMYpiOLekw\", \"author\": {\"kind\": \"user\", \"agent_session_id\": null}, \"invocation\": null}, \"signatures\": [{\"key_id\": \"Hph9XRkn48eogeehAgeI9A\", \"alg\": \"ES256-raw\", \"sig\": \"vX0p3LmTdoBAADEwLnzW5TOAkjPZP3Oz3zm1beemXBFmQJavvCh7rXf1zVCUIt59C6VSy7VZffmODoJSoKjI9Q\", \"signed_at\": \"2026-09-23T10:00:05Z\"}]}",
+      "specs": [
+        "{\"cap_add\":[],\"command\":[\"node\",\"server.js\"],\"entrypoint\":null,\"env\":{\"DATABASE_URL\":{\"kind\":\"secret\",\"ref\":\"DATABASE_URL\"},\"NODE_ENV\":{\"kind\":\"plain\",\"ref\":null},\"REDIS_URL\":{\"kind\":\"reference\",\"ref\":\"01a0cdb5-3500-70d1-8000-000000000001.REDIS_URL\"}},\"healthcheck\":{\"command\":null,\"interval_seconds\":10,\"kind\":\"http\",\"path\":\"/healthz\",\"port\":3000,\"retries\":3,\"start_period_seconds\":5,\"timeout_seconds\":3},\"image_digest_hex\":\"87ebc0f19e05e181dc22921cf7dbcf9f30e348d432da95fd36aea5ef8044a960\",\"image_repository\":\"registry.permanu.internal/acme/web\",\"mounts\":[],\"network\":{\"aliases\":[],\"mode\":\"project\"},\"placement\":{\"server_ids\":[\"01a0cdb5-3500-70a1-8000-000000000001\"]},\"ports\":[{\"container_port\":3000,\"protocol\":\"tcp\",\"public\":true}],\"privileged\":true,\"replicas\":2,\"resources\":{\"cpu_millis\":1000,\"memory_bytes\":536870912,\"pids_limit\":512},\"service_id\":\"01a0cdb5-3500-70c1-8000-000000000001\",\"user\":\"1000:1000\",\"version\":1,\"working_dir\":\"/app\"}"
+      ],
+      "submitter": "client",
+      "mode": "test",
+      "expect": "E_TOUCH_ID_REQUIRED"
+    },
+    {
+      "name": "target_mismatch",
+      "input": "{\"plan\": {\"version\": 1, \"id\": \"01a0cdb5-3500-7001-8000-000000000016\", \"project_id\": \"01a0cdb5-3500-70b1-8000-000000000001\", \"environment\": \"production\", \"service_ids\": [\"01a0cdb5-3500-70c1-8000-000000000001\"], \"targets\": [\"01a0cdb5-3500-70a1-8000-000000000002\"], \"actions\": [{\"kind\": \"deploy\", \"params\": {\"service_id\": \"01a0cdb5-3500-70c1-8000-000000000001\", \"commit_sha\": \"4f2a9c1e8b7d6a5f4e3d2c1b0a9f8e7d6c5b4a39\", \"spec_digest_hex\": \"f9e2f5ba422e79750428675b3191f942f6d85747981184a232a08b369e4da410\"}}], \"base\": {\"force\": false, \"heads\": {\"01a0cdb5-3500-70a1-8000-000000000002\": \"0000000000000000000000000000000000000000000000000000000000000000\"}}, \"created_at\": \"2026-09-23T10:00:00Z\", \"expires_at\": \"2026-09-23T10:10:00Z\", \"nonce\": \"XwipWZYaQhmUk4-FY-mmKg\", \"author\": {\"kind\": \"user\", \"agent_session_id\": null}, \"invocation\": null}, \"signatures\": [{\"key_id\": \"dYLNItf797wK7n5moGt2cw\", \"alg\": \"ES256-raw\", \"sig\": \"KdNtIbfSlP9NXdV_-TPwTedA_PAXF2rqUeBwqY1aIfHjY3XUpF4Z9bVXWnqcaupbwaQtHuCC2N1JnrqwDpizaQ\", \"signed_at\": \"2026-09-23T10:00:05Z\"}]}",
+      "specs": [
+        "{\"cap_add\":[],\"command\":[\"node\",\"server.js\"],\"entrypoint\":null,\"env\":{\"DATABASE_URL\":{\"kind\":\"secret\",\"ref\":\"DATABASE_URL\"},\"NODE_ENV\":{\"kind\":\"plain\",\"ref\":null},\"REDIS_URL\":{\"kind\":\"reference\",\"ref\":\"01a0cdb5-3500-70d1-8000-000000000001.REDIS_URL\"}},\"healthcheck\":{\"command\":null,\"interval_seconds\":10,\"kind\":\"http\",\"path\":\"/healthz\",\"port\":3000,\"retries\":3,\"start_period_seconds\":5,\"timeout_seconds\":3},\"image_digest_hex\":\"87ebc0f19e05e181dc22921cf7dbcf9f30e348d432da95fd36aea5ef8044a960\",\"image_repository\":\"registry.permanu.internal/acme/web\",\"mounts\":[],\"network\":{\"aliases\":[],\"mode\":\"project\"},\"placement\":{\"server_ids\":[\"01a0cdb5-3500-70a1-8000-000000000001\"]},\"ports\":[{\"container_port\":3000,\"protocol\":\"tcp\",\"public\":true}],\"privileged\":false,\"replicas\":2,\"resources\":{\"cpu_millis\":1000,\"memory_bytes\":536870912,\"pids_limit\":512},\"service_id\":\"01a0cdb5-3500-70c1-8000-000000000001\",\"user\":\"1000:1000\",\"version\":1,\"working_dir\":\"/app\"}"
+      ],
+      "submitter": "client",
+      "mode": "test",
+      "expect": "E_TARGET"
+    },
+    {
+      "name": "author_agent_draft_unsigned",
+      "input": "{\"plan\": {\"version\": 1, \"id\": \"01a0cdb5-3500-7001-8000-000000000017\", \"project_id\": \"01a0cdb5-3500-70b1-8000-000000000001\", \"environment\": \"production\", \"service_ids\": [\"01a0cdb5-3500-70c1-8000-000000000001\"], \"targets\": [\"01a0cdb5-3500-70a1-8000-000000000001\"], \"actions\": [{\"kind\": \"deploy\", \"params\": {\"service_id\": \"01a0cdb5-3500-70c1-8000-000000000001\", \"commit_sha\": \"4f2a9c1e8b7d6a5f4e3d2c1b0a9f8e7d6c5b4a39\", \"spec_digest_hex\": \"f9e2f5ba422e79750428675b3191f942f6d85747981184a232a08b369e4da410\"}}], \"base\": {\"force\": false, \"heads\": {\"01a0cdb5-3500-70a1-8000-000000000001\": \"4a98af3eeae054bf7585746ce20fa5907ec9c079ee1b049a7d01146d1c92ebfb\"}}, \"created_at\": \"2026-09-23T10:00:00Z\", \"expires_at\": \"2026-09-23T10:10:00Z\", \"nonce\": \"0NQwI0_BYbALnyHrI76Bzg\", \"author\": {\"kind\": \"agent-draft\", \"agent_session_id\": \"01a0cdb5-3500-70e1-8000-000000000002\"}, \"invocation\": null}, \"signatures\": []}",
+      "specs": [
+        "{\"cap_add\":[],\"command\":[\"node\",\"server.js\"],\"entrypoint\":null,\"env\":{\"DATABASE_URL\":{\"kind\":\"secret\",\"ref\":\"DATABASE_URL\"},\"NODE_ENV\":{\"kind\":\"plain\",\"ref\":null},\"REDIS_URL\":{\"kind\":\"reference\",\"ref\":\"01a0cdb5-3500-70d1-8000-000000000001.REDIS_URL\"}},\"healthcheck\":{\"command\":null,\"interval_seconds\":10,\"kind\":\"http\",\"path\":\"/healthz\",\"port\":3000,\"retries\":3,\"start_period_seconds\":5,\"timeout_seconds\":3},\"image_digest_hex\":\"87ebc0f19e05e181dc22921cf7dbcf9f30e348d432da95fd36aea5ef8044a960\",\"image_repository\":\"registry.permanu.internal/acme/web\",\"mounts\":[],\"network\":{\"aliases\":[],\"mode\":\"project\"},\"placement\":{\"server_ids\":[\"01a0cdb5-3500-70a1-8000-000000000001\"]},\"ports\":[{\"container_port\":3000,\"protocol\":\"tcp\",\"public\":true}],\"privileged\":false,\"replicas\":2,\"resources\":{\"cpu_millis\":1000,\"memory_bytes\":536870912,\"pids_limit\":512},\"service_id\":\"01a0cdb5-3500-70c1-8000-000000000001\",\"user\":\"1000:1000\",\"version\":1,\"working_dir\":\"/app\"}"
+      ],
+      "submitter": "client",
+      "mode": "test",
+      "expect": "E_AUTHOR"
+    },
+    {
+      "name": "rule_plan_from_client",
+      "input": "{\"plan\": {\"version\": 1, \"id\": \"01a0cdb5-3500-7001-8000-000000000042\", \"project_id\": \"01a0cdb5-3500-70b1-8000-000000000001\", \"environment\": \"production\", \"service_ids\": [\"01a0cdb5-3500-70c1-8000-000000000001\"], \"targets\": [\"01a0cdb5-3500-70a1-8000-000000000001\"], \"actions\": [{\"kind\": \"deploy\", \"params\": {\"service_id\": \"01a0cdb5-3500-70c1-8000-000000000001\", \"commit_sha\": \"4f2a9c1e8b7d6a5f4e3d2c1b0a9f8e7d6c5b4a39\", \"spec_digest_hex\": \"f9e2f5ba422e79750428675b3191f942f6d85747981184a232a08b369e4da410\"}}], \"base\": {\"force\": false, \"heads\": {\"01a0cdb5-3500-70a1-8000-000000000001\": \"4a98af3eeae054bf7585746ce20fa5907ec9c079ee1b049a7d01146d1c92ebfb\"}}, \"created_at\": \"2026-09-23T10:00:00Z\", \"expires_at\": \"2026-09-23T10:10:00Z\", \"nonce\": \"GW-ufEt9NMP4j9pIDTKzTg\", \"author\": {\"kind\": \"rule\", \"agent_session_id\": null}, \"invocation\": {\"rule_id\": \"01a0cdb5-3500-70f1-8000-000000000001\", \"rule_digest_hex\": \"42931b7b326d2bf54bf2e038076808f13fda19a46e9da1af363536a59ff00e90\", \"trigger\": \"git.push\", \"evidence\": {\"provider\": \"github\", \"repo\": \"github.com/acme/web\", \"ref\": \"refs/heads/main\", \"commit_sha\": \"4f2a9c1e8b7d6a5f4e3d2c1b0a9f8e7d6c5b4a39\", \"commit_time\": \"2026-09-23T09:59:30Z\", \"delivery_id\": \"gh-delivery-1\", \"body_digest_hex\": \"50589ee7eeb3e7adedddd36ea89e9350aaddc30bdf3574ecda5194e845594cd6\", \"received_at\": \"2026-09-23T09:59:58Z\"}}}, \"signatures\": []}",
+      "specs": [
+        "{\"cap_add\":[],\"command\":[\"node\",\"server.js\"],\"entrypoint\":null,\"env\":{\"DATABASE_URL\":{\"kind\":\"secret\",\"ref\":\"DATABASE_URL\"},\"NODE_ENV\":{\"kind\":\"plain\",\"ref\":null},\"REDIS_URL\":{\"kind\":\"reference\",\"ref\":\"01a0cdb5-3500-70d1-8000-000000000001.REDIS_URL\"}},\"healthcheck\":{\"command\":null,\"interval_seconds\":10,\"kind\":\"http\",\"path\":\"/healthz\",\"port\":3000,\"retries\":3,\"start_period_seconds\":5,\"timeout_seconds\":3},\"image_digest_hex\":\"87ebc0f19e05e181dc22921cf7dbcf9f30e348d432da95fd36aea5ef8044a960\",\"image_repository\":\"registry.permanu.internal/acme/web\",\"mounts\":[],\"network\":{\"aliases\":[],\"mode\":\"project\"},\"placement\":{\"server_ids\":[\"01a0cdb5-3500-70a1-8000-000000000001\"]},\"ports\":[{\"container_port\":3000,\"protocol\":\"tcp\",\"public\":true}],\"privileged\":false,\"replicas\":2,\"resources\":{\"cpu_millis\":1000,\"memory_bytes\":536870912,\"pids_limit\":512},\"service_id\":\"01a0cdb5-3500-70c1-8000-000000000001\",\"user\":\"1000:1000\",\"version\":1,\"working_dir\":\"/app\"}"
+      ],
+      "submitter": "client",
+      "mode": "test",
+      "expect": "E_AUTHOR"
+    },
+    {
+      "name": "alg_es256_der_label",
+      "input": "{\"plan\": {\"version\": 1, \"id\": \"01a0cdb5-3500-7001-8000-000000000001\", \"project_id\": \"01a0cdb5-3500-70b1-8000-000000000001\", \"environment\": \"production\", \"service_ids\": [\"01a0cdb5-3500-70c1-8000-000000000001\"], \"targets\": [\"01a0cdb5-3500-70a1-8000-000000000001\"], \"actions\": [{\"kind\": \"deploy\", \"params\": {\"service_id\": \"01a0cdb5-3500-70c1-8000-000000000001\", \"commit_sha\": \"4f2a9c1e8b7d6a5f4e3d2c1b0a9f8e7d6c5b4a39\", \"spec_digest_hex\": \"f9e2f5ba422e79750428675b3191f942f6d85747981184a232a08b369e4da410\"}}], \"base\": {\"force\": false, \"heads\": {\"01a0cdb5-3500-70a1-8000-000000000001\": \"4a98af3eeae054bf7585746ce20fa5907ec9c079ee1b049a7d01146d1c92ebfb\"}}, \"created_at\": \"2026-09-23T10:00:00Z\", \"expires_at\": \"2026-09-23T10:10:00Z\", \"nonce\": \"SG86F2cYlLnxQtwmsiISuA\", \"author\": {\"kind\": \"user\", \"agent_session_id\": null}, \"invocation\": null}, \"signatures\": [{\"key_id\": \"dYLNItf797wK7n5moGt2cw\", \"alg\": \"ES256\", \"sig\": \"8QXNRwjZwSyiyryh02PHjeNB2v591D9QSm6NLX03UuoDXQ_vKo66-BBbVLqJr8mV-QDNUDbW8ITauDGB6sF5Ew\", \"signed_at\": \"2026-09-23T10:00:05Z\"}]}",
+      "specs": [
+        "{\"cap_add\":[],\"command\":[\"node\",\"server.js\"],\"entrypoint\":null,\"env\":{\"DATABASE_URL\":{\"kind\":\"secret\",\"ref\":\"DATABASE_URL\"},\"NODE_ENV\":{\"kind\":\"plain\",\"ref\":null},\"REDIS_URL\":{\"kind\":\"reference\",\"ref\":\"01a0cdb5-3500-70d1-8000-000000000001.REDIS_URL\"}},\"healthcheck\":{\"command\":null,\"interval_seconds\":10,\"kind\":\"http\",\"path\":\"/healthz\",\"port\":3000,\"retries\":3,\"start_period_seconds\":5,\"timeout_seconds\":3},\"image_digest_hex\":\"87ebc0f19e05e181dc22921cf7dbcf9f30e348d432da95fd36aea5ef8044a960\",\"image_repository\":\"registry.permanu.internal/acme/web\",\"mounts\":[],\"network\":{\"aliases\":[],\"mode\":\"project\"},\"placement\":{\"server_ids\":[\"01a0cdb5-3500-70a1-8000-000000000001\"]},\"ports\":[{\"container_port\":3000,\"protocol\":\"tcp\",\"public\":true}],\"privileged\":false,\"replicas\":2,\"resources\":{\"cpu_millis\":1000,\"memory_bytes\":536870912,\"pids_limit\":512},\"service_id\":\"01a0cdb5-3500-70c1-8000-000000000001\",\"user\":\"1000:1000\",\"version\":1,\"working_dir\":\"/app\"}"
+      ],
+      "submitter": "client",
+      "mode": "test",
+      "expect": "E_SIG_ALG"
+    },
+    {
+      "name": "key_unknown",
+      "input": "{\"plan\": {\"version\": 1, \"id\": \"01a0cdb5-3500-7001-8000-000000000018\", \"project_id\": \"01a0cdb5-3500-70b1-8000-000000000001\", \"environment\": \"production\", \"service_ids\": [\"01a0cdb5-3500-70c1-8000-000000000001\"], \"targets\": [\"01a0cdb5-3500-70a1-8000-000000000001\"], \"actions\": [{\"kind\": \"deploy\", \"params\": {\"service_id\": \"01a0cdb5-3500-70c1-8000-000000000001\", \"commit_sha\": \"4f2a9c1e8b7d6a5f4e3d2c1b0a9f8e7d6c5b4a39\", \"spec_digest_hex\": \"f9e2f5ba422e79750428675b3191f942f6d85747981184a232a08b369e4da410\"}}], \"base\": {\"force\": false, \"heads\": {\"01a0cdb5-3500-70a1-8000-000000000001\": \"4a98af3eeae054bf7585746ce20fa5907ec9c079ee1b049a7d01146d1c92ebfb\"}}, \"created_at\": \"2026-09-23T10:00:00Z\", \"expires_at\": \"2026-09-23T10:10:00Z\", \"nonce\": \"EdWovWRa3WY4zMIyR_isHQ\", \"author\": {\"kind\": \"user\", \"agent_session_id\": null}, \"invocation\": null}, \"signatures\": [{\"key_id\": \"cJWnw46mKT4S-FIYD8h8iA\", \"alg\": \"ES256-raw\", \"sig\": \"BIYkDbKY257UqNFzQj6MU67kMzPXs2s67kYTEEmLPzw0jPJsYeLnSBB_bxKbT1UFzPjaWKt4A_Myv_CiC-HX4g\", \"signed_at\": \"2026-09-23T10:00:05Z\"}]}",
+      "specs": [
+        "{\"cap_add\":[],\"command\":[\"node\",\"server.js\"],\"entrypoint\":null,\"env\":{\"DATABASE_URL\":{\"kind\":\"secret\",\"ref\":\"DATABASE_URL\"},\"NODE_ENV\":{\"kind\":\"plain\",\"ref\":null},\"REDIS_URL\":{\"kind\":\"reference\",\"ref\":\"01a0cdb5-3500-70d1-8000-000000000001.REDIS_URL\"}},\"healthcheck\":{\"command\":null,\"interval_seconds\":10,\"kind\":\"http\",\"path\":\"/healthz\",\"port\":3000,\"retries\":3,\"start_period_seconds\":5,\"timeout_seconds\":3},\"image_digest_hex\":\"87ebc0f19e05e181dc22921cf7dbcf9f30e348d432da95fd36aea5ef8044a960\",\"image_repository\":\"registry.permanu.internal/acme/web\",\"mounts\":[],\"network\":{\"aliases\":[],\"mode\":\"project\"},\"placement\":{\"server_ids\":[\"01a0cdb5-3500-70a1-8000-000000000001\"]},\"ports\":[{\"container_port\":3000,\"protocol\":\"tcp\",\"public\":true}],\"privileged\":false,\"replicas\":2,\"resources\":{\"cpu_millis\":1000,\"memory_bytes\":536870912,\"pids_limit\":512},\"service_id\":\"01a0cdb5-3500-70c1-8000-000000000001\",\"user\":\"1000:1000\",\"version\":1,\"working_dir\":\"/app\"}"
+      ],
+      "submitter": "client",
+      "mode": "test",
+      "expect": "E_KEY_UNKNOWN"
+    },
+    {
+      "name": "production_test_key",
+      "input": "{\"plan\": {\"version\": 1, \"id\": \"01a0cdb5-3500-7001-8000-000000000043\", \"project_id\": \"01a0cdb5-3500-70b1-8000-000000000001\", \"environment\": \"production\", \"service_ids\": [\"01a0cdb5-3500-70c1-8000-000000000001\"], \"targets\": [\"01a0cdb5-3500-70a1-8000-000000000001\"], \"actions\": [{\"kind\": \"deploy\", \"params\": {\"service_id\": \"01a0cdb5-3500-70c1-8000-000000000001\", \"commit_sha\": \"4f2a9c1e8b7d6a5f4e3d2c1b0a9f8e7d6c5b4a39\", \"spec_digest_hex\": \"f9e2f5ba422e79750428675b3191f942f6d85747981184a232a08b369e4da410\"}}], \"base\": {\"force\": false, \"heads\": {\"01a0cdb5-3500-70a1-8000-000000000001\": \"4a98af3eeae054bf7585746ce20fa5907ec9c079ee1b049a7d01146d1c92ebfb\"}}, \"created_at\": \"2026-09-23T10:00:00Z\", \"expires_at\": \"2026-09-23T10:10:00Z\", \"nonce\": \"MlHa1trkWEojbKzpnZqE0g\", \"author\": {\"kind\": \"user\", \"agent_session_id\": null}, \"invocation\": null}, \"signatures\": [{\"key_id\": \"dYLNItf797wK7n5moGt2cw\", \"alg\": \"ES256-raw\", \"sig\": \"klMYE7RG1c9n8Ld439ZzmR6YJ_SCosM7sbOnxfQsRyhEC6_dqesvW4dQ3ZYhGEAzWax5Iy0GAUT50Bzz13uGGA\", \"signed_at\": \"2026-09-23T10:00:05Z\"}]}",
+      "specs": [
+        "{\"cap_add\":[],\"command\":[\"node\",\"server.js\"],\"entrypoint\":null,\"env\":{\"DATABASE_URL\":{\"kind\":\"secret\",\"ref\":\"DATABASE_URL\"},\"NODE_ENV\":{\"kind\":\"plain\",\"ref\":null},\"REDIS_URL\":{\"kind\":\"reference\",\"ref\":\"01a0cdb5-3500-70d1-8000-000000000001.REDIS_URL\"}},\"healthcheck\":{\"command\":null,\"interval_seconds\":10,\"kind\":\"http\",\"path\":\"/healthz\",\"port\":3000,\"retries\":3,\"start_period_seconds\":5,\"timeout_seconds\":3},\"image_digest_hex\":\"87ebc0f19e05e181dc22921cf7dbcf9f30e348d432da95fd36aea5ef8044a960\",\"image_repository\":\"registry.permanu.internal/acme/web\",\"mounts\":[],\"network\":{\"aliases\":[],\"mode\":\"project\"},\"placement\":{\"server_ids\":[\"01a0cdb5-3500-70a1-8000-000000000001\"]},\"ports\":[{\"container_port\":3000,\"protocol\":\"tcp\",\"public\":true}],\"privileged\":false,\"replicas\":2,\"resources\":{\"cpu_millis\":1000,\"memory_bytes\":536870912,\"pids_limit\":512},\"service_id\":\"01a0cdb5-3500-70c1-8000-000000000001\",\"user\":\"1000:1000\",\"version\":1,\"working_dir\":\"/app\"}"
+      ],
+      "submitter": "client",
+      "mode": "production",
+      "expect": "E_KEY_UNKNOWN"
+    },
+    {
+      "name": "key_revoked",
+      "input": "{\"plan\": {\"version\": 1, \"id\": \"01a0cdb5-3500-7001-8000-000000000019\", \"project_id\": \"01a0cdb5-3500-70b1-8000-000000000001\", \"environment\": \"production\", \"service_ids\": [\"01a0cdb5-3500-70c1-8000-000000000001\"], \"targets\": [\"01a0cdb5-3500-70a1-8000-000000000001\"], \"actions\": [{\"kind\": \"deploy\", \"params\": {\"service_id\": \"01a0cdb5-3500-70c1-8000-000000000001\", \"commit_sha\": \"4f2a9c1e8b7d6a5f4e3d2c1b0a9f8e7d6c5b4a39\", \"spec_digest_hex\": \"f9e2f5ba422e79750428675b3191f942f6d85747981184a232a08b369e4da410\"}}], \"base\": {\"force\": false, \"heads\": {\"01a0cdb5-3500-70a1-8000-000000000001\": \"4a98af3eeae054bf7585746ce20fa5907ec9c079ee1b049a7d01146d1c92ebfb\"}}, \"created_at\": \"2026-09-23T10:00:00Z\", \"expires_at\": \"2026-09-23T10:10:00Z\", \"nonce\": \"KhangA0XNnOCpfgv-_33uA\", \"author\": {\"kind\": \"user\", \"agent_session_id\": null}, \"invocation\": null}, \"signatures\": [{\"key_id\": \"AqhPUHwy5byXy_JwVWyl7w\", \"alg\": \"ES256-raw\", \"sig\": \"X8tuYVqcrRqI75UTSdhbZpfKqaZtitP1LlOyHK8C8HahqDbRsgRl5lIeKC7enlny5wMQTa09iyF6vMIAP421rA\", \"signed_at\": \"2026-09-23T10:00:05Z\"}]}",
+      "specs": [
+        "{\"cap_add\":[],\"command\":[\"node\",\"server.js\"],\"entrypoint\":null,\"env\":{\"DATABASE_URL\":{\"kind\":\"secret\",\"ref\":\"DATABASE_URL\"},\"NODE_ENV\":{\"kind\":\"plain\",\"ref\":null},\"REDIS_URL\":{\"kind\":\"reference\",\"ref\":\"01a0cdb5-3500-70d1-8000-000000000001.REDIS_URL\"}},\"healthcheck\":{\"command\":null,\"interval_seconds\":10,\"kind\":\"http\",\"path\":\"/healthz\",\"port\":3000,\"retries\":3,\"start_period_seconds\":5,\"timeout_seconds\":3},\"image_digest_hex\":\"87ebc0f19e05e181dc22921cf7dbcf9f30e348d432da95fd36aea5ef8044a960\",\"image_repository\":\"registry.permanu.internal/acme/web\",\"mounts\":[],\"network\":{\"aliases\":[],\"mode\":\"project\"},\"placement\":{\"server_ids\":[\"01a0cdb5-3500-70a1-8000-000000000001\"]},\"ports\":[{\"container_port\":3000,\"protocol\":\"tcp\",\"public\":true}],\"privileged\":false,\"replicas\":2,\"resources\":{\"cpu_millis\":1000,\"memory_bytes\":536870912,\"pids_limit\":512},\"service_id\":\"01a0cdb5-3500-70c1-8000-000000000001\",\"user\":\"1000:1000\",\"version\":1,\"working_dir\":\"/app\"}"
+      ],
+      "submitter": "client",
+      "mode": "test",
+      "expect": "E_KEY_REVOKED"
+    },
+    {
+      "name": "sig_tampered_plan",
+      "input": "{\"plan\": {\"version\": 1, \"id\": \"01a0cdb5-3500-7001-8000-000000000001\", \"project_id\": \"01a0cdb5-3500-70b1-8000-000000000001\", \"environment\": \"production\", \"service_ids\": [\"01a0cdb5-3500-70c1-8000-000000000001\"], \"targets\": [\"01a0cdb5-3500-70a1-8000-000000000001\"], \"actions\": [{\"kind\": \"deploy\", \"params\": {\"service_id\": \"01a0cdb5-3500-70c1-8000-000000000001\", \"commit_sha\": \"0123456789abcdef0123456789abcdef01234567\", \"spec_digest_hex\": \"f9e2f5ba422e79750428675b3191f942f6d85747981184a232a08b369e4da410\"}}], \"base\": {\"force\": false, \"heads\": {\"01a0cdb5-3500-70a1-8000-000000000001\": \"4a98af3eeae054bf7585746ce20fa5907ec9c079ee1b049a7d01146d1c92ebfb\"}}, \"created_at\": \"2026-09-23T10:00:00Z\", \"expires_at\": \"2026-09-23T10:10:00Z\", \"nonce\": \"SG86F2cYlLnxQtwmsiISuA\", \"author\": {\"kind\": \"user\", \"agent_session_id\": null}, \"invocation\": null}, \"signatures\": [{\"key_id\": \"dYLNItf797wK7n5moGt2cw\", \"alg\": \"ES256-raw\", \"sig\": \"8QXNRwjZwSyiyryh02PHjeNB2v591D9QSm6NLX03UuoDXQ_vKo66-BBbVLqJr8mV-QDNUDbW8ITauDGB6sF5Ew\", \"signed_at\": \"2026-09-23T10:00:05Z\"}]}",
+      "specs": [
+        "{\"cap_add\":[],\"command\":[\"node\",\"server.js\"],\"entrypoint\":null,\"env\":{\"DATABASE_URL\":{\"kind\":\"secret\",\"ref\":\"DATABASE_URL\"},\"NODE_ENV\":{\"kind\":\"plain\",\"ref\":null},\"REDIS_URL\":{\"kind\":\"reference\",\"ref\":\"01a0cdb5-3500-70d1-8000-000000000001.REDIS_URL\"}},\"healthcheck\":{\"command\":null,\"interval_seconds\":10,\"kind\":\"http\",\"path\":\"/healthz\",\"port\":3000,\"retries\":3,\"start_period_seconds\":5,\"timeout_seconds\":3},\"image_digest_hex\":\"87ebc0f19e05e181dc22921cf7dbcf9f30e348d432da95fd36aea5ef8044a960\",\"image_repository\":\"registry.permanu.internal/acme/web\",\"mounts\":[],\"network\":{\"aliases\":[],\"mode\":\"project\"},\"placement\":{\"server_ids\":[\"01a0cdb5-3500-70a1-8000-000000000001\"]},\"ports\":[{\"container_port\":3000,\"protocol\":\"tcp\",\"public\":true}],\"privileged\":false,\"replicas\":2,\"resources\":{\"cpu_millis\":1000,\"memory_bytes\":536870912,\"pids_limit\":512},\"service_id\":\"01a0cdb5-3500-70c1-8000-000000000001\",\"user\":\"1000:1000\",\"version\":1,\"working_dir\":\"/app\"}"
+      ],
+      "submitter": "client",
+      "mode": "test",
+      "expect": "E_SIG_INVALID"
+    },
+    {
+      "name": "sig_double_hashed",
+      "input": "{\"plan\": {\"version\": 1, \"id\": \"01a0cdb5-3500-7001-8000-000000000001\", \"project_id\": \"01a0cdb5-3500-70b1-8000-000000000001\", \"environment\": \"production\", \"service_ids\": [\"01a0cdb5-3500-70c1-8000-000000000001\"], \"targets\": [\"01a0cdb5-3500-70a1-8000-000000000001\"], \"actions\": [{\"kind\": \"deploy\", \"params\": {\"service_id\": \"01a0cdb5-3500-70c1-8000-000000000001\", \"commit_sha\": \"4f2a9c1e8b7d6a5f4e3d2c1b0a9f8e7d6c5b4a39\", \"spec_digest_hex\": \"f9e2f5ba422e79750428675b3191f942f6d85747981184a232a08b369e4da410\"}}], \"base\": {\"force\": false, \"heads\": {\"01a0cdb5-3500-70a1-8000-000000000001\": \"4a98af3eeae054bf7585746ce20fa5907ec9c079ee1b049a7d01146d1c92ebfb\"}}, \"created_at\": \"2026-09-23T10:00:00Z\", \"expires_at\": \"2026-09-23T10:10:00Z\", \"nonce\": \"SG86F2cYlLnxQtwmsiISuA\", \"author\": {\"kind\": \"user\", \"agent_session_id\": null}, \"invocation\": null}, \"signatures\": [{\"key_id\": \"dYLNItf797wK7n5moGt2cw\", \"alg\": \"ES256-raw\", \"sig\": \"P_Xjmo3dAc57Uct-M5vWUz2hZsrLBHphGwo-lolZDBTN3BZCk5HPRFXwt73NouVeF0EMjzVKCmSt7sh_ZuEoDA\", \"signed_at\": \"2026-09-23T10:00:05Z\"}]}",
+      "specs": [
+        "{\"cap_add\":[],\"command\":[\"node\",\"server.js\"],\"entrypoint\":null,\"env\":{\"DATABASE_URL\":{\"kind\":\"secret\",\"ref\":\"DATABASE_URL\"},\"NODE_ENV\":{\"kind\":\"plain\",\"ref\":null},\"REDIS_URL\":{\"kind\":\"reference\",\"ref\":\"01a0cdb5-3500-70d1-8000-000000000001.REDIS_URL\"}},\"healthcheck\":{\"command\":null,\"interval_seconds\":10,\"kind\":\"http\",\"path\":\"/healthz\",\"port\":3000,\"retries\":3,\"start_period_seconds\":5,\"timeout_seconds\":3},\"image_digest_hex\":\"87ebc0f19e05e181dc22921cf7dbcf9f30e348d432da95fd36aea5ef8044a960\",\"image_repository\":\"registry.permanu.internal/acme/web\",\"mounts\":[],\"network\":{\"aliases\":[],\"mode\":\"project\"},\"placement\":{\"server_ids\":[\"01a0cdb5-3500-70a1-8000-000000000001\"]},\"ports\":[{\"container_port\":3000,\"protocol\":\"tcp\",\"public\":true}],\"privileged\":false,\"replicas\":2,\"resources\":{\"cpu_millis\":1000,\"memory_bytes\":536870912,\"pids_limit\":512},\"service_id\":\"01a0cdb5-3500-70c1-8000-000000000001\",\"user\":\"1000:1000\",\"version\":1,\"working_dir\":\"/app\"}"
+      ],
+      "submitter": "client",
+      "mode": "test",
+      "expect": "E_SIG_INVALID"
+    },
+    {
+      "name": "sig_no_domain_prefix",
+      "input": "{\"plan\": {\"version\": 1, \"id\": \"01a0cdb5-3500-7001-8000-000000000001\", \"project_id\": \"01a0cdb5-3500-70b1-8000-000000000001\", \"environment\": \"production\", \"service_ids\": [\"01a0cdb5-3500-70c1-8000-000000000001\"], \"targets\": [\"01a0cdb5-3500-70a1-8000-000000000001\"], \"actions\": [{\"kind\": \"deploy\", \"params\": {\"service_id\": \"01a0cdb5-3500-70c1-8000-000000000001\", \"commit_sha\": \"4f2a9c1e8b7d6a5f4e3d2c1b0a9f8e7d6c5b4a39\", \"spec_digest_hex\": \"f9e2f5ba422e79750428675b3191f942f6d85747981184a232a08b369e4da410\"}}], \"base\": {\"force\": false, \"heads\": {\"01a0cdb5-3500-70a1-8000-000000000001\": \"4a98af3eeae054bf7585746ce20fa5907ec9c079ee1b049a7d01146d1c92ebfb\"}}, \"created_at\": \"2026-09-23T10:00:00Z\", \"expires_at\": \"2026-09-23T10:10:00Z\", \"nonce\": \"SG86F2cYlLnxQtwmsiISuA\", \"author\": {\"kind\": \"user\", \"agent_session_id\": null}, \"invocation\": null}, \"signatures\": [{\"key_id\": \"dYLNItf797wK7n5moGt2cw\", \"alg\": \"ES256-raw\", \"sig\": \"6zkjvad-Xia0m0Voi-upiuvFzXPP0un3FWL6ThIHMy3x-wwYetx7qHjX0dbpzcd_RzZpcvAnZ0ea4WyCRIb0Ww\", \"signed_at\": \"2026-09-23T10:00:05Z\"}]}",
+      "specs": [
+        "{\"cap_add\":[],\"command\":[\"node\",\"server.js\"],\"entrypoint\":null,\"env\":{\"DATABASE_URL\":{\"kind\":\"secret\",\"ref\":\"DATABASE_URL\"},\"NODE_ENV\":{\"kind\":\"plain\",\"ref\":null},\"REDIS_URL\":{\"kind\":\"reference\",\"ref\":\"01a0cdb5-3500-70d1-8000-000000000001.REDIS_URL\"}},\"healthcheck\":{\"command\":null,\"interval_seconds\":10,\"kind\":\"http\",\"path\":\"/healthz\",\"port\":3000,\"retries\":3,\"start_period_seconds\":5,\"timeout_seconds\":3},\"image_digest_hex\":\"87ebc0f19e05e181dc22921cf7dbcf9f30e348d432da95fd36aea5ef8044a960\",\"image_repository\":\"registry.permanu.internal/acme/web\",\"mounts\":[],\"network\":{\"aliases\":[],\"mode\":\"project\"},\"placement\":{\"server_ids\":[\"01a0cdb5-3500-70a1-8000-000000000001\"]},\"ports\":[{\"container_port\":3000,\"protocol\":\"tcp\",\"public\":true}],\"privileged\":false,\"replicas\":2,\"resources\":{\"cpu_millis\":1000,\"memory_bytes\":536870912,\"pids_limit\":512},\"service_id\":\"01a0cdb5-3500-70c1-8000-000000000001\",\"user\":\"1000:1000\",\"version\":1,\"working_dir\":\"/app\"}"
+      ],
+      "submitter": "client",
+      "mode": "test",
+      "expect": "E_SIG_INVALID"
+    },
+    {
+      "name": "sig_over_non_canonical_json",
+      "input": "{\"plan\": {\"version\": 1, \"id\": \"01a0cdb5-3500-7001-8000-000000000001\", \"project_id\": \"01a0cdb5-3500-70b1-8000-000000000001\", \"environment\": \"production\", \"service_ids\": [\"01a0cdb5-3500-70c1-8000-000000000001\"], \"targets\": [\"01a0cdb5-3500-70a1-8000-000000000001\"], \"actions\": [{\"kind\": \"deploy\", \"params\": {\"service_id\": \"01a0cdb5-3500-70c1-8000-000000000001\", \"commit_sha\": \"4f2a9c1e8b7d6a5f4e3d2c1b0a9f8e7d6c5b4a39\", \"spec_digest_hex\": \"f9e2f5ba422e79750428675b3191f942f6d85747981184a232a08b369e4da410\"}}], \"base\": {\"force\": false, \"heads\": {\"01a0cdb5-3500-70a1-8000-000000000001\": \"4a98af3eeae054bf7585746ce20fa5907ec9c079ee1b049a7d01146d1c92ebfb\"}}, \"created_at\": \"2026-09-23T10:00:00Z\", \"expires_at\": \"2026-09-23T10:10:00Z\", \"nonce\": \"SG86F2cYlLnxQtwmsiISuA\", \"author\": {\"kind\": \"user\", \"agent_session_id\": null}, \"invocation\": null}, \"signatures\": [{\"key_id\": \"dYLNItf797wK7n5moGt2cw\", \"alg\": \"ES256-raw\", \"sig\": \"V2Yu92GpeKMuyvSSmHIuhFm6vnOaPSGMSO9Wib0rtDTz8wZwfi3rieSBmfpvZQOIN7gXE3tcN1mbljfff0bb2w\", \"signed_at\": \"2026-09-23T10:00:05Z\"}]}",
+      "specs": [
+        "{\"cap_add\":[],\"command\":[\"node\",\"server.js\"],\"entrypoint\":null,\"env\":{\"DATABASE_URL\":{\"kind\":\"secret\",\"ref\":\"DATABASE_URL\"},\"NODE_ENV\":{\"kind\":\"plain\",\"ref\":null},\"REDIS_URL\":{\"kind\":\"reference\",\"ref\":\"01a0cdb5-3500-70d1-8000-000000000001.REDIS_URL\"}},\"healthcheck\":{\"command\":null,\"interval_seconds\":10,\"kind\":\"http\",\"path\":\"/healthz\",\"port\":3000,\"retries\":3,\"start_period_seconds\":5,\"timeout_seconds\":3},\"image_digest_hex\":\"87ebc0f19e05e181dc22921cf7dbcf9f30e348d432da95fd36aea5ef8044a960\",\"image_repository\":\"registry.permanu.internal/acme/web\",\"mounts\":[],\"network\":{\"aliases\":[],\"mode\":\"project\"},\"placement\":{\"server_ids\":[\"01a0cdb5-3500-70a1-8000-000000000001\"]},\"ports\":[{\"container_port\":3000,\"protocol\":\"tcp\",\"public\":true}],\"privileged\":false,\"replicas\":2,\"resources\":{\"cpu_millis\":1000,\"memory_bytes\":536870912,\"pids_limit\":512},\"service_id\":\"01a0cdb5-3500-70c1-8000-000000000001\",\"user\":\"1000:1000\",\"version\":1,\"working_dir\":\"/app\"}"
+      ],
+      "submitter": "client",
+      "mode": "test",
+      "expect": "E_SIG_INVALID"
+    },
+    {
+      "name": "lifetime_over_15m",
+      "input": "{\"plan\": {\"version\": 1, \"id\": \"01a0cdb5-3500-7001-8000-00000000001a\", \"project_id\": \"01a0cdb5-3500-70b1-8000-000000000001\", \"environment\": \"production\", \"service_ids\": [\"01a0cdb5-3500-70c1-8000-000000000001\"], \"targets\": [\"01a0cdb5-3500-70a1-8000-000000000001\"], \"actions\": [{\"kind\": \"deploy\", \"params\": {\"service_id\": \"01a0cdb5-3500-70c1-8000-000000000001\", \"commit_sha\": \"4f2a9c1e8b7d6a5f4e3d2c1b0a9f8e7d6c5b4a39\", \"spec_digest_hex\": \"f9e2f5ba422e79750428675b3191f942f6d85747981184a232a08b369e4da410\"}}], \"base\": {\"force\": false, \"heads\": {\"01a0cdb5-3500-70a1-8000-000000000001\": \"4a98af3eeae054bf7585746ce20fa5907ec9c079ee1b049a7d01146d1c92ebfb\"}}, \"created_at\": \"2026-09-23T10:00:00Z\", \"expires_at\": \"2026-09-23T10:20:00Z\", \"nonce\": \"hOfOKkeC87PfvnTbUz2OBg\", \"author\": {\"kind\": \"user\", \"agent_session_id\": null}, \"invocation\": null}, \"signatures\": [{\"key_id\": \"dYLNItf797wK7n5moGt2cw\", \"alg\": \"ES256-raw\", \"sig\": \"mHqUGl9n746o6l5VFuYTfbEYt07qlo3VQPKc4sz3WDDJvTyaf-W_uTIAYjyr3ExRp6oV16OBWS_ZXgGbzgXIxw\", \"signed_at\": \"2026-09-23T10:00:05Z\"}]}",
+      "specs": [
+        "{\"cap_add\":[],\"command\":[\"node\",\"server.js\"],\"entrypoint\":null,\"env\":{\"DATABASE_URL\":{\"kind\":\"secret\",\"ref\":\"DATABASE_URL\"},\"NODE_ENV\":{\"kind\":\"plain\",\"ref\":null},\"REDIS_URL\":{\"kind\":\"reference\",\"ref\":\"01a0cdb5-3500-70d1-8000-000000000001.REDIS_URL\"}},\"healthcheck\":{\"command\":null,\"interval_seconds\":10,\"kind\":\"http\",\"path\":\"/healthz\",\"port\":3000,\"retries\":3,\"start_period_seconds\":5,\"timeout_seconds\":3},\"image_digest_hex\":\"87ebc0f19e05e181dc22921cf7dbcf9f30e348d432da95fd36aea5ef8044a960\",\"image_repository\":\"registry.permanu.internal/acme/web\",\"mounts\":[],\"network\":{\"aliases\":[],\"mode\":\"project\"},\"placement\":{\"server_ids\":[\"01a0cdb5-3500-70a1-8000-000000000001\"]},\"ports\":[{\"container_port\":3000,\"protocol\":\"tcp\",\"public\":true}],\"privileged\":false,\"replicas\":2,\"resources\":{\"cpu_millis\":1000,\"memory_bytes\":536870912,\"pids_limit\":512},\"service_id\":\"01a0cdb5-3500-70c1-8000-000000000001\",\"user\":\"1000:1000\",\"version\":1,\"working_dir\":\"/app\"}"
+      ],
+      "submitter": "client",
+      "mode": "test",
+      "expect": "E_LIFETIME"
+    },
+    {
+      "name": "not_yet_valid",
+      "input": "{\"plan\": {\"version\": 1, \"id\": \"01a0cdb5-3500-7001-8000-00000000001b\", \"project_id\": \"01a0cdb5-3500-70b1-8000-000000000001\", \"environment\": \"production\", \"service_ids\": [\"01a0cdb5-3500-70c1-8000-000000000001\"], \"targets\": [\"01a0cdb5-3500-70a1-8000-000000000001\"], \"actions\": [{\"kind\": \"deploy\", \"params\": {\"service_id\": \"01a0cdb5-3500-70c1-8000-000000000001\", \"commit_sha\": \"4f2a9c1e8b7d6a5f4e3d2c1b0a9f8e7d6c5b4a39\", \"spec_digest_hex\": \"f9e2f5ba422e79750428675b3191f942f6d85747981184a232a08b369e4da410\"}}], \"base\": {\"force\": false, \"heads\": {\"01a0cdb5-3500-70a1-8000-000000000001\": \"4a98af3eeae054bf7585746ce20fa5907ec9c079ee1b049a7d01146d1c92ebfb\"}}, \"created_at\": \"2026-09-23T10:08:00Z\", \"expires_at\": \"2026-09-23T10:15:00Z\", \"nonce\": \"5oBBomabx-obZ5m7ip_-SQ\", \"author\": {\"kind\": \"user\", \"agent_session_id\": null}, \"invocation\": null}, \"signatures\": [{\"key_id\": \"dYLNItf797wK7n5moGt2cw\", \"alg\": \"ES256-raw\", \"sig\": \"fBrPZX_xktNH-MEX0GEIpEhulzHyEl1zRg7oriqBrJ-5lmQIJZjltFg7cbBuPQ7QvanrgIqiupx68aq4cGfeUQ\", \"signed_at\": \"2026-09-23T10:00:05Z\"}]}",
+      "specs": [
+        "{\"cap_add\":[],\"command\":[\"node\",\"server.js\"],\"entrypoint\":null,\"env\":{\"DATABASE_URL\":{\"kind\":\"secret\",\"ref\":\"DATABASE_URL\"},\"NODE_ENV\":{\"kind\":\"plain\",\"ref\":null},\"REDIS_URL\":{\"kind\":\"reference\",\"ref\":\"01a0cdb5-3500-70d1-8000-000000000001.REDIS_URL\"}},\"healthcheck\":{\"command\":null,\"interval_seconds\":10,\"kind\":\"http\",\"path\":\"/healthz\",\"port\":3000,\"retries\":3,\"start_period_seconds\":5,\"timeout_seconds\":3},\"image_digest_hex\":\"87ebc0f19e05e181dc22921cf7dbcf9f30e348d432da95fd36aea5ef8044a960\",\"image_repository\":\"registry.permanu.internal/acme/web\",\"mounts\":[],\"network\":{\"aliases\":[],\"mode\":\"project\"},\"placement\":{\"server_ids\":[\"01a0cdb5-3500-70a1-8000-000000000001\"]},\"ports\":[{\"container_port\":3000,\"protocol\":\"tcp\",\"public\":true}],\"privileged\":false,\"replicas\":2,\"resources\":{\"cpu_millis\":1000,\"memory_bytes\":536870912,\"pids_limit\":512},\"service_id\":\"01a0cdb5-3500-70c1-8000-000000000001\",\"user\":\"1000:1000\",\"version\":1,\"working_dir\":\"/app\"}"
+      ],
+      "submitter": "client",
+      "mode": "test",
+      "expect": "E_NOT_YET_VALID"
+    },
+    {
+      "name": "expired",
+      "input": "{\"plan\": {\"version\": 1, \"id\": \"01a0cdb5-3500-7001-8000-00000000001c\", \"project_id\": \"01a0cdb5-3500-70b1-8000-000000000001\", \"environment\": \"production\", \"service_ids\": [\"01a0cdb5-3500-70c1-8000-000000000001\"], \"targets\": [\"01a0cdb5-3500-70a1-8000-000000000001\"], \"actions\": [{\"kind\": \"deploy\", \"params\": {\"service_id\": \"01a0cdb5-3500-70c1-8000-000000000001\", \"commit_sha\": \"4f2a9c1e8b7d6a5f4e3d2c1b0a9f8e7d6c5b4a39\", \"spec_digest_hex\": \"f9e2f5ba422e79750428675b3191f942f6d85747981184a232a08b369e4da410\"}}], \"base\": {\"force\": false, \"heads\": {\"01a0cdb5-3500-70a1-8000-000000000001\": \"4a98af3eeae054bf7585746ce20fa5907ec9c079ee1b049a7d01146d1c92ebfb\"}}, \"created_at\": \"2026-09-23T09:40:00Z\", \"expires_at\": \"2026-09-23T09:50:00Z\", \"nonce\": \"524O-smKhcg71jlCUQGq-w\", \"author\": {\"kind\": \"user\", \"agent_session_id\": null}, \"invocation\": null}, \"signatures\": [{\"key_id\": \"dYLNItf797wK7n5moGt2cw\", \"alg\": \"ES256-raw\", \"sig\": \"6fBzzL2LtCUeK2sX5QzkOBBCiDr_WFT1J-Bhw75yt1RWhbj6N87c-6eG-2928RrfIwqeiUaRu2j-qq7iiJLKlw\", \"signed_at\": \"2026-09-23T10:00:05Z\"}]}",
+      "specs": [
+        "{\"cap_add\":[],\"command\":[\"node\",\"server.js\"],\"entrypoint\":null,\"env\":{\"DATABASE_URL\":{\"kind\":\"secret\",\"ref\":\"DATABASE_URL\"},\"NODE_ENV\":{\"kind\":\"plain\",\"ref\":null},\"REDIS_URL\":{\"kind\":\"reference\",\"ref\":\"01a0cdb5-3500-70d1-8000-000000000001.REDIS_URL\"}},\"healthcheck\":{\"command\":null,\"interval_seconds\":10,\"kind\":\"http\",\"path\":\"/healthz\",\"port\":3000,\"retries\":3,\"start_period_seconds\":5,\"timeout_seconds\":3},\"image_digest_hex\":\"87ebc0f19e05e181dc22921cf7dbcf9f30e348d432da95fd36aea5ef8044a960\",\"image_repository\":\"registry.permanu.internal/acme/web\",\"mounts\":[],\"network\":{\"aliases\":[],\"mode\":\"project\"},\"placement\":{\"server_ids\":[\"01a0cdb5-3500-70a1-8000-000000000001\"]},\"ports\":[{\"container_port\":3000,\"protocol\":\"tcp\",\"public\":true}],\"privileged\":false,\"replicas\":2,\"resources\":{\"cpu_millis\":1000,\"memory_bytes\":536870912,\"pids_limit\":512},\"service_id\":\"01a0cdb5-3500-70c1-8000-000000000001\",\"user\":\"1000:1000\",\"version\":1,\"working_dir\":\"/app\"}"
+      ],
+      "submitter": "client",
+      "mode": "test",
+      "expect": "E_EXPIRED"
+    },
+    {
+      "name": "within_skew_after_expiry",
+      "input": "{\"plan\": {\"version\": 1, \"id\": \"01a0cdb5-3500-7001-8000-00000000001d\", \"project_id\": \"01a0cdb5-3500-70b1-8000-000000000001\", \"environment\": \"production\", \"service_ids\": [\"01a0cdb5-3500-70c1-8000-000000000001\"], \"targets\": [\"01a0cdb5-3500-70a1-8000-000000000001\"], \"actions\": [{\"kind\": \"deploy\", \"params\": {\"service_id\": \"01a0cdb5-3500-70c1-8000-000000000001\", \"commit_sha\": \"4f2a9c1e8b7d6a5f4e3d2c1b0a9f8e7d6c5b4a39\", \"spec_digest_hex\": \"f9e2f5ba422e79750428675b3191f942f6d85747981184a232a08b369e4da410\"}}], \"base\": {\"force\": false, \"heads\": {\"01a0cdb5-3500-70a1-8000-000000000001\": \"4a98af3eeae054bf7585746ce20fa5907ec9c079ee1b049a7d01146d1c92ebfb\"}}, \"created_at\": \"2026-09-23T09:54:00Z\", \"expires_at\": \"2026-09-23T10:04:00Z\", \"nonce\": \"D2k3CELHEOk5hrBrnsDOsQ\", \"author\": {\"kind\": \"user\", \"agent_session_id\": null}, \"invocation\": null}, \"signatures\": [{\"key_id\": \"dYLNItf797wK7n5moGt2cw\", \"alg\": \"ES256-raw\", \"sig\": \"BB0U-qVh3S-1_F8TbbbyETMUFEBLqNrGN0SpYwyi18D10p2BSGU5bEnINeqOaZwaX6j_hlpXHjq5vr8tAsnieg\", \"signed_at\": \"2026-09-23T10:00:05Z\"}]}",
+      "specs": [
+        "{\"cap_add\":[],\"command\":[\"node\",\"server.js\"],\"entrypoint\":null,\"env\":{\"DATABASE_URL\":{\"kind\":\"secret\",\"ref\":\"DATABASE_URL\"},\"NODE_ENV\":{\"kind\":\"plain\",\"ref\":null},\"REDIS_URL\":{\"kind\":\"reference\",\"ref\":\"01a0cdb5-3500-70d1-8000-000000000001.REDIS_URL\"}},\"healthcheck\":{\"command\":null,\"interval_seconds\":10,\"kind\":\"http\",\"path\":\"/healthz\",\"port\":3000,\"retries\":3,\"start_period_seconds\":5,\"timeout_seconds\":3},\"image_digest_hex\":\"87ebc0f19e05e181dc22921cf7dbcf9f30e348d432da95fd36aea5ef8044a960\",\"image_repository\":\"registry.permanu.internal/acme/web\",\"mounts\":[],\"network\":{\"aliases\":[],\"mode\":\"project\"},\"placement\":{\"server_ids\":[\"01a0cdb5-3500-70a1-8000-000000000001\"]},\"ports\":[{\"container_port\":3000,\"protocol\":\"tcp\",\"public\":true}],\"privileged\":false,\"replicas\":2,\"resources\":{\"cpu_millis\":1000,\"memory_bytes\":536870912,\"pids_limit\":512},\"service_id\":\"01a0cdb5-3500-70c1-8000-000000000001\",\"user\":\"1000:1000\",\"version\":1,\"working_dir\":\"/app\"}"
+      ],
+      "submitter": "client",
+      "mode": "test",
+      "expect": "OK"
+    },
+    {
+      "name": "replay_nonce",
+      "input": "{\"plan\": {\"version\": 1, \"id\": \"01a0cdb5-3500-7001-8000-00000000001e\", \"project_id\": \"01a0cdb5-3500-70b1-8000-000000000001\", \"environment\": \"production\", \"service_ids\": [\"01a0cdb5-3500-70c1-8000-000000000001\"], \"targets\": [\"01a0cdb5-3500-70a1-8000-000000000001\"], \"actions\": [{\"kind\": \"deploy\", \"params\": {\"service_id\": \"01a0cdb5-3500-70c1-8000-000000000001\", \"commit_sha\": \"4f2a9c1e8b7d6a5f4e3d2c1b0a9f8e7d6c5b4a39\", \"spec_digest_hex\": \"f9e2f5ba422e79750428675b3191f942f6d85747981184a232a08b369e4da410\"}}], \"base\": {\"force\": false, \"heads\": {\"01a0cdb5-3500-70a1-8000-000000000001\": \"4a98af3eeae054bf7585746ce20fa5907ec9c079ee1b049a7d01146d1c92ebfb\"}}, \"created_at\": \"2026-09-23T10:00:00Z\", \"expires_at\": \"2026-09-23T10:10:00Z\", \"nonce\": \"u-ZvoqWVeyCp6dDlf5kl7Q\", \"author\": {\"kind\": \"user\", \"agent_session_id\": null}, \"invocation\": null}, \"signatures\": [{\"key_id\": \"dYLNItf797wK7n5moGt2cw\", \"alg\": \"ES256-raw\", \"sig\": \"S3ZUvQwRwpoIP1PqxYlVZENOHVKv4mU3bDID5TiqlwYSZsOFAmnYqgG_GbcicLv9U4TV0rMMeBaoIaLkcnT4aA\", \"signed_at\": \"2026-09-23T10:00:05Z\"}]}",
+      "specs": [
+        "{\"cap_add\":[],\"command\":[\"node\",\"server.js\"],\"entrypoint\":null,\"env\":{\"DATABASE_URL\":{\"kind\":\"secret\",\"ref\":\"DATABASE_URL\"},\"NODE_ENV\":{\"kind\":\"plain\",\"ref\":null},\"REDIS_URL\":{\"kind\":\"reference\",\"ref\":\"01a0cdb5-3500-70d1-8000-000000000001.REDIS_URL\"}},\"healthcheck\":{\"command\":null,\"interval_seconds\":10,\"kind\":\"http\",\"path\":\"/healthz\",\"port\":3000,\"retries\":3,\"start_period_seconds\":5,\"timeout_seconds\":3},\"image_digest_hex\":\"87ebc0f19e05e181dc22921cf7dbcf9f30e348d432da95fd36aea5ef8044a960\",\"image_repository\":\"registry.permanu.internal/acme/web\",\"mounts\":[],\"network\":{\"aliases\":[],\"mode\":\"project\"},\"placement\":{\"server_ids\":[\"01a0cdb5-3500-70a1-8000-000000000001\"]},\"ports\":[{\"container_port\":3000,\"protocol\":\"tcp\",\"public\":true}],\"privileged\":false,\"replicas\":2,\"resources\":{\"cpu_millis\":1000,\"memory_bytes\":536870912,\"pids_limit\":512},\"service_id\":\"01a0cdb5-3500-70c1-8000-000000000001\",\"user\":\"1000:1000\",\"version\":1,\"working_dir\":\"/app\"}"
+      ],
+      "submitter": "client",
+      "mode": "test",
+      "expect": "E_REPLAY"
+    },
+    {
+      "name": "base_mismatch",
+      "input": "{\"plan\": {\"version\": 1, \"id\": \"01a0cdb5-3500-7001-8000-00000000001f\", \"project_id\": \"01a0cdb5-3500-70b1-8000-000000000001\", \"environment\": \"production\", \"service_ids\": [\"01a0cdb5-3500-70c1-8000-000000000001\"], \"targets\": [\"01a0cdb5-3500-70a1-8000-000000000001\"], \"actions\": [{\"kind\": \"deploy\", \"params\": {\"service_id\": \"01a0cdb5-3500-70c1-8000-000000000001\", \"commit_sha\": \"4f2a9c1e8b7d6a5f4e3d2c1b0a9f8e7d6c5b4a39\", \"spec_digest_hex\": \"f9e2f5ba422e79750428675b3191f942f6d85747981184a232a08b369e4da410\"}}], \"base\": {\"force\": false, \"heads\": {\"01a0cdb5-3500-70a1-8000-000000000001\": \"0000000000000000000000000000000000000000000000000000000000000000\"}}, \"created_at\": \"2026-09-23T10:00:00Z\", \"expires_at\": \"2026-09-23T10:10:00Z\", \"nonce\": \"bYpNXgEmlj65928wOgJXuQ\", \"author\": {\"kind\": \"user\", \"agent_session_id\": null}, \"invocation\": null}, \"signatures\": [{\"key_id\": \"dYLNItf797wK7n5moGt2cw\", \"alg\": \"ES256-raw\", \"sig\": \"zv3eLNPUtONmx0y18ZYLoHEKKcSRbdyCgE4SeWbeJhF_YxlubLAwOqkJOutVhgVBqvREro7ehHHjQCC7mrMo6g\", \"signed_at\": \"2026-09-23T10:00:05Z\"}]}",
+      "specs": [
+        "{\"cap_add\":[],\"command\":[\"node\",\"server.js\"],\"entrypoint\":null,\"env\":{\"DATABASE_URL\":{\"kind\":\"secret\",\"ref\":\"DATABASE_URL\"},\"NODE_ENV\":{\"kind\":\"plain\",\"ref\":null},\"REDIS_URL\":{\"kind\":\"reference\",\"ref\":\"01a0cdb5-3500-70d1-8000-000000000001.REDIS_URL\"}},\"healthcheck\":{\"command\":null,\"interval_seconds\":10,\"kind\":\"http\",\"path\":\"/healthz\",\"port\":3000,\"retries\":3,\"start_period_seconds\":5,\"timeout_seconds\":3},\"image_digest_hex\":\"87ebc0f19e05e181dc22921cf7dbcf9f30e348d432da95fd36aea5ef8044a960\",\"image_repository\":\"registry.permanu.internal/acme/web\",\"mounts\":[],\"network\":{\"aliases\":[],\"mode\":\"project\"},\"placement\":{\"server_ids\":[\"01a0cdb5-3500-70a1-8000-000000000001\"]},\"ports\":[{\"container_port\":3000,\"protocol\":\"tcp\",\"public\":true}],\"privileged\":false,\"replicas\":2,\"resources\":{\"cpu_millis\":1000,\"memory_bytes\":536870912,\"pids_limit\":512},\"service_id\":\"01a0cdb5-3500-70c1-8000-000000000001\",\"user\":\"1000:1000\",\"version\":1,\"working_dir\":\"/app\"}"
+      ],
+      "submitter": "client",
+      "mode": "test",
+      "expect": "E_BASE_MISMATCH"
+    },
+    {
+      "name": "force_by_deployer",
+      "input": "{\"plan\": {\"version\": 1, \"id\": \"01a0cdb5-3500-7001-8000-000000000020\", \"project_id\": \"01a0cdb5-3500-70b1-8000-000000000001\", \"environment\": \"production\", \"service_ids\": [\"01a0cdb5-3500-70c1-8000-000000000001\"], \"targets\": [\"01a0cdb5-3500-70a1-8000-000000000001\"], \"actions\": [{\"kind\": \"restart\", \"params\": {\"service_id\": \"01a0cdb5-3500-70c1-8000-000000000001\", \"spec_digest_hex\": \"b78adc95a654038d554689569fc43f2f7db6fece4c5049d3dab17370f21ec1bf\"}}], \"base\": {\"force\": true, \"heads\": {\"01a0cdb5-3500-70a1-8000-000000000001\": \"0000000000000000000000000000000000000000000000000000000000000000\"}}, \"created_at\": \"2026-09-23T10:00:00Z\", \"expires_at\": \"2026-09-23T10:10:00Z\", \"nonce\": \"LsIRdVZA0xIM0vjGDXi_Og\", \"author\": {\"kind\": \"user\", \"agent_session_id\": null}, \"invocation\": null}, \"signatures\": [{\"key_id\": \"Hph9XRkn48eogeehAgeI9A\", \"alg\": \"ES256-raw\", \"sig\": \"4uGgXCeFkTCblMbE-XSQXsckm4hfjk3U2quAKv7V38pxvUCol9gq-1rHlSc2MmNLanKB_10NnAJsTH2UQ2ObAg\", \"signed_at\": \"2026-09-23T10:00:05Z\"}]}",
+      "specs": [
+        "{\"cap_add\":[],\"command\":[\"node\",\"server.js\"],\"entrypoint\":null,\"env\":{\"DATABASE_URL\":{\"kind\":\"secret\",\"ref\":\"DATABASE_URL\"},\"NODE_ENV\":{\"kind\":\"plain\",\"ref\":null},\"REDIS_URL\":{\"kind\":\"reference\",\"ref\":\"01a0cdb5-3500-70d1-8000-000000000001.REDIS_URL\"}},\"healthcheck\":{\"command\":null,\"interval_seconds\":10,\"kind\":\"http\",\"path\":\"/healthz\",\"port\":3000,\"retries\":3,\"start_period_seconds\":5,\"timeout_seconds\":3},\"image_digest_hex\":\"97db6c9091eee82a42e8b2bea76caa45687c1fb40a760a84c71500d520c07987\",\"image_repository\":\"registry.permanu.internal/acme/web\",\"mounts\":[],\"network\":{\"aliases\":[],\"mode\":\"project\"},\"placement\":{\"server_ids\":[\"01a0cdb5-3500-70a1-8000-000000000001\"]},\"ports\":[{\"container_port\":3000,\"protocol\":\"tcp\",\"public\":true}],\"privileged\":false,\"replicas\":2,\"resources\":{\"cpu_millis\":1000,\"memory_bytes\":536870912,\"pids_limit\":512},\"service_id\":\"01a0cdb5-3500-70c1-8000-000000000001\",\"user\":\"1000:1000\",\"version\":1,\"working_dir\":\"/app\"}"
+      ],
+      "submitter": "client",
+      "mode": "test",
+      "expect": "E_FORCE_FORBIDDEN"
+    },
+    {
+      "name": "deployer_secret_set",
+      "input": "{\"plan\": {\"version\": 1, \"id\": \"01a0cdb5-3500-7001-8000-000000000021\", \"project_id\": \"01a0cdb5-3500-70b1-8000-000000000001\", \"environment\": \"production\", \"service_ids\": [\"01a0cdb5-3500-70c1-8000-000000000001\"], \"targets\": [\"01a0cdb5-3500-70a1-8000-000000000001\"], \"actions\": [{\"kind\": \"secret.set\", \"params\": {\"service_id\": \"01a0cdb5-3500-70c1-8000-000000000001\", \"name\": \"API_KEY\", \"ciphertext_digest_hex\": \"e7e9366b72b47586b41cf4ab98b3c2fc9115412c0ce114f9d9af27877b42d2c4\"}}], \"base\": {\"force\": false, \"heads\": {\"01a0cdb5-3500-70a1-8000-000000000001\": \"4a98af3eeae054bf7585746ce20fa5907ec9c079ee1b049a7d01146d1c92ebfb\"}}, \"created_at\": \"2026-09-23T10:00:00Z\", \"expires_at\": \"2026-09-23T10:10:00Z\", \"nonce\": \"JIL8yMw8wN0Ni4cM-z5Eeg\", \"author\": {\"kind\": \"user\", \"agent_session_id\": null}, \"invocation\": null}, \"signatures\": [{\"key_id\": \"Hph9XRkn48eogeehAgeI9A\", \"alg\": \"ES256-raw\", \"sig\": \"9RioS-uq9uB2OwS2SxKYfVjXBzxQj8ZwRJb5ivcZk2xTZTb72LoC7lw6X7nWYZKoG2I8CfW7pEeo4Wq9gCZKqQ\", \"signed_at\": \"2026-09-23T10:00:05Z\"}]}",
+      "specs": [],
+      "submitter": "client",
+      "mode": "test",
+      "expect": "E_TOUCH_ID_REQUIRED"
+    },
+    {
+      "name": "deployer_db_upgrade",
+      "input": "{\"plan\": {\"version\": 1, \"id\": \"01a0cdb5-3500-7001-8000-000000000022\", \"project_id\": \"01a0cdb5-3500-70b1-8000-000000000001\", \"environment\": \"production\", \"service_ids\": [], \"targets\": [\"01a0cdb5-3500-70a1-8000-000000000001\"], \"actions\": [{\"kind\": \"db.upgrade\", \"params\": {\"resource_id\": \"01a0cdb5-3500-70d1-8000-000000000001\", \"engine\": \"postgres\", \"from_version\": \"15\", \"to_version\": \"17\"}}], \"base\": {\"force\": false, \"heads\": {\"01a0cdb5-3500-70a1-8000-000000000001\": \"4a98af3eeae054bf7585746ce20fa5907ec9c079ee1b049a7d01146d1c92ebfb\"}}, \"created_at\": \"2026-09-23T10:00:00Z\", \"expires_at\": \"2026-09-23T10:10:00Z\", \"nonce\": \"WJ6KooEmB9OqTERuchzxeA\", \"author\": {\"kind\": \"user\", \"agent_session_id\": null}, \"invocation\": null}, \"signatures\": [{\"key_id\": \"Hph9XRkn48eogeehAgeI9A\", \"alg\": \"ES256-raw\", \"sig\": \"9kRMYR4CAB2kaevWwqXd5Dbct8IVdf-TRfzf5VZknMAUDANtlRDSmjoywuGanidb4n-1ewm8a6WfSh7U_hunRg\", \"signed_at\": \"2026-09-23T10:00:05Z\"}]}",
+      "specs": [],
+      "submitter": "client",
+      "mode": "test",
+      "expect": "E_KIND_FORBIDDEN"
+    },
+    {
+      "name": "deployer_rule_revoke",
+      "input": "{\"plan\": {\"version\": 1, \"id\": \"01a0cdb5-3500-7001-8000-00000000002d\", \"project_id\": \"01a0cdb5-3500-70b1-8000-000000000001\", \"environment\": \"production\", \"service_ids\": [], \"targets\": [\"01a0cdb5-3500-70a1-8000-000000000001\"], \"actions\": [{\"kind\": \"rule.revoke\", \"params\": {\"rule_id\": \"01a0cdb5-3500-70f1-8000-000000000001\", \"rule_digest_hex\": \"42931b7b326d2bf54bf2e038076808f13fda19a46e9da1af363536a59ff00e90\"}}], \"base\": {\"force\": false, \"heads\": {\"01a0cdb5-3500-70a1-8000-000000000001\": \"4a98af3eeae054bf7585746ce20fa5907ec9c079ee1b049a7d01146d1c92ebfb\"}}, \"created_at\": \"2026-09-23T10:00:00Z\", \"expires_at\": \"2026-09-23T10:10:00Z\", \"nonce\": \"GnYXHvf5CeDeGrqWl2afWQ\", \"author\": {\"kind\": \"user\", \"agent_session_id\": null}, \"invocation\": null}, \"signatures\": [{\"key_id\": \"Hph9XRkn48eogeehAgeI9A\", \"alg\": \"ES256-raw\", \"sig\": \"LCDV5L_rPDHpyCWW6ITzKdyQqZ-H6OCVMN8Yqrie_lQcejmocJsVXho8A0MgLxkBudxeSTmtj8pQra3v6fHA4g\", \"signed_at\": \"2026-09-23T10:00:05Z\"}]}",
+      "specs": [],
+      "submitter": "client",
+      "mode": "test",
+      "expect": "E_TOUCH_ID_REQUIRED"
+    },
+    {
+      "name": "rule_secret_set",
+      "input": "{\"plan\": {\"version\": 1, \"id\": \"01a0cdb5-3500-7001-8000-000000000023\", \"project_id\": \"01a0cdb5-3500-70b1-8000-000000000001\", \"environment\": \"production\", \"service_ids\": [\"01a0cdb5-3500-70c1-8000-000000000001\"], \"targets\": [\"01a0cdb5-3500-70a1-8000-000000000001\"], \"actions\": [{\"kind\": \"secret.set\", \"params\": {\"service_id\": \"01a0cdb5-3500-70c1-8000-000000000001\", \"name\": \"API_KEY\", \"ciphertext_digest_hex\": \"e7e9366b72b47586b41cf4ab98b3c2fc9115412c0ce114f9d9af27877b42d2c4\"}}], \"base\": {\"force\": false, \"heads\": {\"01a0cdb5-3500-70a1-8000-000000000001\": \"4a98af3eeae054bf7585746ce20fa5907ec9c079ee1b049a7d01146d1c92ebfb\"}}, \"created_at\": \"2026-09-23T10:00:00Z\", \"expires_at\": \"2026-09-23T10:10:00Z\", \"nonce\": \"M9sk8l_WeAsUBGi0gLF89A\", \"author\": {\"kind\": \"rule\", \"agent_session_id\": null}, \"invocation\": {\"rule_id\": \"01a0cdb5-3500-70f1-8000-000000000001\", \"rule_digest_hex\": \"42931b7b326d2bf54bf2e038076808f13fda19a46e9da1af363536a59ff00e90\", \"trigger\": \"git.push\", \"evidence\": {\"provider\": \"github\", \"repo\": \"github.com/acme/web\", \"ref\": \"refs/heads/main\", \"commit_sha\": \"4f2a9c1e8b7d6a5f4e3d2c1b0a9f8e7d6c5b4a39\", \"commit_time\": \"2026-09-23T09:59:30Z\", \"delivery_id\": \"gh-delivery-1\", \"body_digest_hex\": \"50589ee7eeb3e7adedddd36ea89e9350aaddc30bdf3574ecda5194e845594cd6\", \"received_at\": \"2026-09-23T09:59:58Z\"}}}, \"signatures\": []}",
+      "specs": [],
+      "submitter": "agent_webhook",
+      "mode": "test",
+      "expect": "E_TOUCH_ID_REQUIRED"
+    },
+    {
+      "name": "rule_restart",
+      "input": "{\"plan\": {\"version\": 1, \"id\": \"01a0cdb5-3500-7001-8000-000000000024\", \"project_id\": \"01a0cdb5-3500-70b1-8000-000000000001\", \"environment\": \"production\", \"service_ids\": [\"01a0cdb5-3500-70c1-8000-000000000001\"], \"targets\": [\"01a0cdb5-3500-70a1-8000-000000000001\"], \"actions\": [{\"kind\": \"restart\", \"params\": {\"service_id\": \"01a0cdb5-3500-70c1-8000-000000000001\", \"spec_digest_hex\": \"b78adc95a654038d554689569fc43f2f7db6fece4c5049d3dab17370f21ec1bf\"}}], \"base\": {\"force\": false, \"heads\": {\"01a0cdb5-3500-70a1-8000-000000000001\": \"4a98af3eeae054bf7585746ce20fa5907ec9c079ee1b049a7d01146d1c92ebfb\"}}, \"created_at\": \"2026-09-23T10:00:00Z\", \"expires_at\": \"2026-09-23T10:10:00Z\", \"nonce\": \"yBgIAN5GVkfjfc3aakmi4g\", \"author\": {\"kind\": \"rule\", \"agent_session_id\": null}, \"invocation\": {\"rule_id\": \"01a0cdb5-3500-70f1-8000-000000000001\", \"rule_digest_hex\": \"42931b7b326d2bf54bf2e038076808f13fda19a46e9da1af363536a59ff00e90\", \"trigger\": \"git.push\", \"evidence\": {\"provider\": \"github\", \"repo\": \"github.com/acme/web\", \"ref\": \"refs/heads/main\", \"commit_sha\": \"4f2a9c1e8b7d6a5f4e3d2c1b0a9f8e7d6c5b4a39\", \"commit_time\": \"2026-09-23T09:59:30Z\", \"delivery_id\": \"gh-delivery-1\", \"body_digest_hex\": \"50589ee7eeb3e7adedddd36ea89e9350aaddc30bdf3574ecda5194e845594cd6\", \"received_at\": \"2026-09-23T09:59:58Z\"}}}, \"signatures\": []}",
+      "specs": [
+        "{\"cap_add\":[],\"command\":[\"node\",\"server.js\"],\"entrypoint\":null,\"env\":{\"DATABASE_URL\":{\"kind\":\"secret\",\"ref\":\"DATABASE_URL\"},\"NODE_ENV\":{\"kind\":\"plain\",\"ref\":null},\"REDIS_URL\":{\"kind\":\"reference\",\"ref\":\"01a0cdb5-3500-70d1-8000-000000000001.REDIS_URL\"}},\"healthcheck\":{\"command\":null,\"interval_seconds\":10,\"kind\":\"http\",\"path\":\"/healthz\",\"port\":3000,\"retries\":3,\"start_period_seconds\":5,\"timeout_seconds\":3},\"image_digest_hex\":\"97db6c9091eee82a42e8b2bea76caa45687c1fb40a760a84c71500d520c07987\",\"image_repository\":\"registry.permanu.internal/acme/web\",\"mounts\":[],\"network\":{\"aliases\":[],\"mode\":\"project\"},\"placement\":{\"server_ids\":[\"01a0cdb5-3500-70a1-8000-000000000001\"]},\"ports\":[{\"container_port\":3000,\"protocol\":\"tcp\",\"public\":true}],\"privileged\":false,\"replicas\":2,\"resources\":{\"cpu_millis\":1000,\"memory_bytes\":536870912,\"pids_limit\":512},\"service_id\":\"01a0cdb5-3500-70c1-8000-000000000001\",\"user\":\"1000:1000\",\"version\":1,\"working_dir\":\"/app\"}"
+      ],
+      "submitter": "agent_webhook",
+      "mode": "test",
+      "expect": "E_KIND_FORBIDDEN"
+    },
+    {
+      "name": "rule_unknown_digest",
+      "input": "{\"plan\": {\"version\": 1, \"id\": \"01a0cdb5-3500-7001-8000-000000000025\", \"project_id\": \"01a0cdb5-3500-70b1-8000-000000000001\", \"environment\": \"production\", \"service_ids\": [\"01a0cdb5-3500-70c1-8000-000000000001\"], \"targets\": [\"01a0cdb5-3500-70a1-8000-000000000001\"], \"actions\": [{\"kind\": \"deploy\", \"params\": {\"service_id\": \"01a0cdb5-3500-70c1-8000-000000000001\", \"commit_sha\": \"4f2a9c1e8b7d6a5f4e3d2c1b0a9f8e7d6c5b4a39\", \"spec_digest_hex\": \"f9e2f5ba422e79750428675b3191f942f6d85747981184a232a08b369e4da410\"}}], \"base\": {\"force\": false, \"heads\": {\"01a0cdb5-3500-70a1-8000-000000000001\": \"4a98af3eeae054bf7585746ce20fa5907ec9c079ee1b049a7d01146d1c92ebfb\"}}, \"created_at\": \"2026-09-23T10:00:00Z\", \"expires_at\": \"2026-09-23T10:10:00Z\", \"nonce\": \"dTxrvilM17vrTJorOvNd-w\", \"author\": {\"kind\": \"rule\", \"agent_session_id\": null}, \"invocation\": {\"rule_id\": \"01a0cdb5-3500-70f1-8000-000000000001\", \"rule_digest_hex\": \"2d711642b726b04401627ca9fbac32f5c8530fb1903cc4db02258717921a4881\", \"trigger\": \"git.push\", \"evidence\": {\"provider\": \"github\", \"repo\": \"github.com/acme/web\", \"ref\": \"refs/heads/main\", \"commit_sha\": \"4f2a9c1e8b7d6a5f4e3d2c1b0a9f8e7d6c5b4a39\", \"commit_time\": \"2026-09-23T09:59:30Z\", \"delivery_id\": \"gh-delivery-1\", \"body_digest_hex\": \"50589ee7eeb3e7adedddd36ea89e9350aaddc30bdf3574ecda5194e845594cd6\", \"received_at\": \"2026-09-23T09:59:58Z\"}}}, \"signatures\": []}",
+      "specs": [
+        "{\"cap_add\":[],\"command\":[\"node\",\"server.js\"],\"entrypoint\":null,\"env\":{\"DATABASE_URL\":{\"kind\":\"secret\",\"ref\":\"DATABASE_URL\"},\"NODE_ENV\":{\"kind\":\"plain\",\"ref\":null},\"REDIS_URL\":{\"kind\":\"reference\",\"ref\":\"01a0cdb5-3500-70d1-8000-000000000001.REDIS_URL\"}},\"healthcheck\":{\"command\":null,\"interval_seconds\":10,\"kind\":\"http\",\"path\":\"/healthz\",\"port\":3000,\"retries\":3,\"start_period_seconds\":5,\"timeout_seconds\":3},\"image_digest_hex\":\"87ebc0f19e05e181dc22921cf7dbcf9f30e348d432da95fd36aea5ef8044a960\",\"image_repository\":\"registry.permanu.internal/acme/web\",\"mounts\":[],\"network\":{\"aliases\":[],\"mode\":\"project\"},\"placement\":{\"server_ids\":[\"01a0cdb5-3500-70a1-8000-000000000001\"]},\"ports\":[{\"container_port\":3000,\"protocol\":\"tcp\",\"public\":true}],\"privileged\":false,\"replicas\":2,\"resources\":{\"cpu_millis\":1000,\"memory_bytes\":536870912,\"pids_limit\":512},\"service_id\":\"01a0cdb5-3500-70c1-8000-000000000001\",\"user\":\"1000:1000\",\"version\":1,\"working_dir\":\"/app\"}"
+      ],
+      "submitter": "agent_webhook",
+      "mode": "test",
+      "expect": "E_RULE_UNKNOWN"
+    },
+    {
+      "name": "rule_revoked",
+      "input": "{\"plan\": {\"version\": 1, \"id\": \"01a0cdb5-3500-7001-8000-000000000026\", \"project_id\": \"01a0cdb5-3500-70b1-8000-000000000001\", \"environment\": \"production\", \"service_ids\": [\"01a0cdb5-3500-70c1-8000-000000000001\"], \"targets\": [\"01a0cdb5-3500-70a1-8000-000000000001\"], \"actions\": [{\"kind\": \"deploy\", \"params\": {\"service_id\": \"01a0cdb5-3500-70c1-8000-000000000001\", \"commit_sha\": \"4f2a9c1e8b7d6a5f4e3d2c1b0a9f8e7d6c5b4a39\", \"spec_digest_hex\": \"f9e2f5ba422e79750428675b3191f942f6d85747981184a232a08b369e4da410\"}}], \"base\": {\"force\": false, \"heads\": {\"01a0cdb5-3500-70a1-8000-000000000001\": \"4a98af3eeae054bf7585746ce20fa5907ec9c079ee1b049a7d01146d1c92ebfb\"}}, \"created_at\": \"2026-09-23T10:00:00Z\", \"expires_at\": \"2026-09-23T10:10:00Z\", \"nonce\": \"s3YpW8mem6dXwhygm2HStg\", \"author\": {\"kind\": \"rule\", \"agent_session_id\": null}, \"invocation\": {\"rule_id\": \"01a0cdb5-3500-70f1-8000-000000000003\", \"rule_digest_hex\": \"e9293926797219ce1681234a6b61b870f908c3620e082ec5f4a47273163d8761\", \"trigger\": \"git.push\", \"evidence\": {\"provider\": \"github\", \"repo\": \"github.com/acme/web\", \"ref\": \"refs/heads/main\", \"commit_sha\": \"4f2a9c1e8b7d6a5f4e3d2c1b0a9f8e7d6c5b4a39\", \"commit_time\": \"2026-09-23T09:59:30Z\", \"delivery_id\": \"gh-delivery-1\", \"body_digest_hex\": \"50589ee7eeb3e7adedddd36ea89e9350aaddc30bdf3574ecda5194e845594cd6\", \"received_at\": \"2026-09-23T09:59:58Z\"}}}, \"signatures\": []}",
+      "specs": [
+        "{\"cap_add\":[],\"command\":[\"node\",\"server.js\"],\"entrypoint\":null,\"env\":{\"DATABASE_URL\":{\"kind\":\"secret\",\"ref\":\"DATABASE_URL\"},\"NODE_ENV\":{\"kind\":\"plain\",\"ref\":null},\"REDIS_URL\":{\"kind\":\"reference\",\"ref\":\"01a0cdb5-3500-70d1-8000-000000000001.REDIS_URL\"}},\"healthcheck\":{\"command\":null,\"interval_seconds\":10,\"kind\":\"http\",\"path\":\"/healthz\",\"port\":3000,\"retries\":3,\"start_period_seconds\":5,\"timeout_seconds\":3},\"image_digest_hex\":\"87ebc0f19e05e181dc22921cf7dbcf9f30e348d432da95fd36aea5ef8044a960\",\"image_repository\":\"registry.permanu.internal/acme/web\",\"mounts\":[],\"network\":{\"aliases\":[],\"mode\":\"project\"},\"placement\":{\"server_ids\":[\"01a0cdb5-3500-70a1-8000-000000000001\"]},\"ports\":[{\"container_port\":3000,\"protocol\":\"tcp\",\"public\":true}],\"privileged\":false,\"replicas\":2,\"resources\":{\"cpu_millis\":1000,\"memory_bytes\":536870912,\"pids_limit\":512},\"service_id\":\"01a0cdb5-3500-70c1-8000-000000000001\",\"user\":\"1000:1000\",\"version\":1,\"working_dir\":\"/app\"}"
+      ],
+      "submitter": "agent_webhook",
+      "mode": "test",
+      "expect": "E_RULE_REVOKED"
+    },
+    {
+      "name": "rule_outside_window",
+      "input": "{\"plan\": {\"version\": 1, \"id\": \"01a0cdb5-3500-7001-8000-000000000027\", \"project_id\": \"01a0cdb5-3500-70b1-8000-000000000001\", \"environment\": \"production\", \"service_ids\": [\"01a0cdb5-3500-70c1-8000-000000000001\"], \"targets\": [\"01a0cdb5-3500-70a1-8000-000000000001\"], \"actions\": [{\"kind\": \"deploy\", \"params\": {\"service_id\": \"01a0cdb5-3500-70c1-8000-000000000001\", \"commit_sha\": \"4f2a9c1e8b7d6a5f4e3d2c1b0a9f8e7d6c5b4a39\", \"spec_digest_hex\": \"f9e2f5ba422e79750428675b3191f942f6d85747981184a232a08b369e4da410\"}}], \"base\": {\"force\": false, \"heads\": {\"01a0cdb5-3500-70a1-8000-000000000001\": \"4a98af3eeae054bf7585746ce20fa5907ec9c079ee1b049a7d01146d1c92ebfb\"}}, \"created_at\": \"2026-09-23T10:00:00Z\", \"expires_at\": \"2026-09-23T10:10:00Z\", \"nonce\": \"ohmQR30mwbyk_VNONlK3DQ\", \"author\": {\"kind\": \"rule\", \"agent_session_id\": null}, \"invocation\": {\"rule_id\": \"01a0cdb5-3500-70f1-8000-000000000002\", \"rule_digest_hex\": \"09fb82b4659c111c3cea99dd2857f546bc0ad9f59944c245dfb5b719da9152a1\", \"trigger\": \"git.push\", \"evidence\": {\"provider\": \"github\", \"repo\": \"github.com/acme/web\", \"ref\": \"refs/heads/main\", \"commit_sha\": \"4f2a9c1e8b7d6a5f4e3d2c1b0a9f8e7d6c5b4a39\", \"commit_time\": \"2026-09-23T09:59:30Z\", \"delivery_id\": \"gh-delivery-1\", \"body_digest_hex\": \"50589ee7eeb3e7adedddd36ea89e9350aaddc30bdf3574ecda5194e845594cd6\", \"received_at\": \"2026-09-23T09:59:58Z\"}}}, \"signatures\": []}",
+      "specs": [
+        "{\"cap_add\":[],\"command\":[\"node\",\"server.js\"],\"entrypoint\":null,\"env\":{\"DATABASE_URL\":{\"kind\":\"secret\",\"ref\":\"DATABASE_URL\"},\"NODE_ENV\":{\"kind\":\"plain\",\"ref\":null},\"REDIS_URL\":{\"kind\":\"reference\",\"ref\":\"01a0cdb5-3500-70d1-8000-000000000001.REDIS_URL\"}},\"healthcheck\":{\"command\":null,\"interval_seconds\":10,\"kind\":\"http\",\"path\":\"/healthz\",\"port\":3000,\"retries\":3,\"start_period_seconds\":5,\"timeout_seconds\":3},\"image_digest_hex\":\"87ebc0f19e05e181dc22921cf7dbcf9f30e348d432da95fd36aea5ef8044a960\",\"image_repository\":\"registry.permanu.internal/acme/web\",\"mounts\":[],\"network\":{\"aliases\":[],\"mode\":\"project\"},\"placement\":{\"server_ids\":[\"01a0cdb5-3500-70a1-8000-000000000001\"]},\"ports\":[{\"container_port\":3000,\"protocol\":\"tcp\",\"public\":true}],\"privileged\":false,\"replicas\":2,\"resources\":{\"cpu_millis\":1000,\"memory_bytes\":536870912,\"pids_limit\":512},\"service_id\":\"01a0cdb5-3500-70c1-8000-000000000001\",\"user\":\"1000:1000\",\"version\":1,\"working_dir\":\"/app\"}"
+      ],
+      "submitter": "agent_webhook",
+      "mode": "test",
+      "expect": "E_RULE_WINDOW"
+    },
+    {
+      "name": "rule_branch_not_allowed",
+      "input": "{\"plan\": {\"version\": 1, \"id\": \"01a0cdb5-3500-7001-8000-000000000028\", \"project_id\": \"01a0cdb5-3500-70b1-8000-000000000001\", \"environment\": \"production\", \"service_ids\": [\"01a0cdb5-3500-70c1-8000-000000000001\"], \"targets\": [\"01a0cdb5-3500-70a1-8000-000000000001\"], \"actions\": [{\"kind\": \"deploy\", \"params\": {\"service_id\": \"01a0cdb5-3500-70c1-8000-000000000001\", \"commit_sha\": \"0123456789abcdef0123456789abcdef01234567\", \"spec_digest_hex\": \"b15a0c01a060947f712959fae48613f6a65ad04ef12ba139f35bd882ec4b7560\"}}], \"base\": {\"force\": false, \"heads\": {\"01a0cdb5-3500-70a1-8000-000000000001\": \"4a98af3eeae054bf7585746ce20fa5907ec9c079ee1b049a7d01146d1c92ebfb\"}}, \"created_at\": \"2026-09-23T10:00:00Z\", \"expires_at\": \"2026-09-23T10:10:00Z\", \"nonce\": \"OkyipZRJ6luxNDFX3z6eKg\", \"author\": {\"kind\": \"rule\", \"agent_session_id\": null}, \"invocation\": {\"rule_id\": \"01a0cdb5-3500-70f1-8000-000000000001\", \"rule_digest_hex\": \"42931b7b326d2bf54bf2e038076808f13fda19a46e9da1af363536a59ff00e90\", \"trigger\": \"git.push\", \"evidence\": {\"provider\": \"github\", \"repo\": \"github.com/acme/web\", \"ref\": \"refs/heads/dev\", \"commit_sha\": \"0123456789abcdef0123456789abcdef01234567\", \"commit_time\": \"2026-09-23T09:59:30Z\", \"delivery_id\": \"gh-delivery-dev\", \"body_digest_hex\": \"1b989280dbeea4e6e8c5103ce3f06ac96256ffe301b0380f4ae73450171fe1fb\", \"received_at\": \"2026-09-23T09:59:58Z\"}}}, \"signatures\": []}",
+      "specs": [
+        "{\"cap_add\":[],\"command\":[\"node\",\"server.js\"],\"entrypoint\":null,\"env\":{\"DATABASE_URL\":{\"kind\":\"secret\",\"ref\":\"DATABASE_URL\"},\"NODE_ENV\":{\"kind\":\"plain\",\"ref\":null},\"REDIS_URL\":{\"kind\":\"reference\",\"ref\":\"01a0cdb5-3500-70d1-8000-000000000001.REDIS_URL\"}},\"healthcheck\":{\"command\":null,\"interval_seconds\":10,\"kind\":\"http\",\"path\":\"/healthz\",\"port\":3000,\"retries\":3,\"start_period_seconds\":5,\"timeout_seconds\":3},\"image_digest_hex\":\"13234a75cc6c087b23d87e9ba5b381e5b2309907ee37a0bf73d15f6500c9ecee\",\"image_repository\":\"registry.permanu.internal/acme/web\",\"mounts\":[],\"network\":{\"aliases\":[],\"mode\":\"project\"},\"placement\":{\"server_ids\":[\"01a0cdb5-3500-70a1-8000-000000000001\"]},\"ports\":[{\"container_port\":3000,\"protocol\":\"tcp\",\"public\":true}],\"privileged\":false,\"replicas\":2,\"resources\":{\"cpu_millis\":1000,\"memory_bytes\":536870912,\"pids_limit\":512},\"service_id\":\"01a0cdb5-3500-70c1-8000-000000000001\",\"user\":\"1000:1000\",\"version\":1,\"working_dir\":\"/app\"}"
+      ],
+      "submitter": "agent_webhook",
+      "mode": "test",
+      "expect": "E_RULE_SCOPE"
+    },
+    {
+      "name": "rule_replicas_over_limit",
+      "input": "{\"plan\": {\"version\": 1, \"id\": \"01a0cdb5-3500-7001-8000-000000000029\", \"project_id\": \"01a0cdb5-3500-70b1-8000-000000000001\", \"environment\": \"production\", \"service_ids\": [\"01a0cdb5-3500-70c1-8000-000000000001\"], \"targets\": [\"01a0cdb5-3500-70a1-8000-000000000001\"], \"actions\": [{\"kind\": \"deploy\", \"params\": {\"service_id\": \"01a0cdb5-3500-70c1-8000-000000000001\", \"commit_sha\": \"4f2a9c1e8b7d6a5f4e3d2c1b0a9f8e7d6c5b4a39\", \"spec_digest_hex\": \"8e139d907c6db059eec1af5cdf79fc2c03203279cf740598722382ec9705be74\"}}], \"base\": {\"force\": false, \"heads\": {\"01a0cdb5-3500-70a1-8000-000000000001\": \"4a98af3eeae054bf7585746ce20fa5907ec9c079ee1b049a7d01146d1c92ebfb\"}}, \"created_at\": \"2026-09-23T10:00:00Z\", \"expires_at\": \"2026-09-23T10:10:00Z\", \"nonce\": \"ZA44vJC5hKnE5KIQQQbo3g\", \"author\": {\"kind\": \"rule\", \"agent_session_id\": null}, \"invocation\": {\"rule_id\": \"01a0cdb5-3500-70f1-8000-000000000001\", \"rule_digest_hex\": \"42931b7b326d2bf54bf2e038076808f13fda19a46e9da1af363536a59ff00e90\", \"trigger\": \"git.push\", \"evidence\": {\"provider\": \"github\", \"repo\": \"github.com/acme/web\", \"ref\": \"refs/heads/main\", \"commit_sha\": \"4f2a9c1e8b7d6a5f4e3d2c1b0a9f8e7d6c5b4a39\", \"commit_time\": \"2026-09-23T09:59:30Z\", \"delivery_id\": \"gh-delivery-1\", \"body_digest_hex\": \"50589ee7eeb3e7adedddd36ea89e9350aaddc30bdf3574ecda5194e845594cd6\", \"received_at\": \"2026-09-23T09:59:58Z\"}}}, \"signatures\": []}",
+      "specs": [
+        "{\"cap_add\":[],\"command\":[\"node\",\"server.js\"],\"entrypoint\":null,\"env\":{\"DATABASE_URL\":{\"kind\":\"secret\",\"ref\":\"DATABASE_URL\"},\"NODE_ENV\":{\"kind\":\"plain\",\"ref\":null},\"REDIS_URL\":{\"kind\":\"reference\",\"ref\":\"01a0cdb5-3500-70d1-8000-000000000001.REDIS_URL\"}},\"healthcheck\":{\"command\":null,\"interval_seconds\":10,\"kind\":\"http\",\"path\":\"/healthz\",\"port\":3000,\"retries\":3,\"start_period_seconds\":5,\"timeout_seconds\":3},\"image_digest_hex\":\"87ebc0f19e05e181dc22921cf7dbcf9f30e348d432da95fd36aea5ef8044a960\",\"image_repository\":\"registry.permanu.internal/acme/web\",\"mounts\":[],\"network\":{\"aliases\":[],\"mode\":\"project\"},\"placement\":{\"server_ids\":[\"01a0cdb5-3500-70a1-8000-000000000001\"]},\"ports\":[{\"container_port\":3000,\"protocol\":\"tcp\",\"public\":true}],\"privileged\":false,\"replicas\":8,\"resources\":{\"cpu_millis\":1000,\"memory_bytes\":536870912,\"pids_limit\":512},\"service_id\":\"01a0cdb5-3500-70c1-8000-000000000001\",\"user\":\"1000:1000\",\"version\":1,\"working_dir\":\"/app\"}"
+      ],
+      "submitter": "agent_webhook",
+      "mode": "test",
+      "expect": "E_RULE_LIMIT"
+    },
+    {
+      "name": "rule_unverified_delivery",
+      "input": "{\"plan\": {\"version\": 1, \"id\": \"01a0cdb5-3500-7001-8000-00000000002a\", \"project_id\": \"01a0cdb5-3500-70b1-8000-000000000001\", \"environment\": \"production\", \"service_ids\": [\"01a0cdb5-3500-70c1-8000-000000000001\"], \"targets\": [\"01a0cdb5-3500-70a1-8000-000000000001\"], \"actions\": [{\"kind\": \"deploy\", \"params\": {\"service_id\": \"01a0cdb5-3500-70c1-8000-000000000001\", \"commit_sha\": \"4f2a9c1e8b7d6a5f4e3d2c1b0a9f8e7d6c5b4a39\", \"spec_digest_hex\": \"f9e2f5ba422e79750428675b3191f942f6d85747981184a232a08b369e4da410\"}}], \"base\": {\"force\": false, \"heads\": {\"01a0cdb5-3500-70a1-8000-000000000001\": \"4a98af3eeae054bf7585746ce20fa5907ec9c079ee1b049a7d01146d1c92ebfb\"}}, \"created_at\": \"2026-09-23T10:00:00Z\", \"expires_at\": \"2026-09-23T10:10:00Z\", \"nonce\": \"Eik62lbTc3FlI0XPc6ayYw\", \"author\": {\"kind\": \"rule\", \"agent_session_id\": null}, \"invocation\": {\"rule_id\": \"01a0cdb5-3500-70f1-8000-000000000001\", \"rule_digest_hex\": \"42931b7b326d2bf54bf2e038076808f13fda19a46e9da1af363536a59ff00e90\", \"trigger\": \"git.push\", \"evidence\": {\"provider\": \"github\", \"repo\": \"github.com/acme/web\", \"ref\": \"refs/heads/main\", \"commit_sha\": \"4f2a9c1e8b7d6a5f4e3d2c1b0a9f8e7d6c5b4a39\", \"commit_time\": \"2026-09-23T09:59:30Z\", \"delivery_id\": \"gh-forged\", \"body_digest_hex\": \"df8cd7cba44afdad8aacb1b97374a1c45b1203a29dee24fb609820dded0d15e9\", \"received_at\": \"2026-09-23T09:59:58Z\"}}}, \"signatures\": []}",
+      "specs": [
+        "{\"cap_add\":[],\"command\":[\"node\",\"server.js\"],\"entrypoint\":null,\"env\":{\"DATABASE_URL\":{\"kind\":\"secret\",\"ref\":\"DATABASE_URL\"},\"NODE_ENV\":{\"kind\":\"plain\",\"ref\":null},\"REDIS_URL\":{\"kind\":\"reference\",\"ref\":\"01a0cdb5-3500-70d1-8000-000000000001.REDIS_URL\"}},\"healthcheck\":{\"command\":null,\"interval_seconds\":10,\"kind\":\"http\",\"path\":\"/healthz\",\"port\":3000,\"retries\":3,\"start_period_seconds\":5,\"timeout_seconds\":3},\"image_digest_hex\":\"87ebc0f19e05e181dc22921cf7dbcf9f30e348d432da95fd36aea5ef8044a960\",\"image_repository\":\"registry.permanu.internal/acme/web\",\"mounts\":[],\"network\":{\"aliases\":[],\"mode\":\"project\"},\"placement\":{\"server_ids\":[\"01a0cdb5-3500-70a1-8000-000000000001\"]},\"ports\":[{\"container_port\":3000,\"protocol\":\"tcp\",\"public\":true}],\"privileged\":false,\"replicas\":2,\"resources\":{\"cpu_millis\":1000,\"memory_bytes\":536870912,\"pids_limit\":512},\"service_id\":\"01a0cdb5-3500-70c1-8000-000000000001\",\"user\":\"1000:1000\",\"version\":1,\"working_dir\":\"/app\"}"
+      ],
+      "submitter": "agent_webhook",
+      "mode": "test",
+      "expect": "E_RULE_EVIDENCE"
+    },
+    {
+      "name": "rule_commit_mismatch",
+      "input": "{\"plan\": {\"version\": 1, \"id\": \"01a0cdb5-3500-7001-8000-00000000002b\", \"project_id\": \"01a0cdb5-3500-70b1-8000-000000000001\", \"environment\": \"production\", \"service_ids\": [\"01a0cdb5-3500-70c1-8000-000000000001\"], \"targets\": [\"01a0cdb5-3500-70a1-8000-000000000001\"], \"actions\": [{\"kind\": \"deploy\", \"params\": {\"service_id\": \"01a0cdb5-3500-70c1-8000-000000000001\", \"commit_sha\": \"0123456789abcdef0123456789abcdef01234567\", \"spec_digest_hex\": \"b15a0c01a060947f712959fae48613f6a65ad04ef12ba139f35bd882ec4b7560\"}}], \"base\": {\"force\": false, \"heads\": {\"01a0cdb5-3500-70a1-8000-000000000001\": \"4a98af3eeae054bf7585746ce20fa5907ec9c079ee1b049a7d01146d1c92ebfb\"}}, \"created_at\": \"2026-09-23T10:00:00Z\", \"expires_at\": \"2026-09-23T10:10:00Z\", \"nonce\": \"GJihGfIjRBDcap-fzBW7jw\", \"author\": {\"kind\": \"rule\", \"agent_session_id\": null}, \"invocation\": {\"rule_id\": \"01a0cdb5-3500-70f1-8000-000000000001\", \"rule_digest_hex\": \"42931b7b326d2bf54bf2e038076808f13fda19a46e9da1af363536a59ff00e90\", \"trigger\": \"git.push\", \"evidence\": {\"provider\": \"github\", \"repo\": \"github.com/acme/web\", \"ref\": \"refs/heads/main\", \"commit_sha\": \"4f2a9c1e8b7d6a5f4e3d2c1b0a9f8e7d6c5b4a39\", \"commit_time\": \"2026-09-23T09:59:30Z\", \"delivery_id\": \"gh-delivery-1\", \"body_digest_hex\": \"50589ee7eeb3e7adedddd36ea89e9350aaddc30bdf3574ecda5194e845594cd6\", \"received_at\": \"2026-09-23T09:59:58Z\"}}}, \"signatures\": []}",
+      "specs": [
+        "{\"cap_add\":[],\"command\":[\"node\",\"server.js\"],\"entrypoint\":null,\"env\":{\"DATABASE_URL\":{\"kind\":\"secret\",\"ref\":\"DATABASE_URL\"},\"NODE_ENV\":{\"kind\":\"plain\",\"ref\":null},\"REDIS_URL\":{\"kind\":\"reference\",\"ref\":\"01a0cdb5-3500-70d1-8000-000000000001.REDIS_URL\"}},\"healthcheck\":{\"command\":null,\"interval_seconds\":10,\"kind\":\"http\",\"path\":\"/healthz\",\"port\":3000,\"retries\":3,\"start_period_seconds\":5,\"timeout_seconds\":3},\"image_digest_hex\":\"13234a75cc6c087b23d87e9ba5b381e5b2309907ee37a0bf73d15f6500c9ecee\",\"image_repository\":\"registry.permanu.internal/acme/web\",\"mounts\":[],\"network\":{\"aliases\":[],\"mode\":\"project\"},\"placement\":{\"server_ids\":[\"01a0cdb5-3500-70a1-8000-000000000001\"]},\"ports\":[{\"container_port\":3000,\"protocol\":\"tcp\",\"public\":true}],\"privileged\":false,\"replicas\":2,\"resources\":{\"cpu_millis\":1000,\"memory_bytes\":536870912,\"pids_limit\":512},\"service_id\":\"01a0cdb5-3500-70c1-8000-000000000001\",\"user\":\"1000:1000\",\"version\":1,\"working_dir\":\"/app\"}"
+      ],
+      "submitter": "agent_webhook",
+      "mode": "test",
+      "expect": "E_RULE_EVIDENCE"
+    },
+    {
+      "name": "rule_stale_webhook",
+      "input": "{\"plan\": {\"version\": 1, \"id\": \"01a0cdb5-3500-7001-8000-000000000044\", \"project_id\": \"01a0cdb5-3500-70b1-8000-000000000001\", \"environment\": \"production\", \"service_ids\": [\"01a0cdb5-3500-70c1-8000-000000000001\"], \"targets\": [\"01a0cdb5-3500-70a1-8000-000000000001\"], \"actions\": [{\"kind\": \"deploy\", \"params\": {\"service_id\": \"01a0cdb5-3500-70c1-8000-000000000001\", \"commit_sha\": \"4f2a9c1e8b7d6a5f4e3d2c1b0a9f8e7d6c5b4a39\", \"spec_digest_hex\": \"f9e2f5ba422e79750428675b3191f942f6d85747981184a232a08b369e4da410\"}}], \"base\": {\"force\": false, \"heads\": {\"01a0cdb5-3500-70a1-8000-000000000001\": \"4a98af3eeae054bf7585746ce20fa5907ec9c079ee1b049a7d01146d1c92ebfb\"}}, \"created_at\": \"2026-09-23T10:00:00Z\", \"expires_at\": \"2026-09-23T10:10:00Z\", \"nonce\": \"njsIbE9h2HEcp2gg4A-N3Q\", \"author\": {\"kind\": \"rule\", \"agent_session_id\": null}, \"invocation\": {\"rule_id\": \"01a0cdb5-3500-70f1-8000-000000000001\", \"rule_digest_hex\": \"42931b7b326d2bf54bf2e038076808f13fda19a46e9da1af363536a59ff00e90\", \"trigger\": \"git.push\", \"evidence\": {\"provider\": \"github\", \"repo\": \"github.com/acme/web\", \"ref\": \"refs/heads/main\", \"commit_sha\": \"4f2a9c1e8b7d6a5f4e3d2c1b0a9f8e7d6c5b4a39\", \"commit_time\": \"2026-09-23T09:59:30Z\", \"delivery_id\": \"gh-delivery-stale\", \"body_digest_hex\": \"2a5f15e21f9b37732fd74395a4cf1922a824d5bb6a42442abd026e64b1876e6a\", \"received_at\": \"2026-09-23T09:45:00Z\"}}}, \"signatures\": []}",
+      "specs": [
+        "{\"cap_add\":[],\"command\":[\"node\",\"server.js\"],\"entrypoint\":null,\"env\":{\"DATABASE_URL\":{\"kind\":\"secret\",\"ref\":\"DATABASE_URL\"},\"NODE_ENV\":{\"kind\":\"plain\",\"ref\":null},\"REDIS_URL\":{\"kind\":\"reference\",\"ref\":\"01a0cdb5-3500-70d1-8000-000000000001.REDIS_URL\"}},\"healthcheck\":{\"command\":null,\"interval_seconds\":10,\"kind\":\"http\",\"path\":\"/healthz\",\"port\":3000,\"retries\":3,\"start_period_seconds\":5,\"timeout_seconds\":3},\"image_digest_hex\":\"87ebc0f19e05e181dc22921cf7dbcf9f30e348d432da95fd36aea5ef8044a960\",\"image_repository\":\"registry.permanu.internal/acme/web\",\"mounts\":[],\"network\":{\"aliases\":[],\"mode\":\"project\"},\"placement\":{\"server_ids\":[\"01a0cdb5-3500-70a1-8000-000000000001\"]},\"ports\":[{\"container_port\":3000,\"protocol\":\"tcp\",\"public\":true}],\"privileged\":false,\"replicas\":2,\"resources\":{\"cpu_millis\":1000,\"memory_bytes\":536870912,\"pids_limit\":512},\"service_id\":\"01a0cdb5-3500-70c1-8000-000000000001\",\"user\":\"1000:1000\",\"version\":1,\"working_dir\":\"/app\"}"
+      ],
+      "submitter": "agent_webhook",
+      "mode": "test",
+      "expect": "E_RULE_EVIDENCE"
+    },
+    {
+      "name": "rule_delivery_consumed",
+      "input": "{\"plan\": {\"version\": 1, \"id\": \"01a0cdb5-3500-7001-8000-000000000045\", \"project_id\": \"01a0cdb5-3500-70b1-8000-000000000001\", \"environment\": \"production\", \"service_ids\": [\"01a0cdb5-3500-70c1-8000-000000000001\"], \"targets\": [\"01a0cdb5-3500-70a1-8000-000000000001\"], \"actions\": [{\"kind\": \"deploy\", \"params\": {\"service_id\": \"01a0cdb5-3500-70c1-8000-000000000001\", \"commit_sha\": \"4f2a9c1e8b7d6a5f4e3d2c1b0a9f8e7d6c5b4a39\", \"spec_digest_hex\": \"f9e2f5ba422e79750428675b3191f942f6d85747981184a232a08b369e4da410\"}}], \"base\": {\"force\": false, \"heads\": {\"01a0cdb5-3500-70a1-8000-000000000001\": \"4a98af3eeae054bf7585746ce20fa5907ec9c079ee1b049a7d01146d1c92ebfb\"}}, \"created_at\": \"2026-09-23T10:00:00Z\", \"expires_at\": \"2026-09-23T10:10:00Z\", \"nonce\": \"bKGf8-3p1FOsrw3BobJ-4A\", \"author\": {\"kind\": \"rule\", \"agent_session_id\": null}, \"invocation\": {\"rule_id\": \"01a0cdb5-3500-70f1-8000-000000000001\", \"rule_digest_hex\": \"42931b7b326d2bf54bf2e038076808f13fda19a46e9da1af363536a59ff00e90\", \"trigger\": \"git.push\", \"evidence\": {\"provider\": \"github\", \"repo\": \"github.com/acme/web\", \"ref\": \"refs/heads/main\", \"commit_sha\": \"4f2a9c1e8b7d6a5f4e3d2c1b0a9f8e7d6c5b4a39\", \"commit_time\": \"2026-09-23T09:59:30Z\", \"delivery_id\": \"gh-delivery-used\", \"body_digest_hex\": \"8d1765a8d391cdceb4f06aed1536a940919167a7106f493836e27e38ad6dad4d\", \"received_at\": \"2026-09-23T09:59:58Z\"}}}, \"signatures\": []}",
+      "specs": [
+        "{\"cap_add\":[],\"command\":[\"node\",\"server.js\"],\"entrypoint\":null,\"env\":{\"DATABASE_URL\":{\"kind\":\"secret\",\"ref\":\"DATABASE_URL\"},\"NODE_ENV\":{\"kind\":\"plain\",\"ref\":null},\"REDIS_URL\":{\"kind\":\"reference\",\"ref\":\"01a0cdb5-3500-70d1-8000-000000000001.REDIS_URL\"}},\"healthcheck\":{\"command\":null,\"interval_seconds\":10,\"kind\":\"http\",\"path\":\"/healthz\",\"port\":3000,\"retries\":3,\"start_period_seconds\":5,\"timeout_seconds\":3},\"image_digest_hex\":\"87ebc0f19e05e181dc22921cf7dbcf9f30e348d432da95fd36aea5ef8044a960\",\"image_repository\":\"registry.permanu.internal/acme/web\",\"mounts\":[],\"network\":{\"aliases\":[],\"mode\":\"project\"},\"placement\":{\"server_ids\":[\"01a0cdb5-3500-70a1-8000-000000000001\"]},\"ports\":[{\"container_port\":3000,\"protocol\":\"tcp\",\"public\":true}],\"privileged\":false,\"replicas\":2,\"resources\":{\"cpu_millis\":1000,\"memory_bytes\":536870912,\"pids_limit\":512},\"service_id\":\"01a0cdb5-3500-70c1-8000-000000000001\",\"user\":\"1000:1000\",\"version\":1,\"working_dir\":\"/app\"}"
+      ],
+      "submitter": "agent_webhook",
+      "mode": "test",
+      "expect": "E_RULE_EVIDENCE"
+    },
+    {
+      "name": "rule_spec_drift",
+      "input": "{\"plan\": {\"version\": 1, \"id\": \"01a0cdb5-3500-7001-8000-000000000046\", \"project_id\": \"01a0cdb5-3500-70b1-8000-000000000001\", \"environment\": \"production\", \"service_ids\": [\"01a0cdb5-3500-70c1-8000-000000000001\"], \"targets\": [\"01a0cdb5-3500-70a1-8000-000000000001\"], \"actions\": [{\"kind\": \"deploy\", \"params\": {\"service_id\": \"01a0cdb5-3500-70c1-8000-000000000001\", \"commit_sha\": \"4f2a9c1e8b7d6a5f4e3d2c1b0a9f8e7d6c5b4a39\", \"spec_digest_hex\": \"c0701db418f42ebafe530ca551cb077a364093f7cd1644fac1e3f9afe62ffedc\"}}], \"base\": {\"force\": false, \"heads\": {\"01a0cdb5-3500-70a1-8000-000000000001\": \"4a98af3eeae054bf7585746ce20fa5907ec9c079ee1b049a7d01146d1c92ebfb\"}}, \"created_at\": \"2026-09-23T10:00:00Z\", \"expires_at\": \"2026-09-23T10:10:00Z\", \"nonce\": \"nFLLf3hORS6KItoIxBMAlg\", \"author\": {\"kind\": \"rule\", \"agent_session_id\": null}, \"invocation\": {\"rule_id\": \"01a0cdb5-3500-70f1-8000-000000000001\", \"rule_digest_hex\": \"42931b7b326d2bf54bf2e038076808f13fda19a46e9da1af363536a59ff00e90\", \"trigger\": \"git.push\", \"evidence\": {\"provider\": \"github\", \"repo\": \"github.com/acme/web\", \"ref\": \"refs/heads/main\", \"commit_sha\": \"4f2a9c1e8b7d6a5f4e3d2c1b0a9f8e7d6c5b4a39\", \"commit_time\": \"2026-09-23T09:59:30Z\", \"delivery_id\": \"gh-delivery-1\", \"body_digest_hex\": \"50589ee7eeb3e7adedddd36ea89e9350aaddc30bdf3574ecda5194e845594cd6\", \"received_at\": \"2026-09-23T09:59:58Z\"}}}, \"signatures\": []}",
+      "specs": [
+        "{\"cap_add\":[\"NET_BIND_SERVICE\"],\"command\":[\"node\",\"server.js\"],\"entrypoint\":null,\"env\":{\"DATABASE_URL\":{\"kind\":\"secret\",\"ref\":\"DATABASE_URL\"},\"NODE_ENV\":{\"kind\":\"plain\",\"ref\":null},\"REDIS_URL\":{\"kind\":\"reference\",\"ref\":\"01a0cdb5-3500-70d1-8000-000000000001.REDIS_URL\"}},\"healthcheck\":{\"command\":null,\"interval_seconds\":10,\"kind\":\"http\",\"path\":\"/healthz\",\"port\":3000,\"retries\":3,\"start_period_seconds\":5,\"timeout_seconds\":3},\"image_digest_hex\":\"87ebc0f19e05e181dc22921cf7dbcf9f30e348d432da95fd36aea5ef8044a960\",\"image_repository\":\"registry.permanu.internal/acme/web\",\"mounts\":[],\"network\":{\"aliases\":[],\"mode\":\"project\"},\"placement\":{\"server_ids\":[\"01a0cdb5-3500-70a1-8000-000000000001\"]},\"ports\":[{\"container_port\":3000,\"protocol\":\"tcp\",\"public\":true}],\"privileged\":false,\"replicas\":2,\"resources\":{\"cpu_millis\":1000,\"memory_bytes\":536870912,\"pids_limit\":512},\"service_id\":\"01a0cdb5-3500-70c1-8000-000000000001\",\"user\":\"1000:1000\",\"version\":1,\"working_dir\":\"/app\"}"
+      ],
+      "submitter": "agent_webhook",
+      "mode": "test",
+      "expect": "E_RULE_SPEC"
+    },
+    {
+      "name": "rule_image_not_agent_build",
+      "input": "{\"plan\": {\"version\": 1, \"id\": \"01a0cdb5-3500-7001-8000-000000000047\", \"project_id\": \"01a0cdb5-3500-70b1-8000-000000000001\", \"environment\": \"production\", \"service_ids\": [\"01a0cdb5-3500-70c1-8000-000000000001\"], \"targets\": [\"01a0cdb5-3500-70a1-8000-000000000001\"], \"actions\": [{\"kind\": \"deploy\", \"params\": {\"service_id\": \"01a0cdb5-3500-70c1-8000-000000000001\", \"commit_sha\": \"4f2a9c1e8b7d6a5f4e3d2c1b0a9f8e7d6c5b4a39\", \"spec_digest_hex\": \"8437a49f3d8b324cc4b288cfe21571da7464b392a3df8fda371c9ba22607a740\"}}], \"base\": {\"force\": false, \"heads\": {\"01a0cdb5-3500-70a1-8000-000000000001\": \"4a98af3eeae054bf7585746ce20fa5907ec9c079ee1b049a7d01146d1c92ebfb\"}}, \"created_at\": \"2026-09-23T10:00:00Z\", \"expires_at\": \"2026-09-23T10:10:00Z\", \"nonce\": \"7msk0NUItZJvDOLb2Q8XVA\", \"author\": {\"kind\": \"rule\", \"agent_session_id\": null}, \"invocation\": {\"rule_id\": \"01a0cdb5-3500-70f1-8000-000000000001\", \"rule_digest_hex\": \"42931b7b326d2bf54bf2e038076808f13fda19a46e9da1af363536a59ff00e90\", \"trigger\": \"git.push\", \"evidence\": {\"provider\": \"github\", \"repo\": \"github.com/acme/web\", \"ref\": \"refs/heads/main\", \"commit_sha\": \"4f2a9c1e8b7d6a5f4e3d2c1b0a9f8e7d6c5b4a39\", \"commit_time\": \"2026-09-23T09:59:30Z\", \"delivery_id\": \"gh-delivery-1\", \"body_digest_hex\": \"50589ee7eeb3e7adedddd36ea89e9350aaddc30bdf3574ecda5194e845594cd6\", \"received_at\": \"2026-09-23T09:59:58Z\"}}}, \"signatures\": []}",
+      "specs": [
+        "{\"cap_add\":[],\"command\":[\"node\",\"server.js\"],\"entrypoint\":null,\"env\":{\"DATABASE_URL\":{\"kind\":\"secret\",\"ref\":\"DATABASE_URL\"},\"NODE_ENV\":{\"kind\":\"plain\",\"ref\":null},\"REDIS_URL\":{\"kind\":\"reference\",\"ref\":\"01a0cdb5-3500-70d1-8000-000000000001.REDIS_URL\"}},\"healthcheck\":{\"command\":null,\"interval_seconds\":10,\"kind\":\"http\",\"path\":\"/healthz\",\"port\":3000,\"retries\":3,\"start_period_seconds\":5,\"timeout_seconds\":3},\"image_digest_hex\":\"fb3801954dcc60ec98d4ccef340d3321e93836f4ba9ef6292a8e724c952cd0a8\",\"image_repository\":\"registry.permanu.internal/acme/web\",\"mounts\":[],\"network\":{\"aliases\":[],\"mode\":\"project\"},\"placement\":{\"server_ids\":[\"01a0cdb5-3500-70a1-8000-000000000001\"]},\"ports\":[{\"container_port\":3000,\"protocol\":\"tcp\",\"public\":true}],\"privileged\":false,\"replicas\":2,\"resources\":{\"cpu_millis\":1000,\"memory_bytes\":536870912,\"pids_limit\":512},\"service_id\":\"01a0cdb5-3500-70c1-8000-000000000001\",\"user\":\"1000:1000\",\"version\":1,\"working_dir\":\"/app\"}"
+      ],
+      "submitter": "agent_webhook",
+      "mode": "test",
+      "expect": "E_RULE_SPEC"
+    },
+    {
+      "name": "rule_with_signature",
+      "input": "{\"plan\": {\"version\": 1, \"id\": \"01a0cdb5-3500-7001-8000-00000000002c\", \"project_id\": \"01a0cdb5-3500-70b1-8000-000000000001\", \"environment\": \"production\", \"service_ids\": [\"01a0cdb5-3500-70c1-8000-000000000001\"], \"targets\": [\"01a0cdb5-3500-70a1-8000-000000000001\"], \"actions\": [{\"kind\": \"deploy\", \"params\": {\"service_id\": \"01a0cdb5-3500-70c1-8000-000000000001\", \"commit_sha\": \"4f2a9c1e8b7d6a5f4e3d2c1b0a9f8e7d6c5b4a39\", \"spec_digest_hex\": \"f9e2f5ba422e79750428675b3191f942f6d85747981184a232a08b369e4da410\"}}], \"base\": {\"force\": false, \"heads\": {\"01a0cdb5-3500-70a1-8000-000000000001\": \"4a98af3eeae054bf7585746ce20fa5907ec9c079ee1b049a7d01146d1c92ebfb\"}}, \"created_at\": \"2026-09-23T10:00:00Z\", \"expires_at\": \"2026-09-23T10:10:00Z\", \"nonce\": \"tTJptHXGSyXxLGpFeQPYbQ\", \"author\": {\"kind\": \"rule\", \"agent_session_id\": null}, \"invocation\": {\"rule_id\": \"01a0cdb5-3500-70f1-8000-000000000001\", \"rule_digest_hex\": \"42931b7b326d2bf54bf2e038076808f13fda19a46e9da1af363536a59ff00e90\", \"trigger\": \"git.push\", \"evidence\": {\"provider\": \"github\", \"repo\": \"github.com/acme/web\", \"ref\": \"refs/heads/main\", \"commit_sha\": \"4f2a9c1e8b7d6a5f4e3d2c1b0a9f8e7d6c5b4a39\", \"commit_time\": \"2026-09-23T09:59:30Z\", \"delivery_id\": \"gh-delivery-1\", \"body_digest_hex\": \"50589ee7eeb3e7adedddd36ea89e9350aaddc30bdf3574ecda5194e845594cd6\", \"received_at\": \"2026-09-23T09:59:58Z\"}}}, \"signatures\": [{\"key_id\": \"dYLNItf797wK7n5moGt2cw\", \"alg\": \"ES256-raw\", \"sig\": \"nPYEut53z4QIhZ7UEiIlcYSdrUhFbXK-Qrq7T0v8_8OOnrLDVFKfgKVd5R_Ccxl-TJMtocD5BAlu0xZl9z0CyA\", \"signed_at\": \"2026-09-23T10:00:05Z\"}]}",
+      "specs": [
+        "{\"cap_add\":[],\"command\":[\"node\",\"server.js\"],\"entrypoint\":null,\"env\":{\"DATABASE_URL\":{\"kind\":\"secret\",\"ref\":\"DATABASE_URL\"},\"NODE_ENV\":{\"kind\":\"plain\",\"ref\":null},\"REDIS_URL\":{\"kind\":\"reference\",\"ref\":\"01a0cdb5-3500-70d1-8000-000000000001.REDIS_URL\"}},\"healthcheck\":{\"command\":null,\"interval_seconds\":10,\"kind\":\"http\",\"path\":\"/healthz\",\"port\":3000,\"retries\":3,\"start_period_seconds\":5,\"timeout_seconds\":3},\"image_digest_hex\":\"87ebc0f19e05e181dc22921cf7dbcf9f30e348d432da95fd36aea5ef8044a960\",\"image_repository\":\"registry.permanu.internal/acme/web\",\"mounts\":[],\"network\":{\"aliases\":[],\"mode\":\"project\"},\"placement\":{\"server_ids\":[\"01a0cdb5-3500-70a1-8000-000000000001\"]},\"ports\":[{\"container_port\":3000,\"protocol\":\"tcp\",\"public\":true}],\"privileged\":false,\"replicas\":2,\"resources\":{\"cpu_millis\":1000,\"memory_bytes\":536870912,\"pids_limit\":512},\"service_id\":\"01a0cdb5-3500-70c1-8000-000000000001\",\"user\":\"1000:1000\",\"version\":1,\"working_dir\":\"/app\"}"
+      ],
+      "submitter": "agent_webhook",
+      "mode": "test",
+      "expect": "E_AUTHOR"
+    },
+    {
+      "name": "ok_ci_deploy",
+      "input": "{\"plan\": {\"version\": 1, \"id\": \"01a0cdb5-3500-7001-8000-00000000002e\", \"project_id\": \"01a0cdb5-3500-70b1-8000-000000000001\", \"environment\": \"production\", \"service_ids\": [\"01a0cdb5-3500-70c1-8000-000000000001\"], \"targets\": [\"01a0cdb5-3500-70a1-8000-000000000001\"], \"actions\": [{\"kind\": \"deploy\", \"params\": {\"service_id\": \"01a0cdb5-3500-70c1-8000-000000000001\", \"commit_sha\": \"4f2a9c1e8b7d6a5f4e3d2c1b0a9f8e7d6c5b4a39\", \"spec_digest_hex\": \"f9e2f5ba422e79750428675b3191f942f6d85747981184a232a08b369e4da410\"}}], \"base\": {\"force\": false, \"heads\": {\"01a0cdb5-3500-70a1-8000-000000000001\": \"4a98af3eeae054bf7585746ce20fa5907ec9c079ee1b049a7d01146d1c92ebfb\"}}, \"created_at\": \"2026-09-23T10:00:00Z\", \"expires_at\": \"2026-09-23T10:10:00Z\", \"nonce\": \"z32K7y6O_LaLvlLrNfZPvg\", \"author\": {\"kind\": \"user\", \"agent_session_id\": null}, \"invocation\": null}, \"signatures\": [{\"key_id\": \"TTnId5ZJWi6UIgsNoJGjLA\", \"alg\": \"ES256-raw\", \"sig\": \"KOANMZ7Wuv4zQN-z-2Er5u_pfVxDhU_ltAWPaonZY0G8gSypklflCLDepjipqBP5T1FnoomnlTADSKY9cHDDqg\", \"signed_at\": \"2026-09-23T10:00:05Z\"}]}",
+      "specs": [
+        "{\"cap_add\":[],\"command\":[\"node\",\"server.js\"],\"entrypoint\":null,\"env\":{\"DATABASE_URL\":{\"kind\":\"secret\",\"ref\":\"DATABASE_URL\"},\"NODE_ENV\":{\"kind\":\"plain\",\"ref\":null},\"REDIS_URL\":{\"kind\":\"reference\",\"ref\":\"01a0cdb5-3500-70d1-8000-000000000001.REDIS_URL\"}},\"healthcheck\":{\"command\":null,\"interval_seconds\":10,\"kind\":\"http\",\"path\":\"/healthz\",\"port\":3000,\"retries\":3,\"start_period_seconds\":5,\"timeout_seconds\":3},\"image_digest_hex\":\"87ebc0f19e05e181dc22921cf7dbcf9f30e348d432da95fd36aea5ef8044a960\",\"image_repository\":\"registry.permanu.internal/acme/web\",\"mounts\":[],\"network\":{\"aliases\":[],\"mode\":\"project\"},\"placement\":{\"server_ids\":[\"01a0cdb5-3500-70a1-8000-000000000001\"]},\"ports\":[{\"container_port\":3000,\"protocol\":\"tcp\",\"public\":true}],\"privileged\":false,\"replicas\":2,\"resources\":{\"cpu_millis\":1000,\"memory_bytes\":536870912,\"pids_limit\":512},\"service_id\":\"01a0cdb5-3500-70c1-8000-000000000001\",\"user\":\"1000:1000\",\"version\":1,\"working_dir\":\"/app\"}"
+      ],
+      "submitter": "client",
+      "mode": "test",
+      "expect": "OK"
+    },
+    {
+      "name": "ci_scale",
+      "input": "{\"plan\": {\"version\": 1, \"id\": \"01a0cdb5-3500-7001-8000-00000000002f\", \"project_id\": \"01a0cdb5-3500-70b1-8000-000000000001\", \"environment\": \"production\", \"service_ids\": [\"01a0cdb5-3500-70c1-8000-000000000001\"], \"targets\": [\"01a0cdb5-3500-70a1-8000-000000000001\"], \"actions\": [{\"kind\": \"scale\", \"params\": {\"service_id\": \"01a0cdb5-3500-70c1-8000-000000000001\", \"replicas\": 3, \"spec_digest_hex\": \"67c5540d7e8514b2493120e24934e0556094cbe234a8c9b99a14b92c62fe377e\"}}], \"base\": {\"force\": false, \"heads\": {\"01a0cdb5-3500-70a1-8000-000000000001\": \"4a98af3eeae054bf7585746ce20fa5907ec9c079ee1b049a7d01146d1c92ebfb\"}}, \"created_at\": \"2026-09-23T10:00:00Z\", \"expires_at\": \"2026-09-23T10:10:00Z\", \"nonce\": \"qtJmBrYe1Tw4anHPionE6A\", \"author\": {\"kind\": \"user\", \"agent_session_id\": null}, \"invocation\": null}, \"signatures\": [{\"key_id\": \"TTnId5ZJWi6UIgsNoJGjLA\", \"alg\": \"ES256-raw\", \"sig\": \"21_z5Ew8mPKcpGun_iD81FFJjad5k-MOnuKKP3V9_G5Kxo0RJFwt9-wJ61KGzSQtidHBqeG32UxNgKyDlsMHTQ\", \"signed_at\": \"2026-09-23T10:00:05Z\"}]}",
+      "specs": [
+        "{\"cap_add\":[],\"command\":[\"node\",\"server.js\"],\"entrypoint\":null,\"env\":{\"DATABASE_URL\":{\"kind\":\"secret\",\"ref\":\"DATABASE_URL\"},\"NODE_ENV\":{\"kind\":\"plain\",\"ref\":null},\"REDIS_URL\":{\"kind\":\"reference\",\"ref\":\"01a0cdb5-3500-70d1-8000-000000000001.REDIS_URL\"}},\"healthcheck\":{\"command\":null,\"interval_seconds\":10,\"kind\":\"http\",\"path\":\"/healthz\",\"port\":3000,\"retries\":3,\"start_period_seconds\":5,\"timeout_seconds\":3},\"image_digest_hex\":\"97db6c9091eee82a42e8b2bea76caa45687c1fb40a760a84c71500d520c07987\",\"image_repository\":\"registry.permanu.internal/acme/web\",\"mounts\":[],\"network\":{\"aliases\":[],\"mode\":\"project\"},\"placement\":{\"server_ids\":[\"01a0cdb5-3500-70a1-8000-000000000001\"]},\"ports\":[{\"container_port\":3000,\"protocol\":\"tcp\",\"public\":true}],\"privileged\":false,\"replicas\":3,\"resources\":{\"cpu_millis\":1000,\"memory_bytes\":536870912,\"pids_limit\":512},\"service_id\":\"01a0cdb5-3500-70c1-8000-000000000001\",\"user\":\"1000:1000\",\"version\":1,\"working_dir\":\"/app\"}"
+      ],
+      "submitter": "client",
+      "mode": "test",
+      "expect": "E_KIND_FORBIDDEN"
+    },
+    {
+      "name": "ci_out_of_project_scope",
+      "input": "{\"plan\": {\"version\": 1, \"id\": \"01a0cdb5-3500-7001-8000-000000000048\", \"project_id\": \"01a0cdb5-3500-70b1-8000-000000000002\", \"environment\": \"production\", \"service_ids\": [\"01a0cdb5-3500-70c1-8000-000000000002\"], \"targets\": [\"01a0cdb5-3500-70a1-8000-000000000001\"], \"actions\": [{\"kind\": \"deploy\", \"params\": {\"service_id\": \"01a0cdb5-3500-70c1-8000-000000000002\", \"commit_sha\": \"4f2a9c1e8b7d6a5f4e3d2c1b0a9f8e7d6c5b4a39\", \"spec_digest_hex\": \"3ff42e7e0dcafe8e2d381e138a0a70dc1786c5aa8b7bb92bb822f49ff586825b\"}}], \"base\": {\"force\": false, \"heads\": {\"01a0cdb5-3500-70a1-8000-000000000001\": \"0000000000000000000000000000000000000000000000000000000000000000\"}}, \"created_at\": \"2026-09-23T10:00:00Z\", \"expires_at\": \"2026-09-23T10:10:00Z\", \"nonce\": \"4obQMC4HWPs8Oo3T__T81g\", \"author\": {\"kind\": \"user\", \"agent_session_id\": null}, \"invocation\": null}, \"signatures\": [{\"key_id\": \"TTnId5ZJWi6UIgsNoJGjLA\", \"alg\": \"ES256-raw\", \"sig\": \"6V481CFMqxOwKw891dFuWOfu-fCyiM38tast5t6W0ngProHqUwt4mZgZInvWSXl87wgyd9na79yn23rww_9wyg\", \"signed_at\": \"2026-09-23T10:00:05Z\"}]}",
+      "specs": [
+        "{\"cap_add\":[],\"command\":[\"node\",\"server.js\"],\"entrypoint\":null,\"env\":{\"DATABASE_URL\":{\"kind\":\"secret\",\"ref\":\"DATABASE_URL\"},\"NODE_ENV\":{\"kind\":\"plain\",\"ref\":null},\"REDIS_URL\":{\"kind\":\"reference\",\"ref\":\"01a0cdb5-3500-70d1-8000-000000000001.REDIS_URL\"}},\"healthcheck\":{\"command\":null,\"interval_seconds\":10,\"kind\":\"http\",\"path\":\"/healthz\",\"port\":3000,\"retries\":3,\"start_period_seconds\":5,\"timeout_seconds\":3},\"image_digest_hex\":\"bce4b6dcd0167cec448af062d738c18a756c75f98c1a370c675aa450f8b44b16\",\"image_repository\":\"registry.permanu.internal/acme/web\",\"mounts\":[],\"network\":{\"aliases\":[],\"mode\":\"project\"},\"placement\":{\"server_ids\":[\"01a0cdb5-3500-70a1-8000-000000000001\"]},\"ports\":[{\"container_port\":3000,\"protocol\":\"tcp\",\"public\":true}],\"privileged\":false,\"replicas\":2,\"resources\":{\"cpu_millis\":1000,\"memory_bytes\":536870912,\"pids_limit\":512},\"service_id\":\"01a0cdb5-3500-70c1-8000-000000000002\",\"user\":\"1000:1000\",\"version\":1,\"working_dir\":\"/app\"}"
+      ],
+      "submitter": "client",
+      "mode": "test",
+      "expect": "E_KEY_SCOPE"
+    },
+    {
+      "name": "ci_service_delete",
+      "input": "{\"plan\": {\"version\": 1, \"id\": \"01a0cdb5-3500-7001-8000-000000000030\", \"project_id\": \"01a0cdb5-3500-70b1-8000-000000000001\", \"environment\": \"production\", \"service_ids\": [\"01a0cdb5-3500-70c1-8000-000000000001\"], \"targets\": [\"01a0cdb5-3500-70a1-8000-000000000001\"], \"actions\": [{\"kind\": \"service.delete\", \"params\": {\"service_id\": \"01a0cdb5-3500-70c1-8000-000000000001\"}}], \"base\": {\"force\": false, \"heads\": {\"01a0cdb5-3500-70a1-8000-000000000001\": \"4a98af3eeae054bf7585746ce20fa5907ec9c079ee1b049a7d01146d1c92ebfb\"}}, \"created_at\": \"2026-09-23T10:00:00Z\", \"expires_at\": \"2026-09-23T10:10:00Z\", \"nonce\": \"Kt4mkV7h6g0Kmr4TpL0Iag\", \"author\": {\"kind\": \"user\", \"agent_session_id\": null}, \"invocation\": null}, \"signatures\": [{\"key_id\": \"TTnId5ZJWi6UIgsNoJGjLA\", \"alg\": \"ES256-raw\", \"sig\": \"oN-MrRm5IvexxSptsvlCMW_XyWK_hYCE-ziggQSxohBkNzrtnzh0pmj5JC42XXHyZrwcvUN4z0TAPmbM7ee5CQ\", \"signed_at\": \"2026-09-23T10:00:05Z\"}]}",
+      "specs": [],
+      "submitter": "client",
+      "mode": "test",
+      "expect": "E_TOUCH_ID_REQUIRED"
+    },
+    {
+      "name": "deployer_service_delete",
+      "input": "{\"plan\": {\"version\": 1, \"id\": \"01a0cdb5-3500-7001-8000-000000000031\", \"project_id\": \"01a0cdb5-3500-70b1-8000-000000000001\", \"environment\": \"production\", \"service_ids\": [\"01a0cdb5-3500-70c1-8000-000000000001\"], \"targets\": [\"01a0cdb5-3500-70a1-8000-000000000001\"], \"actions\": [{\"kind\": \"service.delete\", \"params\": {\"service_id\": \"01a0cdb5-3500-70c1-8000-000000000001\"}}], \"base\": {\"force\": false, \"heads\": {\"01a0cdb5-3500-70a1-8000-000000000001\": \"4a98af3eeae054bf7585746ce20fa5907ec9c079ee1b049a7d01146d1c92ebfb\"}}, \"created_at\": \"2026-09-23T10:00:00Z\", \"expires_at\": \"2026-09-23T10:10:00Z\", \"nonce\": \"E6sipgdKOcjYFgNaRt0FJQ\", \"author\": {\"kind\": \"user\", \"agent_session_id\": null}, \"invocation\": null}, \"signatures\": [{\"key_id\": \"Hph9XRkn48eogeehAgeI9A\", \"alg\": \"ES256-raw\", \"sig\": \"4X8YN3WSVo7EypNhZ7POAYTEWCEZa08e-ndn3SAYgtw9en0cilteTy1Nbjcb7UKPf2inIOCadWnfqvcmpDOUMA\", \"signed_at\": \"2026-09-23T10:00:05Z\"}]}",
+      "specs": [],
+      "submitter": "client",
+      "mode": "test",
+      "expect": "E_TOUCH_ID_REQUIRED"
+    },
+    {
+      "name": "ok_owner_service_delete",
+      "input": "{\"plan\": {\"version\": 1, \"id\": \"01a0cdb5-3500-7001-8000-000000000032\", \"project_id\": \"01a0cdb5-3500-70b1-8000-000000000001\", \"environment\": \"production\", \"service_ids\": [\"01a0cdb5-3500-70c1-8000-000000000001\"], \"targets\": [\"01a0cdb5-3500-70a1-8000-000000000001\"], \"actions\": [{\"kind\": \"service.delete\", \"params\": {\"service_id\": \"01a0cdb5-3500-70c1-8000-000000000001\"}}], \"base\": {\"force\": false, \"heads\": {\"01a0cdb5-3500-70a1-8000-000000000001\": \"4a98af3eeae054bf7585746ce20fa5907ec9c079ee1b049a7d01146d1c92ebfb\"}}, \"created_at\": \"2026-09-23T10:00:00Z\", \"expires_at\": \"2026-09-23T10:10:00Z\", \"nonce\": \"z6fq0Jz8rTXwQFbbO1F3lw\", \"author\": {\"kind\": \"user\", \"agent_session_id\": null}, \"invocation\": null}, \"signatures\": [{\"key_id\": \"dYLNItf797wK7n5moGt2cw\", \"alg\": \"ES256-raw\", \"sig\": \"-xfH-Yzbh8GKwW71prBQrtrqZ8kSD3HGpJzHmA8H2NqWKOnbsD1ZttDiuLB0nGWkXzUebWCNqNEGjbVG1nV1bw\", \"signed_at\": \"2026-09-23T10:00:05Z\"}]}",
+      "specs": [],
+      "submitter": "client",
+      "mode": "test",
+      "expect": "OK"
+    },
+    {
+      "name": "deployer_backup_delete",
+      "input": "{\"plan\": {\"version\": 1, \"id\": \"01a0cdb5-3500-7001-8000-000000000033\", \"project_id\": \"01a0cdb5-3500-70b1-8000-000000000001\", \"environment\": \"production\", \"service_ids\": [], \"targets\": [\"01a0cdb5-3500-70a1-8000-000000000001\"], \"actions\": [{\"kind\": \"backup.delete\", \"params\": {\"resource_id\": \"01a0cdb5-3500-70d1-8000-000000000001\", \"backup_id\": \"01a0cdb5-3500-70d1-8000-000000000002\"}}], \"base\": {\"force\": false, \"heads\": {\"01a0cdb5-3500-70a1-8000-000000000001\": \"4a98af3eeae054bf7585746ce20fa5907ec9c079ee1b049a7d01146d1c92ebfb\"}}, \"created_at\": \"2026-09-23T10:00:00Z\", \"expires_at\": \"2026-09-23T10:10:00Z\", \"nonce\": \"Yx9BhjN256U5ntqwPlLgKQ\", \"author\": {\"kind\": \"user\", \"agent_session_id\": null}, \"invocation\": null}, \"signatures\": [{\"key_id\": \"Hph9XRkn48eogeehAgeI9A\", \"alg\": \"ES256-raw\", \"sig\": \"DF9s8vHGUVI9hA6_OHkPU9DBjKo1_hFSkpvb499enCO70fdiZcf_8W9W9t5rvVU6upUqDjf6ul_3tTP9Q8rW2A\", \"signed_at\": \"2026-09-23T10:00:05Z\"}]}",
+      "specs": [],
+      "submitter": "client",
+      "mode": "test",
+      "expect": "E_TOUCH_ID_REQUIRED"
+    },
+    {
+      "name": "ok_deployer_alert_rule_create",
+      "input": "{\"plan\": {\"version\": 1, \"id\": \"01a0cdb5-3500-7001-8000-000000000034\", \"project_id\": null, \"environment\": null, \"service_ids\": [], \"targets\": [\"01a0cdb5-3500-70a1-8000-000000000001\"], \"actions\": [{\"kind\": \"alert.rule.create\", \"params\": {\"alert_rule_id\": \"01a0cdb5-3500-70f1-8000-000000000004\", \"name\": \"web p95 over 800 ms\", \"spec\": \"{\\\"severity\\\":\\\"ALERT_SEVERITY_WARNING\\\",\\\"metric\\\":{\\\"metric\\\":\\\"http_request_duration_p95_ms\\\",\\\"window\\\":\\\"300s\\\",\\\"op\\\":\\\"COMPARISON_OP_GT\\\",\\\"threshold\\\":800,\\\"forDuration\\\":\\\"600s\\\"},\\\"channelIds\\\":[],\\\"notifyOnResolve\\\":true,\\\"enabled\\\":true}\"}}], \"base\": {\"force\": false, \"heads\": {\"01a0cdb5-3500-70a1-8000-000000000001\": \"0000000000000000000000000000000000000000000000000000000000000000\"}}, \"created_at\": \"2026-09-23T10:00:00Z\", \"expires_at\": \"2026-09-23T10:10:00Z\", \"nonce\": \"qyPKKU_8zkVtkOTRfmfm-w\", \"author\": {\"kind\": \"user\", \"agent_session_id\": null}, \"invocation\": null}, \"signatures\": [{\"key_id\": \"Hph9XRkn48eogeehAgeI9A\", \"alg\": \"ES256-raw\", \"sig\": \"xgzbhOSsqXs_LfiVk0EgPe9R3DoIEgH10UBxwOPQ-yynmE1pY55Ko9_Js2XI0FpFAxmdGmNitZRKmLhR3rM1vw\", \"signed_at\": \"2026-09-23T10:00:05Z\"}]}",
+      "specs": [],
+      "submitter": "client",
+      "mode": "test",
+      "expect": "OK"
+    },
+    {
+      "name": "ci_alert_rule_create",
+      "input": "{\"plan\": {\"version\": 1, \"id\": \"01a0cdb5-3500-7001-8000-000000000049\", \"project_id\": null, \"environment\": null, \"service_ids\": [], \"targets\": [\"01a0cdb5-3500-70a1-8000-000000000001\"], \"actions\": [{\"kind\": \"alert.rule.create\", \"params\": {\"alert_rule_id\": \"01a0cdb5-3500-70f1-8000-000000000004\", \"name\": \"web p95 over 800 ms\", \"spec\": \"{\\\"severity\\\":\\\"ALERT_SEVERITY_WARNING\\\",\\\"metric\\\":{\\\"metric\\\":\\\"http_request_duration_p95_ms\\\",\\\"window\\\":\\\"300s\\\",\\\"op\\\":\\\"COMPARISON_OP_GT\\\",\\\"threshold\\\":800,\\\"forDuration\\\":\\\"600s\\\"},\\\"channelIds\\\":[],\\\"notifyOnResolve\\\":true,\\\"enabled\\\":true}\"}}], \"base\": {\"force\": false, \"heads\": {\"01a0cdb5-3500-70a1-8000-000000000001\": \"0000000000000000000000000000000000000000000000000000000000000000\"}}, \"created_at\": \"2026-09-23T10:00:00Z\", \"expires_at\": \"2026-09-23T10:10:00Z\", \"nonce\": \"QTUBkDgcVY8W5AgtUpEAXg\", \"author\": {\"kind\": \"user\", \"agent_session_id\": null}, \"invocation\": null}, \"signatures\": [{\"key_id\": \"TTnId5ZJWi6UIgsNoJGjLA\", \"alg\": \"ES256-raw\", \"sig\": \"itAHO68gGa3z7WsG6OwqSCejDuoXB9nT0eZv5FXWeZC2NLbiKlxFYFOYAj2ZoquGK7mTGE04R6lA5fV8U8HFvg\", \"signed_at\": \"2026-09-23T10:00:05Z\"}]}",
+      "specs": [],
+      "submitter": "client",
+      "mode": "test",
+      "expect": "E_KIND_FORBIDDEN"
+    },
+    {
+      "name": "ok_ci_operation_cancel",
+      "input": "{\"plan\": {\"version\": 1, \"id\": \"01a0cdb5-3500-7001-8000-00000000004a\", \"project_id\": \"01a0cdb5-3500-70b1-8000-000000000001\", \"environment\": \"production\", \"service_ids\": [], \"targets\": [\"01a0cdb5-3500-70a1-8000-000000000001\"], \"actions\": [{\"kind\": \"operation.cancel\", \"params\": {\"plan_id\": \"01a0cdb5-3500-7001-8000-00000000002e\", \"plan_digest_hex\": \"4e0741d54827f7cb1424da02b0cb438151bfc5382b2c1e78716727733f82845f\"}}], \"base\": {\"force\": false, \"heads\": {\"01a0cdb5-3500-70a1-8000-000000000001\": \"4a98af3eeae054bf7585746ce20fa5907ec9c079ee1b049a7d01146d1c92ebfb\"}}, \"created_at\": \"2026-09-23T10:00:00Z\", \"expires_at\": \"2026-09-23T10:10:00Z\", \"nonce\": \"H9XumhUOPjwVzwuHCdW1Hg\", \"author\": {\"kind\": \"user\", \"agent_session_id\": null}, \"invocation\": null}, \"signatures\": [{\"key_id\": \"TTnId5ZJWi6UIgsNoJGjLA\", \"alg\": \"ES256-raw\", \"sig\": \"pUbuTDXpNx8fkAY0Aj9VkunhnG5onqT8f5B5MYzP1MQu45HRZSnjM6EfcLFwkvz49gfnRKCcDKXbQgjeoIYG5w\", \"signed_at\": \"2026-09-23T10:00:05Z\"}]}",
+      "specs": [],
+      "submitter": "client",
+      "mode": "test",
+      "expect": "OK"
+    },
+    {
+      "name": "rule_service_delete",
+      "input": "{\"plan\": {\"version\": 1, \"id\": \"01a0cdb5-3500-7001-8000-000000000035\", \"project_id\": \"01a0cdb5-3500-70b1-8000-000000000001\", \"environment\": \"production\", \"service_ids\": [\"01a0cdb5-3500-70c1-8000-000000000001\"], \"targets\": [\"01a0cdb5-3500-70a1-8000-000000000001\"], \"actions\": [{\"kind\": \"service.delete\", \"params\": {\"service_id\": \"01a0cdb5-3500-70c1-8000-000000000001\"}}], \"base\": {\"force\": false, \"heads\": {\"01a0cdb5-3500-70a1-8000-000000000001\": \"4a98af3eeae054bf7585746ce20fa5907ec9c079ee1b049a7d01146d1c92ebfb\"}}, \"created_at\": \"2026-09-23T10:00:00Z\", \"expires_at\": \"2026-09-23T10:10:00Z\", \"nonce\": \"B-KbWPo5fb2BxjwDEfuA1Q\", \"author\": {\"kind\": \"rule\", \"agent_session_id\": null}, \"invocation\": {\"rule_id\": \"01a0cdb5-3500-70f1-8000-000000000001\", \"rule_digest_hex\": \"42931b7b326d2bf54bf2e038076808f13fda19a46e9da1af363536a59ff00e90\", \"trigger\": \"git.push\", \"evidence\": {\"provider\": \"github\", \"repo\": \"github.com/acme/web\", \"ref\": \"refs/heads/main\", \"commit_sha\": \"4f2a9c1e8b7d6a5f4e3d2c1b0a9f8e7d6c5b4a39\", \"commit_time\": \"2026-09-23T09:59:30Z\", \"delivery_id\": \"gh-delivery-1\", \"body_digest_hex\": \"50589ee7eeb3e7adedddd36ea89e9350aaddc30bdf3574ecda5194e845594cd6\", \"received_at\": \"2026-09-23T09:59:58Z\"}}}, \"signatures\": []}",
+      "specs": [],
+      "submitter": "agent_webhook",
+      "mode": "test",
+      "expect": "E_TOUCH_ID_REQUIRED"
+    }
+  ],
+  "bootstrap_cases": [
+    {
+      "name": "ok_bootstrap",
+      "server_id": "01a0cdb5-3500-70a1-8000-000000000003",
+      "host_key_digests_hex": [
+        "98bdd1c884b11e163742d27fabf7510d05ccaeb000fb4694e7a603a53351c0b8"
+      ],
+      "input": "{\"plan\": {\"version\": 1, \"id\": \"01a0cdb5-3500-7001-8000-000000000005\", \"project_id\": null, \"environment\": null, \"service_ids\": [], \"targets\": [\"01a0cdb5-3500-70a1-8000-000000000003\"], \"actions\": [{\"kind\": \"server.add\", \"params\": {\"server_id\": \"01a0cdb5-3500-70a1-8000-000000000003\", \"ssh_host_key_digest_hex\": \"98bdd1c884b11e163742d27fabf7510d05ccaeb000fb4694e7a603a53351c0b8\", \"owner_key\": {\"key_id\": \"dYLNItf797wK7n5moGt2cw\", \"alg\": \"ES256-raw\", \"spki\": \"MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAE6XWYQLf32I8syOd1sqHM4D2tbpXOK1fVZEbCbpWsmAqwTuhnKjwSKXaU8KedoSJM6fLNIf1vGqa1EEmRdCc4kw==\", \"label\": \"Arvee's MacBook Pro (TEST)\", \"role\": \"owner\", \"presence\": \"biometry\", \"scope\": null, \"added_at\": \"2026-09-23T10:00:00Z\", \"added_by\": null}}}], \"base\": {\"force\": false, \"heads\": {\"01a0cdb5-3500-70a1-8000-000000000003\": \"0000000000000000000000000000000000000000000000000000000000000000\"}}, \"created_at\": \"2026-09-23T10:00:00Z\", \"expires_at\": \"2026-09-23T10:10:00Z\", \"nonce\": \"BK37Tdk5U0z9BOsRsa5jDA\", \"author\": {\"kind\": \"user\", \"agent_session_id\": null}, \"invocation\": null}, \"signatures\": [{\"key_id\": \"dYLNItf797wK7n5moGt2cw\", \"alg\": \"ES256-raw\", \"sig\": \"fOp_GTb09b92UQSx8kMFAXEvlKHE5-5f0r0XAK7Fb-5WxwyKBZJX3GCHg9QouxhxB4mJRHpenBC5B-0Arjoe4Q\", \"signed_at\": \"2026-09-23T10:00:05Z\"}]}",
+      "expect": "OK"
+    },
+    {
+      "name": "bootstrap_signer_not_owner_key",
+      "server_id": "01a0cdb5-3500-70a1-8000-000000000003",
+      "host_key_digests_hex": [
+        "98bdd1c884b11e163742d27fabf7510d05ccaeb000fb4694e7a603a53351c0b8"
+      ],
+      "input": "{\"plan\": {\"version\": 1, \"id\": \"01a0cdb5-3500-7001-8000-000000000005\", \"project_id\": null, \"environment\": null, \"service_ids\": [], \"targets\": [\"01a0cdb5-3500-70a1-8000-000000000003\"], \"actions\": [{\"kind\": \"server.add\", \"params\": {\"server_id\": \"01a0cdb5-3500-70a1-8000-000000000003\", \"ssh_host_key_digest_hex\": \"98bdd1c884b11e163742d27fabf7510d05ccaeb000fb4694e7a603a53351c0b8\", \"owner_key\": {\"key_id\": \"dYLNItf797wK7n5moGt2cw\", \"alg\": \"ES256-raw\", \"spki\": \"MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAE6XWYQLf32I8syOd1sqHM4D2tbpXOK1fVZEbCbpWsmAqwTuhnKjwSKXaU8KedoSJM6fLNIf1vGqa1EEmRdCc4kw==\", \"label\": \"Arvee's MacBook Pro (TEST)\", \"role\": \"owner\", \"presence\": \"biometry\", \"scope\": null, \"added_at\": \"2026-09-23T10:00:00Z\", \"added_by\": null}}}], \"base\": {\"force\": false, \"heads\": {\"01a0cdb5-3500-70a1-8000-000000000003\": \"0000000000000000000000000000000000000000000000000000000000000000\"}}, \"created_at\": \"2026-09-23T10:00:00Z\", \"expires_at\": \"2026-09-23T10:10:00Z\", \"nonce\": \"BK37Tdk5U0z9BOsRsa5jDA\", \"author\": {\"kind\": \"user\", \"agent_session_id\": null}, \"invocation\": null}, \"signatures\": [{\"key_id\": \"cJWnw46mKT4S-FIYD8h8iA\", \"alg\": \"ES256-raw\", \"sig\": \"4ZgERjPw3HoOd7o0ZLB53Hre7XohjmahsnDrLpUOiAZo4KOjK5rkxESevCZRcy6xh-Oz9ysQRe2RtqzEVbTYZA\", \"signed_at\": \"2026-09-23T10:00:05Z\"}]}",
+      "expect": "E_BOOTSTRAP"
+    },
+    {
+      "name": "bootstrap_host_key_mismatch",
+      "server_id": "01a0cdb5-3500-70a1-8000-000000000003",
+      "host_key_digests_hex": [
+        "baf6e4a7294fd9e36063dcf9706c1ec0fb37bd0af0af7bf6121278206a14f7c3"
+      ],
+      "input": "{\"plan\": {\"version\": 1, \"id\": \"01a0cdb5-3500-7001-8000-000000000005\", \"project_id\": null, \"environment\": null, \"service_ids\": [], \"targets\": [\"01a0cdb5-3500-70a1-8000-000000000003\"], \"actions\": [{\"kind\": \"server.add\", \"params\": {\"server_id\": \"01a0cdb5-3500-70a1-8000-000000000003\", \"ssh_host_key_digest_hex\": \"98bdd1c884b11e163742d27fabf7510d05ccaeb000fb4694e7a603a53351c0b8\", \"owner_key\": {\"key_id\": \"dYLNItf797wK7n5moGt2cw\", \"alg\": \"ES256-raw\", \"spki\": \"MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAE6XWYQLf32I8syOd1sqHM4D2tbpXOK1fVZEbCbpWsmAqwTuhnKjwSKXaU8KedoSJM6fLNIf1vGqa1EEmRdCc4kw==\", \"label\": \"Arvee's MacBook Pro (TEST)\", \"role\": \"owner\", \"presence\": \"biometry\", \"scope\": null, \"added_at\": \"2026-09-23T10:00:00Z\", \"added_by\": null}}}], \"base\": {\"force\": false, \"heads\": {\"01a0cdb5-3500-70a1-8000-000000000003\": \"0000000000000000000000000000000000000000000000000000000000000000\"}}, \"created_at\": \"2026-09-23T10:00:00Z\", \"expires_at\": \"2026-09-23T10:10:00Z\", \"nonce\": \"BK37Tdk5U0z9BOsRsa5jDA\", \"author\": {\"kind\": \"user\", \"agent_session_id\": null}, \"invocation\": null}, \"signatures\": [{\"key_id\": \"dYLNItf797wK7n5moGt2cw\", \"alg\": \"ES256-raw\", \"sig\": \"fOp_GTb09b92UQSx8kMFAXEvlKHE5-5f0r0XAK7Fb-5WxwyKBZJX3GCHg9QouxhxB4mJRHpenBC5B-0Arjoe4Q\", \"signed_at\": \"2026-09-23T10:00:05Z\"}]}",
+      "expect": "E_BOOTSTRAP"
+    }
+  ]
+}

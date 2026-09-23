@@ -252,6 +252,17 @@ pub struct LocalConfig {
     /// tests use that.
     pub socket_group: Option<String>,
     pub trusted_keys_path: PathBuf,
+    /// signed-plan.md 6.3: the agent's admission store.
+    pub admissions_db: PathBuf,
+    /// signed-plan.md 14.5: the runner's consumed log (read-only here).
+    pub consumed_log: PathBuf,
+    /// `permanu-runner`, run as `<runner_path> rpc` for `bind_plan`.
+    pub runner_path: PathBuf,
+    /// signed-plan.md 3.2: the agent's age X25519 identity.
+    pub age_identity_path: PathBuf,
+    /// Owner and group of the store files (D-022).
+    pub store_user: String,
+    pub store_group: String,
 }
 
 pub const DEFAULT_LOCAL_SOCKET_PATH: &str = "/run/permanu/agent.sock";
@@ -270,6 +281,16 @@ impl LocalConfig {
             socket_path: PathBuf::from(socket_path),
             socket_group: Some(DEFAULT_LOCAL_SOCKET_GROUP.to_string()),
             trusted_keys_path: PathBuf::from(crate::trusted_keys::TRUSTED_KEYS_PATH),
+            admissions_db: PathBuf::from(crate::admissions::DEFAULT_ADMISSIONS_DB),
+            consumed_log: PathBuf::from("/var/lib/permanu/runner/consumed.log"),
+            runner_path: PathBuf::from(
+                lookup("PERMANU_RUNNER_PATH")
+                    .filter(|v| v.starts_with('/'))
+                    .unwrap_or_else(|| crate::local::runner::DEFAULT_RUNNER_PATH.to_string()),
+            ),
+            age_identity_path: PathBuf::from(crate::local::age_identity::DEFAULT_AGE_IDENTITY_PATH),
+            store_user: "permanu-agent".to_string(),
+            store_group: "permanu-runner".to_string(),
         }
     }
 }
@@ -313,6 +334,24 @@ mod mode_tests {
             cfg.trusted_keys_path,
             PathBuf::from("/etc/permanu/trusted-keys.json")
         );
+        assert_eq!(
+            cfg.admissions_db,
+            PathBuf::from("/var/lib/permanu/agent/admissions.db")
+        );
+        assert_eq!(
+            cfg.consumed_log,
+            PathBuf::from("/var/lib/permanu/runner/consumed.log")
+        );
+        assert_eq!(
+            cfg.runner_path,
+            PathBuf::from("/usr/local/libexec/permanu-runner")
+        );
+        assert_eq!(
+            cfg.age_identity_path,
+            PathBuf::from("/var/lib/permanu/agent/age-identity")
+        );
+        assert_eq!(cfg.store_user, "permanu-agent");
+        assert_eq!(cfg.store_group, "permanu-runner");
 
         let cfg = LocalConfig::from_lookup(|name| match name {
             "PERMANU_AGENT_SOCKET" => Some("/tmp/x.sock".to_string()),
