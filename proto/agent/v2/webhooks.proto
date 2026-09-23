@@ -24,7 +24,9 @@ import "agent/v2/common.proto";
 //
 // v2.1.0 (capability "webhooks.v1", agent-protocol.md 11): Dwaar forwards
 // POST /hooks/<project_id> to the agent's listener on 127.0.0.1:7461; the
-// runner verifies the provider HMAC (webhook_verify, the secret is sealed);
+// runner verifies the provider HMAC (webhook_verify, the secret is sealed)
+// and, from contracts v1.1.0, parses and records the verified push itself (a
+// consumed-log "delivery" line, the only evidence the runner accepts);
 // rule-backed deploys are always built on the server by rootless BuildKit as
 // user permanu-build (runner op build_image, D-050). Unmatched deliveries wait
 // PENDING for the engine until they expire (7 days).
@@ -89,6 +91,10 @@ message WebhookDelivery {
   google.protobuf.Timestamp commit_time = 24;
   // v2.1.0. When a PENDING delivery becomes EXPIRED (received_at + 7 days).
   google.protobuf.Timestamp expires_at = 25;
+  // v2.1.0 (contracts v1.1.0). Environments whose PERMANU_WEBHOOK_SECRET
+  // verified the delivery (webhook_verify). A rule matches only when its
+  // environment is one of them.
+  repeated string environments = 26;
 }
 
 message ListWebhookDeliveriesRequest {
@@ -164,9 +170,11 @@ message ServerBuild {
   // v2.1.0. OCI platform built, e.g. "linux/amd64" (the server's arch).
   string platform = 15;
   string environment_id = 16;
-  // v2.1.0. Engine API DeployFailureCode "build" sub-reason when FAILED:
-  // "source_fetch", "recipe_missing", "build", "timeout", "cache_full",
-  // "buildkit_unavailable". Empty otherwise.
+  // v2.1.0. Sub-reason of a FAILED build: "source_fetch" (including a ref
+  // whose head is no longer commit_sha), "recipe_missing", "build",
+  // "timeout", "cache_full", "buildkit_unavailable", "build_queue_full".
+  // Empty otherwise. The engine copies it into Engine API
+  // Deployment.failure_detail (failure_code "build").
   string failure_reason = 17;
 }
 
@@ -174,6 +182,9 @@ message ListServerBuildsRequest {
   string project_id = 1;
   repeated ServerBuildStatus statuses = 2;
   PageRequest page = 3; // newest first
+  // v2.1.0. Builds whose started_at is in range (offline reconcile,
+  // agent-protocol.md 12.2). Unset = all.
+  TimeRange range = 4;
 }
 
 message ListServerBuildsResponse {

@@ -143,7 +143,12 @@ message BackupRun {
     TRIGGER_UNSPECIFIED = 0;
     TRIGGER_SCHEDULE = 1;
     TRIGGER_MANUAL = 2;
-    TRIGGER_PRE_CHANGE = 3; // taken automatically before a migration/restore/upgrade (v2.1.0: restore_backup's pre_restore backup)
+    // Taken automatically before a migration/restore/upgrade (v2.1.0:
+    // restore_backup's pre_restore backup). The engine derives Engine API
+    // Backup.kind from the admitted plan of operation_id (restore ->
+    // pre_restore, db.upgrade -> pre_upgrade, migrate.* -> migration;
+    // agent-protocol.md 10.2).
+    TRIGGER_PRE_CHANGE = 3;
   }
   Trigger trigger = 4;
   google.protobuf.Timestamp started_at = 5;
@@ -238,7 +243,10 @@ message GetBackupRunRequest {
 message ListRestoreVerificationsRequest {
   string policy_id = 1;
   string artifact_id = 2;
-  PageRequest page = 3;
+  PageRequest page = 3; // newest first
+  // v2.1.0. Verifications whose started_at is in range (offline reconcile,
+  // agent-protocol.md 12.2). Unset = all.
+  TimeRange range = 4;
 }
 
 message ListRestoreVerificationsResponse {

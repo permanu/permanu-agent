@@ -180,10 +180,12 @@ message AgentStatus {
   }
   Health health = 1;
   // Stable lowercase ids, sorted: "runner_unreachable", "telemetry_dropping",
-  // "telemetry_ingest_paused", "otlp_unbound", "buildkit_unavailable",
-  // "disk_pressure", "clock_unsynced", "trust_store_invalid",
-  // "release_keys_invalid", "recovery_recipient_missing",
-  // "scheduler_behind". Clients show an unknown id verbatim.
+  // "telemetry_ingest_paused", "telemetry_store_reset", "otlp_unbound",
+  // "buildkit_unavailable", "disk_pressure", "clock_unsynced",
+  // "trust_store_invalid", "release_keys_invalid",
+  // "recovery_recipient_missing", "scheduler_behind". Clients show an unknown
+  // id verbatim. Engine API AgentStatus.health / degraded_reasons carry
+  // health and this list (agent-protocol.md 12.3).
   repeated string degraded_reasons = 2;
   // True while at least one engine session is live (agent-protocol.md 12.1).
   bool engine_online = 3;
