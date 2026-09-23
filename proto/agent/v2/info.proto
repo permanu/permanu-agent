@@ -95,10 +95,12 @@ message AgentInfo {
   // v2.0.1. The age X25519 recipient ("age1...") of this server. The engine
   // seals secret.set and alert.channel values to it; the plan signs the
   // SHA-256 of the binary age ciphertext (signed-plan.md 3.2, Sealed
-  // secrets). v2.0.2 (D-027): the agent reads it from
-  // /var/lib/permanu/agent/age-recipient (root:root 0644); the identity
-  // (age-identity, root:root 0400) is created by the installer, never leaves
-  // the server, and only the runner decrypts with it.
+  // secrets). v2.0.4 (D-037): the agent reads it from
+  // /etc/permanu/age/recipient (root:root 0644; v2.0.2 and v2.0.3 used
+  // /var/lib/permanu/agent/age-recipient); the identity
+  // (/etc/permanu/age/identity, root:root 0400) is created by the installer,
+  // never overwritten, never leaves the server, and only the runner decrypts
+  // with it.
   string age_recipient = 10;
 }
 

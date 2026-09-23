@@ -137,7 +137,8 @@ message Operation {
 //   admitted, queued, bound                      - lifecycle of the plan/action
 //   prepare_release, verify_health, activate_release, rollback_release,
 //   restart_release, cleanup_candidate, cancel_execution, install_artifact,
-//   update_trusted_keys                          - the runner op being run
+//   update_agent (v2.0.4, D-040), update_trusted_keys
+//                                                - the runner op being run
 //   succeeded, failed, rolled_back, cancelled, expired
 //                                                - final step of one action
 // Clients show an unknown name as a generic step.
