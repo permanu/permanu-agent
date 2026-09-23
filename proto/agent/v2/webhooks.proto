@@ -40,7 +40,11 @@ service WebhookService {
 
 enum WebhookDeliveryStatus {
   WEBHOOK_DELIVERY_STATUS_UNSPECIFIED = 0;
-  WEBHOOK_DELIVERY_STATUS_PENDING = 1;          // queued, waiting for engine or rule
+  // Queued, waiting for engine or rule. v2.1.4 (contracts v1.1.4, D-062):
+  // when the agent admits a rule.create it re-matches every unexpired
+  // PENDING delivery of that project against the new rule, oldest first
+  // (agent-protocol.md 11.1; the 900 s evidence window still applies).
+  WEBHOOK_DELIVERY_STATUS_PENDING = 1;
   // Never set from v2.1.0: the engine tracks what it has seen with
   // ListWebhookDeliveriesRequest.after_delivery_id, and nothing claims a
   // delivery (a claim would be an unsigned server change).

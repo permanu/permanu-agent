@@ -217,6 +217,11 @@ message BackupArtifact {
   google.protobuf.Timestamp created_at = 9;
   // When retention will delete it; unset while a keep_* rule holds it.
   google.protobuf.Timestamp expires_at = 10;
+  // The latest verification of this artifact. v2.1.4 (contracts v1.1.4,
+  // D-062): set from the runner's backup_verify run_result line of this
+  // backup_id for a manual (plan-bound backup.verify, TRIGGER_MANUAL) run
+  // exactly as for a scheduled one; the engine maps PASSED / FAILED to
+  // Backup.status verified / verify_failed.
   RestoreVerificationStatus last_verification = 11;
 }
 

@@ -98,6 +98,9 @@ message HelloResponse {
   // capability: BACKUP_RUN_STATUS_MISSED, ServerBuild.runner_build_id and
   // WebhookQueueStatus.webhook_host are additive, and an engine shows an
   // unknown enum value as a generic status.
+  // v2.1.4 (contracts v1.1.4, D-062; Hello still negotiates "2.1") changes
+  // comments only: re-matched PENDING deliveries, RATE_LIMITED plan retries
+  // and BackupArtifact.last_verification from manual verifies.
   repeated string capabilities = 3;
   ServerFacts server = 4;
   TrustedKeysSummary trusted_keys = 5;

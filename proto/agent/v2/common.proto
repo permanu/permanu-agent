@@ -161,7 +161,11 @@ enum ErrorReason {
   ERROR_REASON_CURSOR_EXPIRED = 12;        // OUT_OF_RANGE
   ERROR_REASON_RESUME_TOKEN_EXPIRED = 13;  // OUT_OF_RANGE
   ERROR_REASON_LIMIT_EXCEEDED = 14;        // RESOURCE_EXHAUSTED
-  ERROR_REASON_RATE_LIMITED = 15;          // RESOURCE_EXHAUSTED
+  // RESOURCE_EXHAUSTED. v2.1.4 (contracts v1.1.4, D-062): on SubmitSignedPlan
+  // nothing was admitted; the engine keeps the approved plan and re-submits
+  // the same envelope with backoff until its expires_at (retryable, never a
+  // plan failure).
+  ERROR_REASON_RATE_LIMITED = 15;
   ERROR_REASON_CAPABILITY_MISSING = 16;    // UNIMPLEMENTED
   ERROR_REASON_CONFLICT = 17;              // ABORTED
   ERROR_REASON_CLOCK_SKEW = 18;            // FAILED_PRECONDITION
