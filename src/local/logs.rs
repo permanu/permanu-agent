@@ -35,8 +35,9 @@ use tonic::{Code, Request, Response, Status};
 use tracing::warn;
 
 use super::runner::{self, ContainerFilter, RunnerContainer, RunnerFailure};
+use super::telemetry::query::StoreQueries;
+use super::telemetry::{redaction, Telemetry};
 use super::{capability_missing, log_peer, status_with_reason};
-use crate::log_forwarder::redact_log_message;
 use crate::proto::agent::v2::{
     log_query_response::Frame, stream_status, telemetry_service_server::TelemetryService,
     AnalyticsQuery, AnalyticsQueryResponse, ErrorReason, GetTelemetryUsageRequest,
@@ -71,6 +72,9 @@ type LogStream = Pin<Box<dyn Stream<Item = Result<LogQueryResponse, Status>> + S
 #[derive(Clone)]
 pub struct TelemetrySvc {
     runner: Arc<dyn runner::Runner>,
+    /// v2.1.0 (`telemetry.v1`): every RPC is served from the store; `None`
+    /// keeps the M1 runner-backed `QueryLogs` (D-036).
+    store: Option<StoreQueries>,
     streams: Arc<tokio::sync::Semaphore>,
     /// Follow keepalive and re-list period (`KEEPALIVE`; shorter in tests).
     keepalive: Duration,
@@ -80,8 +84,17 @@ impl TelemetrySvc {
     pub fn new(runner: Arc<dyn runner::Runner>) -> Self {
         Self {
             runner,
+            store: None,
             streams: Arc::new(tokio::sync::Semaphore::new(MAX_STREAMS)),
             keepalive: KEEPALIVE,
+        }
+    }
+
+    /// Serves every RPC from the telemetry store (`telemetry.v1`).
+    pub fn with_store(runner: Arc<dyn runner::Runner>, telemetry: Arc<Telemetry>) -> Self {
+        Self {
+            store: Some(StoreQueries::new(telemetry)),
+            ..Self::new(runner)
         }
     }
 }
@@ -159,6 +172,13 @@ fn plan_of(query: &LogQuery) -> Result<Plan, Status> {
         return Err(status_with_reason(
             Code::Unimplemented,
             "only APP and SERVICE logs are served before the telemetry store",
+            ErrorReason::CapabilityMissing,
+        ));
+    }
+    if !query.run_id.is_empty() {
+        return Err(status_with_reason(
+            Code::Unimplemented,
+            "run_id needs the telemetry store",
             ErrorReason::CapabilityMissing,
         ));
     }
@@ -246,7 +266,7 @@ fn split_line(line: &str) -> (Option<i128>, &str) {
     }
 }
 
-fn parse_nanos(stamp: &str) -> Option<i128> {
+pub(crate) fn parse_nanos(stamp: &str) -> Option<i128> {
     let body = stamp.strip_suffix('Z')?;
     let (seconds, fraction) = match body.split_once('.') {
         Some((seconds, fraction)) => (seconds, fraction),
@@ -376,7 +396,9 @@ fn record(container: &RunnerContainer, key: &Key, stream: &str, message: &str) -
         end -= 1;
     }
     let message = &message[..end];
-    let redacted = redact_log_message(message);
+    // redaction-v1 (agent-protocol.md 9.6) before every M1-path return.
+    let redacted = redaction::redact(message);
+    let was_redacted = matches!(redacted, std::borrow::Cow::Owned(_));
     let seconds = i64::try_from(key.nanos.div_euclid(1_000_000_000)).unwrap_or(0);
     let nanos = i32::try_from(key.nanos.rem_euclid(1_000_000_000)).unwrap_or(0);
     let source_type = source_type_of(container);
@@ -399,11 +421,7 @@ fn record(container: &RunnerContainer, key: &Key, stream: &str, message: &str) -
     LogRecord {
         cursor: key.cursor(),
         timestamp: Some(prost_types::Timestamp { seconds, nanos }),
-        message: if redacted.was_redacted {
-            redacted.message
-        } else {
-            message.to_owned()
-        },
+        message: redacted.into_owned(),
         source_type: source_type as i32,
         source: match source_type {
             LogSourceType::Service => format!("service:{}", container.name),
@@ -417,7 +435,7 @@ fn record(container: &RunnerContainer, key: &Key, stream: &str, message: &str) -
         deployment_id: container.deployment_id.clone(),
         stream: stream.to_owned(),
         fields,
-        redacted: redacted.was_redacted,
+        redacted: was_redacted,
         ..Default::default()
     }
 }
@@ -773,6 +791,12 @@ impl TelemetryService for TelemetrySvc {
         request: Request<LogQuery>,
     ) -> Result<Response<Self::QueryLogsStream>, Status> {
         log_peer(&request, "QueryLogs");
+        if let Some(store) = &self.store {
+            return store
+                .query_logs(request.into_inner())
+                .await
+                .map(Response::new);
+        }
         let plan = plan_of(request.get_ref())?;
         let permit = self.streams.clone().try_acquire_owned().map_err(|_| {
             status_with_reason(
@@ -800,32 +824,56 @@ impl TelemetryService for TelemetrySvc {
 
     async fn search_traces(
         &self,
-        _request: Request<TraceSearch>,
+        request: Request<TraceSearch>,
     ) -> Result<Response<Self::SearchTracesStream>, Status> {
-        Err(capability_missing())
+        log_peer(&request, "SearchTraces");
+        let store = self.store.as_ref().ok_or_else(capability_missing)?;
+        store
+            .search_traces(request.into_inner())
+            .await
+            .map(Response::new)
     }
 
     async fn get_trace(
         &self,
-        _request: Request<GetTraceRequest>,
+        request: Request<GetTraceRequest>,
     ) -> Result<Response<Trace>, Status> {
-        Err(capability_missing())
+        log_peer(&request, "GetTrace");
+        let store = self.store.as_ref().ok_or_else(capability_missing)?;
+        store
+            .get_trace(request.into_inner().trace_id)
+            .await
+            .map(Response::new)
     }
 
     async fn query_metrics(
         &self,
-        _request: Request<MetricQuery>,
+        request: Request<MetricQuery>,
     ) -> Result<Response<Self::QueryMetricsStream>, Status> {
-        Err(capability_missing())
+        log_peer(&request, "QueryMetrics");
+        let store = self.store.as_ref().ok_or_else(capability_missing)?;
+        store
+            .query_metrics(request.into_inner())
+            .await
+            .map(Response::new)
     }
 
     async fn list_metrics(
         &self,
-        _request: Request<ListMetricsRequest>,
+        request: Request<ListMetricsRequest>,
     ) -> Result<Response<ListMetricsResponse>, Status> {
-        Err(capability_missing())
+        log_peer(&request, "ListMetrics");
+        let store = self.store.as_ref().ok_or_else(capability_missing)?;
+        store
+            .list_metrics(request.into_inner())
+            .await
+            .map(Response::new)
     }
 
+    /// Dwaar analytics need the `dwaar.service` journal on the runner's
+    /// log stream, whose wire shape `logs_follow_stream` does not carry yet
+    /// (signed-plan.md 14.3), so nothing feeds the `analytics` store: the
+    /// RPC stays `CAPABILITY_MISSING` rather than answering empty rows.
     async fn query_analytics(
         &self,
         _request: Request<AnalyticsQuery>,
@@ -835,9 +883,11 @@ impl TelemetryService for TelemetrySvc {
 
     async fn get_telemetry_usage(
         &self,
-        _request: Request<GetTelemetryUsageRequest>,
+        request: Request<GetTelemetryUsageRequest>,
     ) -> Result<Response<GetTelemetryUsageResponse>, Status> {
-        Err(capability_missing())
+        log_peer(&request, "GetTelemetryUsage");
+        let store = self.store.as_ref().ok_or_else(capability_missing)?;
+        Ok(Response::new(store.usage()))
     }
 }
 

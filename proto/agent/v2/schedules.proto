@@ -12,9 +12,14 @@ import "agent/v2/telemetry.proto";
 // Create/update/delete are signed plans submitted via
 // ChangeService.SubmitSignedPlan (kinds "cron.create", "cron.update",
 // "cron.delete", "cron.pause", "cron.resume"). CronJob mirrors the
-// cron.create/update params exactly (signed-plan.md 3.2): service_id,
-// schedule, timezone, command (argv), timeout_seconds, retries, overlap,
-// heartbeat_alert. RunCronJobNow carries its own SignedPlan.
+// cron.create/update params exactly (signed-plan.md 3.2): service_id, name
+// (signed since contracts v1.1.0), schedule, timezone, command (argv),
+// timeout_seconds, retries, overlap, heartbeat_alert. RunCronJobNow carries
+// its own SignedPlan. contracts v1.1.0: the service and the job must belong
+// to the plan's signed project and environment (SCOPE_MISMATCH otherwise).
+// v2.1.0 (capability "cron.v1"): scheduler semantics (timezone, retries,
+// overlap, missed runs, heartbeat alerts) are agent-protocol.md 10.1; each
+// run is the runner op run_cron.
 service ScheduleService {
   rpc ListCronJobs(ListCronJobsRequest) returns (ListCronJobsResponse);
   rpc GetCronJob(GetCronJobRequest) returns (CronJob);
@@ -32,6 +37,8 @@ service ScheduleService {
 }
 
 // OverlapPolicy is the plan's overlap param: "skip" | "queue" | "allow".
+// v2.1.0: there is no "replace" policy (value 4 stays reserved); a job that
+// must stop the running attempt first is modelled with timeout_seconds.
 enum OverlapPolicy {
   OVERLAP_POLICY_UNSPECIFIED = 0; // treated as SKIP
   OVERLAP_POLICY_SKIP = 1;        // "skip": skip the new run while one is active
@@ -41,6 +48,9 @@ enum OverlapPolicy {
   reserved "OVERLAP_POLICY_REPLACE";
 }
 
+// Engine API CronRun.status maps one to one (agent-protocol.md 10.1):
+// pending, running, succeeded, failed, timeout (TIMED_OUT), skipped
+// (SKIPPED_OVERLAP), cancelled, missed.
 enum CronRunStatus {
   CRON_RUN_STATUS_UNSPECIFIED = 0;
   CRON_RUN_STATUS_PENDING = 1;
@@ -63,6 +73,8 @@ enum CronTrigger {
 message CronJob {
   // cron_id of the signed plan (UUIDv7).
   string id = 1;
+  // The signed cron.create/update name (contracts v1.1.0; "" for a job
+  // admitted before it was signed).
   string name = 2;
   Scope scope = 3;
   // 5-field cron expression (the only form a plan can carry).
@@ -106,6 +118,16 @@ message CronRun {
   uint64 output_bytes = 11;
   // Set for manual runs.
   string operation_id = 12;
+  // v2.1.0. For a MISSED run: how many scheduled times fell inside the
+  // downtime it stands for (agent-protocol.md 10.1, missed runs). 0 otherwise.
+  uint32 missed_count = 13;
+  // v2.1.0. When the next retry attempt starts; unset when none is pending.
+  google.protobuf.Timestamp next_retry_at = 14;
+  // v2.1.0. Name of the one-off container of this attempt ("" before start).
+  string container_name = 15;
+  // v2.1.0. plan.id of the cron.create/update (or cron.run) admission this
+  // attempt ran under.
+  string plan_id = 16;
 }
 
 message ListCronJobsRequest {

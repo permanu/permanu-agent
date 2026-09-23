@@ -18,6 +18,7 @@ pub mod facts;
 pub mod logs;
 pub mod runner;
 pub mod socket;
+pub mod telemetry;
 
 use std::{
     sync::Arc,
@@ -39,14 +40,14 @@ use crate::{
     admissions::{AdmissionStore, StoreConfig, StoreOwner},
     config::{AgentMode, LocalConfig},
     proto::agent::v2::{
-        agent_info,
+        agent_info, agent_status,
         change_service_server::ChangeServiceServer,
         event_service_server::EventServiceServer,
         info_service_server::{InfoService, InfoServiceServer},
         state_service_server::{StateService, StateServiceServer},
         telemetry_service_server::TelemetryServiceServer,
         trusted_keys_summary::TrustState as TrustStateProto,
-        AgentInfo, ClockInfo, Container, ErrorReason, GetServerFactsRequest,
+        AgentInfo, AgentStatus, ClockInfo, Container, ErrorReason, GetServerFactsRequest,
         GetStateSnapshotRequest, HelloRequest, HelloResponse, ListContainersRequest,
         ListContainersResponse, PageInfo, PingRequest, PingResponse, ServerFacts, StateSnapshot,
         TrustedKeysSummary,
@@ -56,7 +57,14 @@ use crate::{
 
 use facts::{timestamp, HostProbe};
 
-pub const PROTOCOL_VERSION: &str = "2.0";
+/// agent-protocol.md section 2: v2.1.0 adds RPCs, so `Hello` negotiates
+/// `"2.1"` when the client speaks it and `"2.0"` otherwise.
+pub const PROTOCOL_VERSION: &str = "2.1";
+pub const PROTOCOL_VERSION_2_0: &str = "2.0";
+/// v2.1.0 (agent-protocol.md 9, D-053, D-054): the telemetry store, log
+/// ingestion, the OTLP receiver and every `TelemetryService` RPC from the
+/// store.
+pub const CAPABILITY_TELEMETRY: &str = "telemetry.v1";
 /// agent-protocol.md section 2 (v2.0.2, D-033): the agent admits signed-plan
 /// v1 and drives execution; it serves the section 6.4 store with the v1.0.2
 /// columns; and, with a recipient, the runner decrypts sealed secrets.
@@ -129,6 +137,49 @@ pub struct InfoSvc {
     identity: AgentIdentity,
     trust: TrustPaths,
     age_recipient: String,
+    telemetry: Option<Arc<telemetry::Telemetry>>,
+}
+
+/// `AgentStatus` (agent-protocol.md 12.3) from what this agent tracks:
+/// health and degraded reasons (telemetry, runner reachability, trust
+/// store, clock), the OTLP listeners and the telemetry bytes. Presence,
+/// the away summary and scheduler fields stay unset until their
+/// surfaces exist.
+pub fn build_agent_status(
+    telemetry: Option<&telemetry::Telemetry>,
+    trust: &TrustState,
+    ntp_synchronized: bool,
+    now: SystemTime,
+) -> AgentStatus {
+    let mut reasons: Vec<String> = Vec::new();
+    let mut otlp = telemetry::OtlpListen::default();
+    let mut bytes = 0;
+    if let Some(t) = telemetry {
+        reasons.extend(t.degraded_reasons().into_iter().map(str::to_owned));
+        otlp = t.otlp();
+        bytes = t.usage().kinds.iter().map(|(u, _)| u.bytes_used).sum();
+    }
+    if matches!(trust, TrustState::Invalid { .. }) {
+        reasons.push("trust_store_invalid".to_owned());
+    }
+    if !ntp_synchronized {
+        reasons.push("clock_unsynced".to_owned());
+    }
+    reasons.sort();
+    reasons.dedup();
+    AgentStatus {
+        health: if reasons.is_empty() {
+            agent_status::Health::Ok
+        } else {
+            agent_status::Health::Degraded
+        } as i32,
+        degraded_reasons: reasons,
+        otlp_grpc_listen: otlp.grpc_listen,
+        otlp_http_listen: otlp.http_listen,
+        telemetry_bytes_used: bytes,
+        computed_at: Some(timestamp(now)),
+        ..Default::default()
+    }
 }
 
 /// `AgentInfo.server_id` and `HelloResponse.trusted_keys` from the trust
@@ -177,13 +228,18 @@ impl InfoService for InfoSvc {
     ) -> Result<Response<HelloResponse>, Status> {
         log_peer(&request, "Hello");
         let req = request.into_inner();
-        if !req.protocol_versions.iter().any(|v| v == PROTOCOL_VERSION) {
+        let Some(negotiated) = [PROTOCOL_VERSION, PROTOCOL_VERSION_2_0]
+            .into_iter()
+            .find(|ours| req.protocol_versions.iter().any(|v| v == ours))
+        else {
             return Err(status_with_reason(
                 Code::FailedPrecondition,
-                &format!("agent speaks protocol {PROTOCOL_VERSION} only"),
+                &format!(
+                    "agent speaks protocol {PROTOCOL_VERSION} and {PROTOCOL_VERSION_2_0} only"
+                ),
                 ErrorReason::ProtocolVersion,
             ));
-        }
+        };
         let now = SystemTime::now();
         let trust = self.trust.load();
         if let TrustState::Invalid { reason, .. } = &trust {
@@ -207,12 +263,23 @@ impl InfoService for InfoSvc {
         getrandom::getrandom(&mut session)
             .map_err(|_| Status::internal("session id generation failed"))?;
 
+        let status = (negotiated == PROTOCOL_VERSION).then(|| {
+            build_agent_status(
+                self.telemetry.as_deref(),
+                &trust,
+                self.probe.ntp_synchronized(),
+                now,
+            )
+        });
         Ok(Response::new(HelloResponse {
-            protocol_version: PROTOCOL_VERSION.to_string(),
+            protocol_version: negotiated.to_string(),
             agent: Some(AgentInfo {
                 version: self.identity.version.clone(),
                 binary_digest_hex: self.identity.binary_digest_hex.clone(),
-                protocol_versions: vec![PROTOCOL_VERSION.to_string()],
+                protocol_versions: vec![
+                    PROTOCOL_VERSION.to_string(),
+                    PROTOCOL_VERSION_2_0.to_string(),
+                ],
                 mode: mode_proto(self.identity.mode) as i32,
                 started_at: Some(timestamp(self.identity.started_at)),
                 quarantined: false,
@@ -220,8 +287,11 @@ impl InfoService for InfoSvc {
                 server_id,
                 ssh_host_key_digests_hex: self.probe.ssh_host_key_digests_hex(),
                 age_recipient: self.age_recipient.clone(),
+                release_keys: None,
+                recovery_recipient_fingerprint: String::new(),
+                bundle_manifest_digest_hex: String::new(),
             }),
-            capabilities: capabilities(&self.age_recipient),
+            capabilities: capabilities(&self.age_recipient, self.telemetry.is_some()),
             server: Some(self.probe.server_facts().await),
             trusted_keys: Some(trusted_keys),
             clock: Some(ClockInfo {
@@ -231,6 +301,7 @@ impl InfoService for InfoSvc {
                 timezone: self.probe.timezone(),
             }),
             session_id: hex::encode(session),
+            status,
         }))
     }
 
@@ -250,8 +321,9 @@ impl InfoService for InfoSvc {
     }
 }
 
-/// `HelloResponse.capabilities`: `age.v1` only when a recipient is set.
-fn capabilities(age_recipient: &str) -> Vec<String> {
+/// `HelloResponse.capabilities`: `age.v1` only when a recipient is set,
+/// `telemetry.v1` only when the store opened.
+fn capabilities(age_recipient: &str, telemetry: bool) -> Vec<String> {
     let mut ids = vec![
         CAPABILITY_SIGNED_PLANS.to_string(),
         CAPABILITY_ADMISSIONS.to_string(),
@@ -261,6 +333,9 @@ fn capabilities(age_recipient: &str) -> Vec<String> {
     ];
     if !age_recipient.is_empty() {
         ids.push(CAPABILITY_AGE.to_string());
+    }
+    if telemetry {
+        ids.push(CAPABILITY_TELEMETRY.to_string());
     }
     ids
 }
@@ -387,6 +462,8 @@ pub struct LocalServer {
     pub trust: TrustPaths,
     pub age_recipient: String,
     pub core: Arc<execution::ChangeCore>,
+    /// The telemetry store (`telemetry.v1`); `None` serves the M1 paths.
+    pub telemetry: Option<Arc<telemetry::Telemetry>>,
 }
 
 impl LocalServer {
@@ -401,6 +478,7 @@ impl LocalServer {
             identity: self.identity,
             trust: self.trust,
             age_recipient: self.age_recipient,
+            telemetry: self.telemetry.clone(),
         })
         .max_decoding_message_size(MAX_MESSAGE_BYTES)
         .max_encoding_message_size(MAX_MESSAGE_BYTES);
@@ -421,7 +499,11 @@ impl LocalServer {
         let event_svc = EventServiceServer::new(events::EventSvc { bus: events })
             .max_decoding_message_size(MAX_MESSAGE_BYTES)
             .max_encoding_message_size(MAX_MESSAGE_BYTES);
-        let telemetry_svc = TelemetryServiceServer::new(logs::TelemetrySvc::new(runner))
+        let telemetry = match self.telemetry {
+            Some(store) => logs::TelemetrySvc::with_store(runner, store),
+            None => logs::TelemetrySvc::new(runner),
+        };
+        let telemetry_svc = TelemetryServiceServer::new(telemetry)
             .max_decoding_message_size(MAX_MESSAGE_BYTES)
             .max_encoding_message_size(MAX_MESSAGE_BYTES);
 
@@ -565,6 +647,7 @@ pub async fn run(
         core.store_recreated();
     }
     let background = core.spawn_background();
+    let (telemetry, telemetry_tasks) = start_telemetry(&cfg, &core, probe.clone(), trust.clone());
     let listener = socket::listen(&cfg.socket_path, gid)?;
     info!(socket = %cfg.socket_path.display(), "serving agent protocol v2");
     let result = LocalServer {
@@ -573,12 +656,120 @@ pub async fn run(
         trust,
         age_recipient,
         core,
+        telemetry: telemetry.clone(),
     }
     .serve(listener, shutdown)
     .await;
     background.abort();
+    for task in telemetry_tasks {
+        task.abort();
+    }
+    if let Some(telemetry) = telemetry {
+        // Store what is queued, then close the open segments.
+        telemetry.sync().await;
+        telemetry.close();
+    }
     result?;
     Ok(())
+}
+
+/// Opens the telemetry store and starts its producers (agent-protocol.md
+/// 9): retention and the disk guard, log ingestion from the runner, the
+/// metrics sampler, the OTLP listeners and `AGENT_STATUS` events. A store
+/// that cannot open leaves the agent on the M1 paths (no `telemetry.v1`).
+fn start_telemetry(
+    cfg: &LocalConfig,
+    core: &Arc<execution::ChangeCore>,
+    probe: Arc<dyn HostProbe>,
+    trust: TrustPaths,
+) -> (
+    Option<Arc<telemetry::Telemetry>>,
+    Vec<tokio::task::JoinHandle<()>>,
+) {
+    let opened = telemetry::Telemetry::open(telemetry::TelemetryParts {
+        options: telemetry::store::StoreOptions::new(cfg.telemetry_root.clone()),
+        disk: Arc::new(telemetry::store::StatvfsDisk),
+        events: Some(core.events.clone()),
+    });
+    let store = match opened {
+        Ok(store) => store,
+        Err(err) => {
+            warn!(error = %err, root = %cfg.telemetry_root.display(), "telemetry store unavailable; serving M1 log paths");
+            return (None, Vec::new());
+        }
+    };
+    let host = hostname();
+    let runner = core.runner.clone();
+    let mut tasks = vec![store.spawn_maintenance()];
+    tasks.push(tokio::spawn(
+        telemetry::ingest::LogIngest::new(store.clone(), runner.clone(), host).run(),
+    ));
+    tasks.push(tokio::spawn(
+        telemetry::metrics::Sampler::new(store.clone(), runner).run(),
+    ));
+    tasks.push(tokio::spawn(
+        telemetry::otlp_server::Listeners {
+            telemetry: store.clone(),
+            net: Arc::new(telemetry::otlp_server::SystemNetwork {
+                proc_root: std::path::PathBuf::from("/proc"),
+            }),
+            firewall: Arc::new(telemetry::otlp_server::UncontractedFirewall),
+            gateway_iface: telemetry::otlp_server::GATEWAY_IFACE.to_owned(),
+            grpc_port: telemetry::otlp_server::GRPC_PORT,
+            http_port: telemetry::otlp_server::HTTP_PORT,
+        }
+        .run(),
+    ));
+    tasks.push(spawn_status_events(
+        store.clone(),
+        core.events.clone(),
+        probe,
+        trust,
+    ));
+    (Some(store), tasks)
+}
+
+fn hostname() -> String {
+    let mut buf = [0u8; 256];
+    // SAFETY: gethostname writes at most buf.len() bytes into our buffer.
+    let rc = unsafe { libc::gethostname(buf.as_mut_ptr().cast(), buf.len()) };
+    if rc != 0 {
+        return String::new();
+    }
+    let end = buf.iter().position(|b| *b == 0).unwrap_or(buf.len());
+    String::from_utf8_lossy(&buf[..end]).into_owned()
+}
+
+/// Emits `EVENT_KIND_AGENT_STATUS` whenever health or the degraded reasons
+/// change (checked every 5 s).
+fn spawn_status_events(
+    telemetry: Arc<telemetry::Telemetry>,
+    events: events::EventBus,
+    probe: Arc<dyn HostProbe>,
+    trust: TrustPaths,
+) -> tokio::task::JoinHandle<()> {
+    tokio::spawn(async move {
+        let mut last: Option<(i32, Vec<String>)> = None;
+        let mut tick = tokio::time::interval(Duration::from_secs(5));
+        loop {
+            tick.tick().await;
+            let status = build_agent_status(
+                Some(&telemetry),
+                &trust.load(),
+                probe.ntp_synchronized(),
+                SystemTime::now(),
+            );
+            let key = (status.health, status.degraded_reasons.clone());
+            if last.as_ref() != Some(&key) {
+                last = Some(key);
+                events.publish(
+                    crate::proto::agent::v2::EventKind::AgentStatus,
+                    crate::proto::agent::v2::Scope::default(),
+                    crate::proto::agent::v2::event::Payload::AgentStatus(status),
+                );
+            }
+        }
+    })
 }
 
 #[cfg(test)]
@@ -602,6 +793,7 @@ mod tests {
             client_version: "0.0.0-test".to_string(),
             protocol_versions: versions.iter().map(|v| v.to_string()).collect(),
             client_time: Some(timestamp(SystemTime::now())),
+            engine_id: String::new(),
         }
     }
 
@@ -642,7 +834,7 @@ mod tests {
     #[test]
     fn age_capability_needs_a_recipient() {
         assert_eq!(
-            capabilities(""),
+            capabilities("", false),
             vec![
                 "signed_plans.v1",
                 "admissions.v1",
@@ -652,7 +844,7 @@ mod tests {
             ]
         );
         assert_eq!(
-            capabilities("age1xyz"),
+            capabilities("age1xyz", false),
             vec![
                 "signed_plans.v1",
                 "admissions.v1",
@@ -662,6 +854,54 @@ mod tests {
                 "age.v1"
             ]
         );
+        // telemetry.v1 supersedes logs.containers.v1 for reads; both stay.
+        assert_eq!(
+            capabilities("", true),
+            vec![
+                "signed_plans.v1",
+                "admissions.v1",
+                "deployment_ids.v1",
+                "logs.containers.v1",
+                "service_kind.v1",
+                "telemetry.v1"
+            ]
+        );
+    }
+
+    #[tokio::test]
+    async fn hello_negotiates_2_1_with_status_and_telemetry() {
+        let h = Harness::with(
+            "hello21",
+            test_harness::Options {
+                telemetry: true,
+                ..Default::default()
+            },
+        )
+        .await;
+        let mut client = InfoServiceClient::new(h.channel.clone());
+        let hello = client
+            .hello(hello_request(&["2.0", "2.1"]))
+            .await
+            .unwrap()
+            .into_inner();
+        assert_eq!(hello.protocol_version, "2.1");
+        assert_eq!(hello.agent.unwrap().protocol_versions, vec!["2.1", "2.0"]);
+        assert!(hello.capabilities.contains(&"telemetry.v1".to_owned()));
+        let status = hello.status.unwrap();
+        // No OTLP listener in tests: degraded with otlp_unbound only.
+        assert_eq!(status.health, agent_status::Health::Degraded as i32);
+        assert_eq!(status.degraded_reasons, vec!["otlp_unbound"]);
+        assert_eq!(status.otlp_grpc_listen, "");
+        assert!(status.computed_at.is_some());
+        // A 2.0 client gets 2.0 and no status.
+        let old = client
+            .hello(hello_request(&["2.0"]))
+            .await
+            .unwrap()
+            .into_inner();
+        assert_eq!(old.protocol_version, "2.0");
+        assert!(old.status.is_none());
+        h.stop().await;
     }
 
     #[tokio::test]
@@ -681,7 +921,7 @@ mod tests {
         let agent = hello.agent.unwrap();
         assert_eq!(agent.version, "test-1");
         assert_eq!(agent.binary_digest_hex, "cd".repeat(32));
-        assert_eq!(agent.protocol_versions, vec!["2.0".to_string()]);
+        assert_eq!(agent.protocol_versions, vec!["2.1", "2.0"]);
         assert_eq!(agent.mode, agent_info::Mode::Local as i32);
         assert_eq!(agent.server_id, "01a0cdb5-3500-70a1-8000-000000000001");
         assert_eq!(agent.ssh_host_key_digests_hex, vec!["ab".repeat(32)]);

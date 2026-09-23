@@ -349,8 +349,8 @@ pub async fn container_logs_follow(
         .await
 }
 
-type BoxRead = Box<dyn AsyncRead + Send + Unpin>;
-type BoxWrite = Box<dyn AsyncWrite + Send + Unpin>;
+pub(crate) type BoxRead = Box<dyn AsyncRead + Send + Unpin>;
+pub(crate) type BoxWrite = Box<dyn AsyncWrite + Send + Unpin>;
 
 /// The event lines of one request (section 14.8), validated one by one.
 pub struct EventLines {
@@ -364,7 +364,7 @@ pub struct EventLines {
 }
 
 impl EventLines {
-    async fn start(
+    pub(crate) async fn start(
         reader: BoxRead,
         mut writer: BoxWrite,
         request: &Value,

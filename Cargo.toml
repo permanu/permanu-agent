@@ -19,7 +19,12 @@ futures-core = "0.3"
 futures-util = "0.3"
 getrandom = "0.2"
 hex = "0.4"
+http-body-util = "0.1"
+hyper = { version = "1", features = ["http1", "server"] }
+hyper-util = { version = "0.1", features = ["tokio"] }
+flate2 = "1"
 libc = "0.2"
+opentelemetry-proto = { version = "0.32", default-features = false, features = ["gen-tonic", "trace", "logs", "metrics", "with-serde"] }
 p256 = { version = "=0.13.2", default-features = false, features = ["ecdsa", "std"] }
 prost = "0.14"
 prost-types = "0.14"
@@ -32,7 +37,7 @@ sha2 = "0.10"
 thiserror = "1"
 tokio = { version = "1", features = ["fs", "io-util", "macros", "net", "process", "rt-multi-thread", "signal", "sync", "time"] }
 tokio-stream = { version = "0.1", features = ["net"] }
-tonic = { version = "0.14", default-features = false, features = ["channel", "codegen", "router", "server", "tls-native-roots", "tls-ring"] }
+tonic = { version = "0.14", default-features = false, features = ["channel", "codegen", "gzip", "router", "server", "tls-native-roots", "tls-ring"] }
 tonic-prost = "0.14"
 tower = { version = "0.5", features = ["util"] }
 tracing = "0.1"
@@ -41,7 +46,6 @@ x25519-dalek = { version = "2", features = ["static_secrets"] }
 zip = { version = "2", default-features = false, features = ["deflate"] }
 
 [dev-dependencies]
-hyper-util = { version = "0.1", features = ["tokio"] }
 
 [build-dependencies]
 protoc-bin-vendored = "3"

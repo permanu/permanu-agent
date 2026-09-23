@@ -22,3 +22,7 @@ paths = [
   '''(?:^|/)tests/vectors/signed-plan/plans\.json$''',
   '''(?:^|/)tests/vectors/signed-plan/policy-cases\.json$''',
 ]
+
+[[allowlists]]
+description = "redaction-v1 test vectors vendored from contracts-v1.1.1: FAKE secrets only (every value contains FAKE and is valid nowhere), agent-protocol.md section 9.6."
+paths = ['''(?:^|/)tests/vectors/redaction/''']

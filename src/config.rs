@@ -273,6 +273,8 @@ pub struct LocalConfig {
     pub ssh_host_key_dir: PathBuf,
     /// Uid that must own the trusted-keys file and the consumed log (root).
     pub file_owner_uid: u32,
+    /// agent-protocol.md 9.1: the telemetry store.
+    pub telemetry_root: PathBuf,
 }
 
 pub const DEFAULT_LOCAL_SOCKET_PATH: &str = "/run/permanu/agent.sock";
@@ -303,6 +305,7 @@ impl LocalConfig {
             trust_lock_path: PathBuf::from("/run/permanu/trust.lock"),
             ssh_host_key_dir: PathBuf::from("/etc/ssh"),
             file_owner_uid: 0,
+            telemetry_root: PathBuf::from(crate::local::telemetry::DEFAULT_ROOT),
         };
         #[cfg(feature = "dev-paths")]
         if let Some(root) = lookup("PERMANU_AGENT_DEV_ROOT").and_then(|v| dev_root(&v)) {
@@ -338,6 +341,7 @@ impl LocalConfig {
             ssh_host_key_dir: root.join("etc/ssh"),
             // SAFETY: geteuid has no preconditions.
             file_owner_uid: unsafe { libc::geteuid() },
+            telemetry_root: root.join("telemetry"),
             ..self
         }
     }
@@ -411,6 +415,10 @@ mod mode_tests {
         assert_eq!(cfg.store_user, "permanu-agent");
         assert_eq!(cfg.store_group, "permanu-runner");
         assert_eq!(
+            cfg.telemetry_root,
+            PathBuf::from("/var/lib/permanu/telemetry")
+        );
+        assert_eq!(
             cfg.trust_lock_path,
             PathBuf::from("/run/permanu/trust.lock")
         );
@@ -461,6 +469,7 @@ mod mode_tests {
         assert_eq!(cfg.age_recipient_path, root.join("etc/age/recipient"));
         assert_eq!(cfg.runner_socket, root.join("run/runner.sock"));
         assert_eq!(cfg.ssh_host_key_dir, root.join("etc/ssh"));
+        assert_eq!(cfg.telemetry_root, root.join("telemetry"));
         assert_eq!(cfg.runner_path, Some(root.join("fake-runner")));
         // SAFETY: geteuid has no preconditions.
         assert_eq!(cfg.file_owner_uid, unsafe { libc::geteuid() });

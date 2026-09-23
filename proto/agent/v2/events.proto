@@ -9,6 +9,7 @@ import "agent/v2/alerts.proto";
 import "agent/v2/backups.proto";
 import "agent/v2/changes.proto";
 import "agent/v2/common.proto";
+import "agent/v2/info.proto";
 import "agent/v2/schedules.proto";
 import "agent/v2/webhooks.proto";
 
@@ -32,6 +33,13 @@ enum EventKind {
   EVENT_KIND_TRUST_CHANGED = 9;
   EVENT_KIND_KEEPALIVE = 10;
   EVENT_KIND_RESYNC_REQUIRED = 11;
+  // v2.1.0. AgentStatus changed (health, degraded_reasons, engine presence),
+  // at most once per 5 s, plus every 60 s (agent-protocol.md 12).
+  EVENT_KIND_AGENT_STATUS = 12;
+  // v2.1.0 ("webhooks.v1"). A server build changed status.
+  EVENT_KIND_SERVER_BUILD = 13;
+  // v2.1.0 ("backups.v1"). A verify-restore started or finished.
+  EVENT_KIND_RESTORE_VERIFICATION = 14;
 }
 
 message SubscribeRequest {
@@ -65,6 +73,10 @@ message Event {
     TrustChangedEvent trust_changed = 18;
     Keepalive keepalive = 19;
     ResyncRequired resync_required = 20;
+    // v2.1.0.
+    AgentStatus agent_status = 21;
+    ServerBuild server_build = 22;
+    RestoreVerification restore_verification = 23;
   }
 }
 
@@ -140,9 +152,11 @@ message TrustChangedEvent {
   string fingerprint_digest_hex = 1;
   uint64 generation = 2;
   // Admitted kind: "key.add" | "key.revoke" | "rule.create" |
-  // "rule.revoke" | "server.add" (bootstrap). "file_changed" when
+  // "rule.revoke" | "server.add" (bootstrap); v2.1.0 also "release_key.add" |
+  // "release_key.revoke" | "recovery_recipient.set". "file_changed" when
   // trusted-keys.json or admissions.db changed outside an admitted plan
-  // (for example by root; signed-plan.md R1). "store_recreated" when
+  // (for example by root; signed-plan.md R1); v2.1.0 also when
+  // release-keys.json changed that way. "store_recreated" when
   // admissions.db was lost and the re-seed quarantine began
   // (signed-plan.md 6.3).
   string change = 3;
