@@ -124,6 +124,33 @@ fn exec_of(kind: &str, params: &Value) -> Exec {
     }
 }
 
+/// D-046 (contracts v1.0.5): until the M2 artifact trust root lands,
+/// `agent.update` and `component.update` for `runner` or `permanu-env` are
+/// not supported; the engine never builds them and the runner fails them
+/// closed. The agent refuses them before admission as well, so a signed
+/// update that cannot succeed never consumes a nonce or advances the head.
+/// Returns the refused action's description, if any. The envelope is not
+/// verified here: this can only refuse, never admit.
+pub fn not_supported_yet(envelope: &[u8]) -> Option<String> {
+    if envelope.len() > MAX_SIGNED_PLAN_BYTES {
+        return None;
+    }
+    let parsed: Value = serde_json::from_slice(envelope).ok()?;
+    parsed["plan"]["actions"]
+        .as_array()?
+        .iter()
+        .find_map(|action| match action["kind"].as_str()? {
+            "agent.update" => Some("agent.update".to_owned()),
+            "component.update" => match action["params"]["component"].as_str()? {
+                component @ ("runner" | "permanu-env") => {
+                    Some(format!("component.update({component})"))
+                }
+                _ => None,
+            },
+            _ => None,
+        })
+}
+
 /// `failure_code` of a failed op (section 14.6 table).
 fn failure_code_of(kind: &str, op: &str) -> &'static str {
     match (kind, op) {

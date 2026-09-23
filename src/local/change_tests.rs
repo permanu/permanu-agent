@@ -320,6 +320,79 @@ async fn bootstrap_refuses_a_plan_signed_for_another_age_recipient() {
     h.stop().await;
 }
 
+/// D-046: until the M2 artifact trust root, `agent.update` and
+/// `component.update` for `runner` or `permanu-env` are refused before
+/// admission (`not_supported_yet`), even when validly signed; the runner
+/// is never asked and nothing is admitted. `component.update(dwaar)` and
+/// `os_packages` are not refused here.
+#[tokio::test]
+async fn updates_without_an_artifact_trust_root_are_refused_before_admission() {
+    let Some(owner) = TestSigner::load("owner") else {
+        eprintln!("skipped: docs keys.json not found");
+        return;
+    };
+    let h = Harness::start("m1-updates", Some(&vector_trust())).await;
+    let mut change = ChangeServiceClient::new(h.channel.clone());
+    let digest = "ab".repeat(32);
+    let plan_for = |suffix: &str, action: Value| {
+        let mut plan = plan_vector("key-add")["plan"].clone();
+        plan["id"] = Value::String(format!("01a0cdb5-3500-7001-8000-0000000d46{suffix}"));
+        // 16 bytes: the 22nd base64url character carries 2 bits (`A`).
+        plan["nonce"] = Value::String(format!("D046AAAAAAAAAAAAAA{suffix}AA"));
+        plan["targets"] = json!([SERVER_A]);
+        plan["base"]["heads"] = json!({ SERVER_A: GENESIS_HEAD });
+        plan["actions"] = json!([action]);
+        SignedPlan {
+            envelope_json: owner.envelope(&plan).into_bytes(),
+            specs_jcs: Vec::new(),
+            sealed_secrets: Vec::new(),
+        }
+    };
+    let refused = [
+        json!({"kind": "agent.update", "params": {"version": "1.2.3",
+               "artifact_digest_hex": digest, "bundle_manifest_digest_hex": digest}}),
+        json!({"kind": "component.update", "params": {"component": "runner", "version": "1.2.3",
+               "artifact_digest_hex": digest, "bundle_manifest_digest_hex": digest}}),
+        json!({"kind": "component.update", "params": {"component": "permanu-env",
+               "version": "1.2.3", "artifact_digest_hex": digest,
+               "bundle_manifest_digest_hex": digest}}),
+    ];
+    for (index, action) in refused.into_iter().enumerate() {
+        let status = change
+            .submit_signed_plan(submit(plan_for(&format!("a{index}"), action.clone())))
+            .await
+            .unwrap_err();
+        assert_eq!(status.code(), Code::Unimplemented, "{action}");
+        assert_eq!(
+            trailer(&status, ERROR_REASON_HEADER),
+            "ERROR_REASON_CAPABILITY_MISSING"
+        );
+        assert!(
+            status.message().starts_with("not_supported_yet"),
+            "{action}"
+        );
+    }
+    assert!(h.runner.requests.lock().unwrap().is_empty());
+    let admissions = change
+        .list_admissions(ListAdmissionsRequest::default())
+        .await
+        .unwrap()
+        .into_inner();
+    assert!(admissions.admissions.is_empty());
+
+    // Dwaar updates are built in M1 and pass this gate.
+    let dwaar = json!({"kind": "component.update", "params": {"component": "dwaar",
+                       "version": "0.3.24", "artifact_digest_hex": digest,
+                       "bundle_manifest_digest_hex": digest}});
+    let admitted = change
+        .submit_signed_plan(submit(plan_for("b0", dwaar)))
+        .await
+        .unwrap()
+        .into_inner();
+    assert!(!admitted.deduplicated);
+    h.stop().await;
+}
+
 #[tokio::test]
 async fn rejections_carry_the_contract_codes_and_admit_nothing() {
     let trust = serde_json::to_string(&vector("policy-cases")["context"]["trusted_keys"]).unwrap();
