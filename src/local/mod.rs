@@ -453,7 +453,11 @@ pub async fn run(
         .as_deref()
         .map(socket::resolve_group)
         .transpose()?;
-    let trust = TrustPaths::production(cfg.trusted_keys_path.clone());
+    let trust = TrustPaths {
+        lock: cfg.trust_lock_path.clone(),
+        owner_uid: cfg.file_owner_uid,
+        ..TrustPaths::production(cfg.trusted_keys_path.clone())
+    };
     let trust_state = trust.load();
     let server_id = match &trust_state {
         TrustState::Valid(store) => store.server_id.clone(),
@@ -478,7 +482,10 @@ pub async fn run(
                 String::new()
             }
         };
-    let probe: Arc<dyn HostProbe> = Arc::new(facts::SystemProbe { server_id });
+    let probe: Arc<dyn HostProbe> = Arc::new(facts::SystemProbe {
+        server_id,
+        ssh_host_key_dir: cfg.ssh_host_key_dir.clone(),
+    });
     let core = execution::ChangeCore::new(execution::ChangeCoreParts {
         store: Arc::new(store),
         trust: trust.clone(),
@@ -487,7 +494,7 @@ pub async fn run(
         events: events::EventBus::new(),
         clock: Arc::new(execution::SystemClock),
         consumed_log: cfg.consumed_log.clone(),
-        consumed_log_owner: 0,
+        consumed_log_owner: cfg.file_owner_uid,
     });
     if report.recreated {
         warn!(

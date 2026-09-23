@@ -263,6 +263,12 @@ pub struct LocalConfig {
     /// Owner and group of the store files (D-022).
     pub store_user: String,
     pub store_group: String,
+    /// `flock` target of the signed-plan.md 7.4 trusted-keys write.
+    pub trust_lock_path: PathBuf,
+    /// Where the agent reads `ssh_host_*_key.pub` for Hello.
+    pub ssh_host_key_dir: PathBuf,
+    /// Uid that must own the trusted-keys file and the consumed log (root).
+    pub file_owner_uid: u32,
 }
 
 pub const DEFAULT_LOCAL_SOCKET_PATH: &str = "/run/permanu/agent.sock";
@@ -277,7 +283,7 @@ impl LocalConfig {
         let socket_path = lookup("PERMANU_AGENT_SOCKET")
             .filter(|v| !v.trim().is_empty())
             .unwrap_or_else(|| DEFAULT_LOCAL_SOCKET_PATH.to_string());
-        Self {
+        let cfg = Self {
             socket_path: PathBuf::from(socket_path),
             socket_group: Some(DEFAULT_LOCAL_SOCKET_GROUP.to_string()),
             trusted_keys_path: PathBuf::from(crate::trusted_keys::TRUSTED_KEYS_PATH),
@@ -291,8 +297,51 @@ impl LocalConfig {
             age_identity_path: PathBuf::from(crate::local::age_identity::DEFAULT_AGE_IDENTITY_PATH),
             store_user: "permanu-agent".to_string(),
             store_group: "permanu-runner".to_string(),
+            trust_lock_path: PathBuf::from("/run/permanu/trust.lock"),
+            ssh_host_key_dir: PathBuf::from("/etc/ssh"),
+            file_owner_uid: 0,
+        };
+        #[cfg(feature = "dev-paths")]
+        if let Some(root) = lookup("PERMANU_AGENT_DEV_ROOT").and_then(|v| dev_root(&v)) {
+            return cfg.under_dev_root(&root, lookup("PERMANU_AGENT_SOCKET").is_some());
+        }
+        cfg
+    }
+
+    /// Development builds only (`--features dev-paths`, never shipped): every
+    /// path moves under an unprivileged root so a smoke test can run the real
+    /// binary as the current user in a temp dir.
+    #[cfg(feature = "dev-paths")]
+    fn under_dev_root(self, root: &std::path::Path, socket_set: bool) -> Self {
+        Self {
+            socket_path: if socket_set {
+                self.socket_path
+            } else {
+                root.join("run/agent.sock")
+            },
+            socket_group: None,
+            trusted_keys_path: root.join("etc/trusted-keys.json"),
+            admissions_db: root.join("agent/admissions.db"),
+            consumed_log: root.join("runner/consumed.log"),
+            age_identity_path: root.join("agent/age-identity"),
+            trust_lock_path: root.join("run/trust.lock"),
+            ssh_host_key_dir: root.join("etc/ssh"),
+            // SAFETY: geteuid has no preconditions.
+            file_owner_uid: unsafe { libc::geteuid() },
+            ..self
         }
     }
+}
+
+#[cfg(feature = "dev-paths")]
+fn dev_root(value: &str) -> Option<PathBuf> {
+    use std::path::Component;
+    let path = PathBuf::from(value);
+    let clean = path.is_absolute()
+        && path
+            .components()
+            .all(|c| matches!(c, Component::RootDir | Component::Normal(_)));
+    clean.then_some(path)
 }
 
 #[cfg(test)]
@@ -352,11 +401,72 @@ mod mode_tests {
         );
         assert_eq!(cfg.store_user, "permanu-agent");
         assert_eq!(cfg.store_group, "permanu-runner");
+        assert_eq!(
+            cfg.trust_lock_path,
+            PathBuf::from("/run/permanu/trust.lock")
+        );
+        assert_eq!(cfg.ssh_host_key_dir, PathBuf::from("/etc/ssh"));
+        assert_eq!(cfg.file_owner_uid, 0);
 
         let cfg = LocalConfig::from_lookup(|name| match name {
             "PERMANU_AGENT_SOCKET" => Some("/tmp/x.sock".to_string()),
             _ => None,
         });
         assert_eq!(cfg.socket_path, PathBuf::from("/tmp/x.sock"));
+    }
+
+    fn dev_root_lookup(name: &str) -> Option<String> {
+        match name {
+            "PERMANU_AGENT_DEV_ROOT" => Some("/tmp/pmdev".to_string()),
+            "PERMANU_RUNNER_PATH" => Some("/tmp/pmdev/fake-runner".to_string()),
+            _ => None,
+        }
+    }
+
+    #[cfg(not(feature = "dev-paths"))]
+    #[test]
+    fn dev_root_is_ignored_in_production_builds() {
+        let cfg = LocalConfig::from_lookup(dev_root_lookup);
+        assert_eq!(cfg.socket_path, PathBuf::from("/run/permanu/agent.sock"));
+        assert_eq!(
+            cfg.trusted_keys_path,
+            PathBuf::from("/etc/permanu/trusted-keys.json")
+        );
+        assert_eq!(cfg.socket_group.as_deref(), Some("permanu"));
+        assert_eq!(cfg.file_owner_uid, 0);
+    }
+
+    #[cfg(feature = "dev-paths")]
+    #[test]
+    fn dev_root_moves_every_path_under_it() {
+        let cfg = LocalConfig::from_lookup(dev_root_lookup);
+        let root = PathBuf::from("/tmp/pmdev");
+        assert_eq!(cfg.socket_path, root.join("run/agent.sock"));
+        assert_eq!(cfg.socket_group, None);
+        assert_eq!(cfg.trusted_keys_path, root.join("etc/trusted-keys.json"));
+        assert_eq!(cfg.trust_lock_path, root.join("run/trust.lock"));
+        assert_eq!(cfg.admissions_db, root.join("agent/admissions.db"));
+        assert_eq!(cfg.consumed_log, root.join("runner/consumed.log"));
+        assert_eq!(cfg.age_identity_path, root.join("agent/age-identity"));
+        assert_eq!(cfg.ssh_host_key_dir, root.join("etc/ssh"));
+        assert_eq!(cfg.runner_path, root.join("fake-runner"));
+        // SAFETY: geteuid has no preconditions.
+        assert_eq!(cfg.file_owner_uid, unsafe { libc::geteuid() });
+    }
+
+    #[cfg(feature = "dev-paths")]
+    #[test]
+    fn dev_root_must_be_absolute_and_clean() {
+        for bad in ["relative", "/tmp/../etc", ""] {
+            let cfg = LocalConfig::from_lookup(|name| match name {
+                "PERMANU_AGENT_DEV_ROOT" => Some(bad.to_string()),
+                _ => None,
+            });
+            assert_eq!(
+                cfg.trusted_keys_path,
+                PathBuf::from("/etc/permanu/trusted-keys.json"),
+                "{bad:?}"
+            );
+        }
     }
 }

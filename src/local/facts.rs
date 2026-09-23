@@ -59,6 +59,7 @@ pub trait HostProbe: Send + Sync + 'static {
 /// The real host.
 pub struct SystemProbe {
     pub server_id: String,
+    pub ssh_host_key_dir: std::path::PathBuf,
 }
 
 #[tonic::async_trait]
@@ -123,7 +124,7 @@ impl HostProbe for SystemProbe {
     }
 
     fn ssh_host_key_digests_hex(&self) -> Vec<String> {
-        let mut paths: Vec<_> = fs::read_dir("/etc/ssh")
+        let mut paths: Vec<_> = fs::read_dir(&self.ssh_host_key_dir)
             .map(|entries| {
                 entries
                     .filter_map(Result::ok)
@@ -446,6 +447,27 @@ fn ntp_synchronized() -> bool {
 mod tests {
     use super::*;
     use bollard::models::{ClusterInfo, ContainerSummaryHealth, ContainerSummaryStateEnum};
+
+    #[test]
+    fn host_key_digests_come_from_the_configured_dir() {
+        let dir = crate::signed_plan::test_support::temp_dir("facts-ssh");
+        let blob = base64::engine::general_purpose::STANDARD.encode(b"key-blob");
+        fs::write(
+            dir.join("ssh_host_ed25519_key.pub"),
+            format!("ssh-ed25519 {blob} root@host\n"),
+        )
+        .unwrap();
+        fs::write(dir.join("ssh_host_ed25519_key"), "private").unwrap();
+        let probe = SystemProbe {
+            server_id: String::new(),
+            ssh_host_key_dir: dir.clone(),
+        };
+        let line = format!("ssh-ed25519 {blob} root@host\n");
+        assert_eq!(
+            probe.ssh_host_key_digests_hex(),
+            vec![ssh_host_key_digest_hex(&line).unwrap()]
+        );
+    }
 
     #[test]
     fn parses_os_release_id_and_version() {

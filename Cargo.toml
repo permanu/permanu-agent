@@ -3,6 +3,11 @@ name = "permanu-agent"
 version = "0.1.0"
 edition = "2021"
 
+[features]
+# Development only, never in release builds: PERMANU_AGENT_DEV_ROOT moves every
+# local-mode path under an unprivileged dir for the engine smoke test.
+dev-paths = []
+
 [dependencies]
 anyhow = "1"
 aes-gcm = "0.10"
