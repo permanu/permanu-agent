@@ -6785,6 +6785,19 @@ fn strings<const N: usize>(items: [&str; N]) -> Vec<String> {
     items.into_iter().map(ToOwned::to_owned).collect()
 }
 
+/// Process-wide state (environment variables, the default managed CI
+/// workspace) shared by the tests compiled with this file; see
+/// `tests/job_deployment_test.rs`. Tests that only read it hold it shared.
+#[cfg(test)]
+pub(crate) static TEST_PROCESS_STATE: std::sync::RwLock<()> = std::sync::RwLock::new(());
+
+#[cfg(test)]
+fn shared_test_process_state() -> std::sync::RwLockReadGuard<'static, ()> {
+    TEST_PROCESS_STATE
+        .read()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
 #[cfg(test)]
 mod ci_service_runtime_tests {
     use super::*;
@@ -6874,6 +6887,8 @@ runs:
 
     #[test]
     fn command_path_updates_map_container_workspace_to_host_checkout() {
+        // Reads the shared tool cache switches from the environment.
+        let _guard = shared_test_process_state();
         let mut env = BTreeMap::from([("PATH".to_string(), "/usr/bin".to_string())]);
         let updates = CommandFileUpdates {
             path_entries: vec!["/permanu-ci/runner-tool-cache/node/22/bin".to_string()],
@@ -7026,6 +7041,8 @@ mod ci_cancellation_tests {
 
     #[test]
     fn wait_for_child_output_terminates_process_group_on_cancel_signal() {
+        // Spawns `sh` through `PATH`.
+        let _guard = shared_test_process_state();
         let cancelled = Arc::new(AtomicBool::new(false));
         let mut command = StdCommand::new("sh");
         command
