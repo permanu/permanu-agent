@@ -52,16 +52,24 @@ enum WebhookDeliveryStatus {
   WEBHOOK_DELIVERY_STATUS_FAILED = 7;
   WEBHOOK_DELIVERY_STATUS_EXPIRED = 8;
   WEBHOOK_DELIVERY_STATUS_DUPLICATE = 9;        // same body_digest_hex seen before
-  WEBHOOK_DELIVERY_STATUS_STALE = 10;           // received_at older than 15 min at admission
+  // v2.1.3 (contracts v1.1.3, D-061): the build of the commit could not
+  // start within 900 s of the delivery, or its rule plan was not admitted
+  // within 900 s of the build's end (signed-plan.md 6.1 step 12).
+  WEBHOOK_DELIVERY_STATUS_STALE = 10;
 }
 
 message WebhookDelivery {
+  // The agent-minted UUIDv7 (admissions.db deliveries.delivery_id); v2.1.3
+  // (contracts v1.1.3, D-061): the value RuleInvocation.evidence.delivery_id
+  // carries.
   string id = 1;
   google.protobuf.Timestamp received_at = 2;
   string provider = 3;   // "github" | "gitlab" | "gitea" | "generic"
   string event = 4;      // e.g. "push", "pull_request"
-  // Provider delivery id (X-GitHub-Delivery); this is
-  // RuleInvocation.evidence.delivery_id.
+  // Provider delivery id (X-GitHub-Delivery), informational only.
+  // v2.1.3 (contracts v1.1.3, D-061): RuleInvocation.evidence.delivery_id is
+  // WebhookDelivery.id, the UUIDv7 the agent mints (admissions.db
+  // deliveries.delivery_id), never this value.
   string delivery_ref = 5;
   string repository = 6;
   string ref = 7;
@@ -136,6 +144,10 @@ message WebhookQueueStatus {
   uint32 rejected_24h = 11;
   // Builds waiting for the single build slot.
   uint32 builds_queued = 12;
+  // v2.1.3 (contracts v1.1.3, D-061). The hostname Dwaar routes
+  // /hooks/<project_id> on: the latest succeeded webhook.host.set on this
+  // server; "" before one. Push URL: https://<webhook_host>/hooks/<project_id>.
+  string webhook_host = 13;
 }
 
 enum ServerBuildStatus {
@@ -176,6 +188,10 @@ message ServerBuild {
   // Empty otherwise. The engine copies it into Engine API
   // Deployment.failure_detail (failure_code "build").
   string failure_reason = 17;
+  // v2.1.3 (contracts v1.1.3, D-061). id is agent-minted at QUEUED; this is
+  // the runner's build_id (its build_started and build lines, admissions.db
+  // builds.build_id), "" until the runner accepted build_image.
+  string runner_build_id = 18;
 }
 
 message ListServerBuildsRequest {

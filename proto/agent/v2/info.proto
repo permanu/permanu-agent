@@ -94,6 +94,10 @@ message HelloResponse {
   //                    honours AnalyticsQuery.service_ids. An engine requires
   //                    it before it sends service_ids (an older agent ignores
   //                    the field and would return every service's rows).
+  // v2.1.3 (contracts v1.1.3, D-061; Hello still negotiates "2.1") adds no
+  // capability: BACKUP_RUN_STATUS_MISSED, ServerBuild.runner_build_id and
+  // WebhookQueueStatus.webhook_host are additive, and an engine shows an
+  // unknown enum value as a generic status.
   repeated string capabilities = 3;
   ServerFacts server = 4;
   TrustedKeysSummary trusted_keys = 5;
