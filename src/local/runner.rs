@@ -1,21 +1,26 @@
 //! The agent's client for `permanu-runner` (signed-plan.md sections 14.1 to
-//! 14.6, D-025, D-030): newline-delimited JSON, one request line out, response
-//! lines back until a terminal one.
+//! 14.8, D-025, D-030, D-038).
 //!
 //! - Production reaches the root runner through the socket-activated unit
 //!   `permanu-runner.socket` (`/run/permanu/runner.sock`, `root:permanu-agent
 //!   0660`); each connection is one root `permanu-runner serve` instance.
-//! - Tests and development may run `<program> rpc` over stdio instead.
-//! - Requests name only `{plan_id, plan_digest_hex, action_index}` and carry
-//!   `payload: {}` (D-025); the runner takes every executable parameter from
-//!   the agent's admission row (D-022). `bootstrap_trust` is the one unbound
-//!   mutating op and carries only the `server.add` envelope text.
-//! - A terminal response is either `{"ok": true | false, "error"?: {code,
-//!   message}}` (the `bind_plan` shape of section 14.2) or the runner's event
-//!   stream, whose `{"kind": "result", "result": {success, error}}` line ends
-//!   it; `progress` lines before it become step log lines.
+//!   Development builds (`dev-paths`) may run `<program> rpc` over stdio.
+//! - Wire protocol (section 14.8): one request line `{"op", "plan"?,
+//!   "payload"}` per exchange; the answer is zero or more `{"type":
+//!   "progress", ...}` lines and exactly one `{"type": "result", "ok", ...}`
+//!   line, which is the last. Any other `type`, a second `result` or a
+//!   connection that closes before the `result` is a failed op
+//!   (`E_INTERNAL` here); the consumed log stays authoritative for what ran.
+//! - Bound requests name only `{plan_id, plan_digest_hex, action_index}` and
+//!   carry `payload: {}` (D-025); the runner takes every executable parameter
+//!   from the agent's admission row (D-022). `bootstrap_trust` is the one
+//!   unbound mutating op and carries only the `server.add` envelope text.
+//! - The read-only container ops (section 14.3, D-036) take their pinned
+//!   payloads; `container_logs_follow` streams `progress` lines until the
+//!   agent closes the connection or the container stops.
 
 use std::path::PathBuf;
+#[cfg(feature = "dev-paths")]
 use std::process::Stdio;
 use std::time::Duration;
 
@@ -24,17 +29,28 @@ use tokio::io::{
     AsyncBufReadExt, AsyncRead, AsyncReadExt as _, AsyncWrite, AsyncWriteExt, BufReader,
 };
 use tokio::net::UnixStream;
+#[cfg(feature = "dev-paths")]
 use tokio::process::Command;
 
 use crate::signed_plan::PlanCode;
 
 pub const DEFAULT_RUNNER_SOCKET: &str = "/run/permanu/runner.sock";
-const MAX_LINE_BYTES: usize = 64 * 1024;
+/// A response line: 4 MiB covers a `container_logs` tail result.
+const MAX_LINE_BYTES: usize = 4 * 1024 * 1024;
+/// Section 14.8: a request line is at most 256 KiB.
+const MAX_REQUEST_BYTES: usize = 256 * 1024;
+/// Lines read for one non-streaming exchange.
 const MAX_LINES: usize = 4_096;
 const MAX_MESSAGE_CHARS: usize = 256;
 /// Progress lines kept per op; later ones are dropped.
 const MAX_PROGRESS_LINES: usize = 256;
+/// How long the caller waits, after the `result`, for the runner to close
+/// the connection; a line in that time is a second result (section 14.8).
+const DRAIN: Duration = Duration::from_millis(500);
 pub const BIND_TIMEOUT: Duration = Duration::from_secs(30);
+/// Read-only container ops (`list_containers`, `inspect_container`,
+/// `container_logs`).
+pub const READ_TIMEOUT: Duration = Duration::from_secs(30);
 /// The message of a call that hit its timeout.
 pub const TIMED_OUT: &str = "runner timed out";
 
@@ -66,12 +82,14 @@ pub struct Bound {
 
 /// A refused or failed runner call. `code` is the runner's own code (a
 /// section 6.1/14 code, or an op failure code such as `health_failed`);
-/// transport failures use `E_INTERNAL`.
+/// transport and protocol failures use `E_INTERNAL`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RunnerFailure {
     pub code: String,
     pub message: String,
     pub consumed_at: Option<String>,
+    /// `error.failure_code` of a failed service step (section 14.8).
+    pub failure_code: Option<String>,
 }
 
 impl RunnerFailure {
@@ -80,6 +98,7 @@ impl RunnerFailure {
             code: PlanCode::Internal.as_str().to_owned(),
             message: message.into(),
             consumed_at: None,
+            failure_code: None,
         }
     }
 
@@ -89,26 +108,32 @@ impl RunnerFailure {
     }
 }
 
-/// A completed op: the runner's progress messages, in order.
+/// A completed op: the runner's progress messages, in order, and its
+/// `result` line.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct OpDone {
     pub progress: Vec<String>,
+    pub result: Value,
 }
 
 /// One request/response exchange with the runner.
 #[tonic::async_trait]
 pub trait Runner: Send + Sync {
-    /// Sends `request` and returns the terminal response, normalised to
-    /// `{"ok": bool, "error"?: {...}, "progress": [..], ...}`.
+    /// Sends `request` and returns its `result` line with the progress
+    /// messages before it under `"progress"`.
     async fn exchange(&self, request: Value, timeout: Duration) -> Result<Value, RunnerFailure>;
+
+    /// Sends `request` and hands back its event lines as they arrive
+    /// (`container_logs_follow`). Dropping the stream closes the connection.
+    async fn open(&self, request: Value) -> Result<EventLines, RunnerFailure>;
 }
 
 fn bounded(text: &str) -> String {
     text.chars().take(MAX_MESSAGE_CHARS).collect()
 }
 
-fn failure_of(response: &Value) -> RunnerFailure {
-    let error = &response["error"];
+fn failure_of(result: &Value) -> RunnerFailure {
+    let error = &result["error"];
     RunnerFailure {
         code: error["code"]
             .as_str()
@@ -119,22 +144,32 @@ fn failure_of(response: &Value) -> RunnerFailure {
         message: bounded(
             error["message"]
                 .as_str()
-                .or(error["safe_message"].as_str())
                 .unwrap_or("runner refused the request"),
         ),
-        consumed_at: error["consumed_at"].as_str().map(str::to_owned),
+        consumed_at: error["consumed_at"]
+            .as_str()
+            .or(result["consumed_at"].as_str())
+            .map(bounded),
+        failure_code: error["failure_code"]
+            .as_str()
+            .filter(|code| !code.is_empty() && code.len() <= 32)
+            .map(str::to_owned),
     }
 }
 
-/// `bind_plan` (section 14.2).
-pub async fn bind_plan(runner: &dyn Runner, plan: &PlanRef) -> Result<Bound, RunnerFailure> {
-    let mut request = plan.json();
-    request["op"] = json!("bind_plan");
-    let response = runner.exchange(request, BIND_TIMEOUT).await?;
-    if response["ok"] != true {
-        return Err(failure_of(&response));
+fn ok_or_failure(result: Value) -> Result<Value, RunnerFailure> {
+    if result["ok"] == true {
+        Ok(result)
+    } else {
+        Err(failure_of(&result))
     }
-    let field = |name: &str| response[name].as_str().unwrap_or_default().to_owned();
+}
+
+/// `bind_plan` (section 14.2) in the section 14.8 form.
+pub async fn bind_plan(runner: &dyn Runner, plan: &PlanRef) -> Result<Bound, RunnerFailure> {
+    let request = json!({"op": "bind_plan", "plan": plan.json(), "payload": {}});
+    let result = ok_or_failure(runner.exchange(request, BIND_TIMEOUT).await?)?;
+    let field = |name: &str| result[name].as_str().map(bounded).unwrap_or_default();
     Ok(Bound {
         kind: field("kind"),
         consumed_at: field("consumed_at"),
@@ -150,21 +185,15 @@ pub async fn run_op(
     timeout: Duration,
 ) -> Result<OpDone, RunnerFailure> {
     let request = json!({"op": op, "plan": plan.json(), "payload": {}});
-    let response = runner.exchange(request, timeout).await?;
-    if response["ok"] != true {
-        return Err(failure_of(&response));
-    }
-    Ok(OpDone {
-        progress: response["progress"]
-            .as_array()
-            .map(|lines| {
-                lines
-                    .iter()
-                    .filter_map(|l| l.as_str().map(bounded))
-                    .collect()
-            })
-            .unwrap_or_default(),
-    })
+    let mut result = ok_or_failure(runner.exchange(request, timeout).await?)?;
+    let progress = match result.as_object_mut().and_then(|m| m.remove("progress")) {
+        Some(Value::Array(lines)) => lines
+            .iter()
+            .filter_map(|line| line.as_str().map(bounded))
+            .collect(),
+        _ => Vec::new(),
+    };
+    Ok(OpDone { progress, result })
 }
 
 /// `bootstrap_trust` (section 14.4, v1.0.2): unbound, accepted by the runner
@@ -172,86 +201,271 @@ pub async fn run_op(
 /// itself, including the time window, before it writes the file.
 pub async fn bootstrap_trust(runner: &dyn Runner, envelope: &str) -> Result<(), RunnerFailure> {
     let request = json!({"op": "bootstrap_trust", "payload": {"signed_plan": envelope}});
-    let response = runner.exchange(request, BIND_TIMEOUT).await?;
-    if response["ok"] == true {
-        Ok(())
-    } else {
-        Err(failure_of(&response))
+    ok_or_failure(runner.exchange(request, BIND_TIMEOUT).await?).map(|_| ())
+}
+
+/// A Permanu container as `list_containers` reports it (section 14.3).
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct RunnerContainer {
+    pub id: String,
+    pub name: String,
+    pub image: String,
+    pub state: String,
+    pub status: String,
+    pub created_at: String,
+    pub project_id: String,
+    pub environment_id: String,
+    pub service_id: String,
+    pub deployment_id: String,
+    pub spec_digest_hex: String,
+}
+
+/// Label filters of `list_containers`; empty fields match everything.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct ContainerFilter {
+    pub project_id: String,
+    pub environment_id: String,
+    pub service_id: String,
+}
+
+/// Section 14.3: at most 1000 containers per answer.
+const MAX_CONTAINERS: usize = 1_000;
+
+/// `list_containers` (section 14.3): unbound and read-only.
+pub async fn list_containers(
+    runner: &dyn Runner,
+    filter: &ContainerFilter,
+) -> Result<Vec<RunnerContainer>, RunnerFailure> {
+    let mut payload = serde_json::Map::new();
+    for (name, value) in [
+        ("project_id", &filter.project_id),
+        ("environment_id", &filter.environment_id),
+        ("service_id", &filter.service_id),
+    ] {
+        if !value.is_empty() {
+            payload.insert(name.to_owned(), json!(value));
+        }
+    }
+    let request = json!({"op": "list_containers", "payload": payload});
+    let result = ok_or_failure(runner.exchange(request, READ_TIMEOUT).await?)?;
+    let items = result["containers"]
+        .as_array()
+        .ok_or_else(|| RunnerFailure::transport("list_containers returned no containers"))?;
+    let text = |item: &Value, name: &str| item[name].as_str().map(bounded).unwrap_or_default();
+    Ok(items
+        .iter()
+        .take(MAX_CONTAINERS)
+        .filter(|item| item["id"].as_str().is_some_and(|id| !id.is_empty()))
+        .map(|item| RunnerContainer {
+            id: text(item, "id"),
+            name: text(item, "name"),
+            image: text(item, "image"),
+            state: text(item, "state"),
+            status: text(item, "status"),
+            created_at: text(item, "created_at"),
+            project_id: text(item, "project_id"),
+            environment_id: text(item, "environment_id"),
+            service_id: text(item, "service_id"),
+            deployment_id: text(item, "deployment_id"),
+            spec_digest_hex: text(item, "spec_digest_hex"),
+        })
+        .collect())
+}
+
+/// `inspect_container` (section 14.3): the `container` object.
+pub async fn inspect_container(
+    runner: &dyn Runner,
+    container_id: &str,
+) -> Result<Value, RunnerFailure> {
+    let request = json!({"op": "inspect_container", "payload": {"container_id": container_id}});
+    let mut result = ok_or_failure(runner.exchange(request, READ_TIMEOUT).await?)?;
+    match result.get_mut("container").map(Value::take) {
+        Some(container @ Value::Object(_)) => Ok(container),
+        _ => Err(RunnerFailure::transport(
+            "inspect_container returned no container",
+        )),
     }
 }
 
-/// Normalises one response line. `None`: a non-terminal progress line.
-fn terminal(line: &Value, progress: &mut Vec<String>) -> Result<Option<Value>, RunnerFailure> {
-    if line.get("ok").is_some_and(Value::is_boolean) {
-        let mut done = line.clone();
-        done["progress"] = json!(progress);
-        return Ok(Some(done));
+/// One timestamped line of `container_logs`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LogLine {
+    pub stream: &'static str,
+    pub line: String,
+}
+
+/// Section 14.3: `tail` is 1–10000.
+pub const MAX_LOG_TAIL: u32 = 10_000;
+
+/// `container_logs` (section 14.3): the tail, stdout lines then stderr
+/// lines, each prefixed with its RFC 3339 timestamp.
+pub async fn container_logs(
+    runner: &dyn Runner,
+    container_id: &str,
+    tail: u32,
+    since: Option<&str>,
+) -> Result<Vec<LogLine>, RunnerFailure> {
+    let mut payload = json!({"container_id": container_id, "tail": tail.clamp(1, MAX_LOG_TAIL)});
+    if let Some(since) = since {
+        payload["since"] = json!(since);
     }
-    match line["kind"].as_str() {
-        Some("progress") => {
-            let text = line["safe_message"]
-                .as_str()
-                .or(line["stage"].as_str())
-                .unwrap_or_default();
-            if !text.is_empty() && progress.len() < MAX_PROGRESS_LINES {
-                progress.push(bounded(text));
-            }
-            Ok(None)
-        }
-        Some("result") => {
-            let result = &line["result"];
-            let ok = result["success"] == true;
-            let mut done = json!({"ok": ok, "progress": progress});
-            if !ok {
-                done["error"] = json!({
-                    "code": result["error"]["code"].as_str().unwrap_or_default(),
-                    "message": result["error"]["safe_message"].as_str().unwrap_or_default(),
+    let request = json!({"op": "container_logs", "payload": payload});
+    let result = ok_or_failure(runner.exchange(request, READ_TIMEOUT).await?)?;
+    let mut lines = Vec::new();
+    for stream in ["stdout", "stderr"] {
+        for line in result[stream].as_array().map_or(&[][..], Vec::as_slice) {
+            if let Some(text) = line.as_str() {
+                lines.push(LogLine {
+                    stream,
+                    line: text.to_owned(),
                 });
             }
-            Ok(Some(done))
         }
-        _ => Err(RunnerFailure::transport("runner returned an unknown line")),
     }
+    Ok(lines)
 }
 
-/// Writes one request line and reads until a terminal line.
-async fn converse<R, W>(reader: R, mut writer: W, request: &Value) -> Result<Value, RunnerFailure>
-where
-    R: AsyncRead + Unpin,
-    W: AsyncWrite + Unpin,
-{
-    let mut line = serde_json::to_vec(request).map_err(|_| RunnerFailure::transport("encode"))?;
-    line.push(b'\n');
-    writer
-        .write_all(&line)
+/// `container_logs_follow` (section 14.3): `progress` lines with `stream`
+/// and `line` until the caller drops the stream or the container stops.
+pub async fn container_logs_follow(
+    runner: &dyn Runner,
+    container_id: &str,
+    since: Option<&str>,
+) -> Result<EventLines, RunnerFailure> {
+    let mut payload = json!({"container_id": container_id});
+    if let Some(since) = since {
+        payload["since"] = json!(since);
+    }
+    runner
+        .open(json!({"op": "container_logs_follow", "payload": payload}))
         .await
-        .map_err(|_| RunnerFailure::transport("write to runner failed"))?;
-    writer
-        .flush()
-        .await
-        .map_err(|_| RunnerFailure::transport("write to runner failed"))?;
-    let mut reader = BufReader::new(reader);
-    let mut progress = Vec::new();
-    for _ in 0..MAX_LINES {
+}
+
+type BoxRead = Box<dyn AsyncRead + Send + Unpin>;
+type BoxWrite = Box<dyn AsyncWrite + Send + Unpin>;
+
+/// The event lines of one request (section 14.8), validated one by one.
+pub struct EventLines {
+    reader: BufReader<BoxRead>,
+    writer: Option<BoxWrite>,
+    op: String,
+    finished: bool,
+    /// Keeps a stdio runner alive for as long as the stream is.
+    #[cfg(feature = "dev-paths")]
+    _child: Option<tokio::process::Child>,
+}
+
+impl EventLines {
+    async fn start(
+        reader: BoxRead,
+        mut writer: BoxWrite,
+        request: &Value,
+    ) -> Result<Self, RunnerFailure> {
+        let mut line =
+            serde_json::to_vec(request).map_err(|_| RunnerFailure::transport("encode"))?;
+        if line.len() > MAX_REQUEST_BYTES {
+            return Err(RunnerFailure::transport("request line too long"));
+        }
+        line.push(b'\n');
+        writer
+            .write_all(&line)
+            .await
+            .map_err(|_| RunnerFailure::transport("write to runner failed"))?;
+        writer
+            .flush()
+            .await
+            .map_err(|_| RunnerFailure::transport("write to runner failed"))?;
+        Ok(Self {
+            reader: BufReader::new(reader),
+            writer: Some(writer),
+            op: request["op"].as_str().unwrap_or_default().to_owned(),
+            finished: false,
+            #[cfg(feature = "dev-paths")]
+            _child: None,
+        })
+    }
+
+    /// One raw line; `None` at end of stream.
+    async fn raw_line(&mut self) -> Result<Option<Value>, RunnerFailure> {
         let mut raw = Vec::new();
-        let read = (&mut reader)
+        let read = (&mut self.reader)
             .take(MAX_LINE_BYTES as u64 + 1)
             .read_until(b'\n', &mut raw)
             .await
             .map_err(|_| RunnerFailure::transport("read from runner failed"))?;
         if read == 0 {
-            return Err(RunnerFailure::transport("runner closed without a result"));
+            return Ok(None);
         }
         if raw.len() > MAX_LINE_BYTES || raw.last() != Some(&b'\n') {
             return Err(RunnerFailure::transport("runner line too long or torn"));
         }
         let value: Value = serde_json::from_slice(&raw)
             .map_err(|_| RunnerFailure::transport("runner returned invalid JSON"))?;
-        if let Some(done) = terminal(&value, &mut progress)? {
-            return Ok(done);
+        Ok(Some(value))
+    }
+
+    /// The next event line: `progress` or the one `result`, after which it
+    /// returns `None`. Anything else fails the op (section 14.8).
+    pub async fn next(&mut self) -> Result<Option<Value>, RunnerFailure> {
+        if self.finished {
+            return Ok(None);
+        }
+        let Some(line) = self.raw_line().await? else {
+            return Err(RunnerFailure::transport("runner closed without a result"));
+        };
+        if line
+            .get("op")
+            .is_some_and(|op| op.as_str() != Some(self.op.as_str()))
+        {
+            return Err(RunnerFailure::transport("runner answered another op"));
+        }
+        match line["type"].as_str() {
+            Some("progress") => Ok(Some(line)),
+            Some("result") if line["ok"].is_boolean() => {
+                self.finished = true;
+                Ok(Some(line))
+            }
+            Some("result") => Err(RunnerFailure::transport("runner result without ok")),
+            _ => Err(RunnerFailure::transport("runner returned an unknown line")),
         }
     }
-    Err(RunnerFailure::transport("runner sent too many lines"))
+
+    /// After the `result`: closes the request side and checks that nothing
+    /// else follows before the runner closes (exactly one `result`).
+    async fn drain(&mut self) -> Result<(), RunnerFailure> {
+        if let Some(mut writer) = self.writer.take() {
+            let _ = writer.shutdown().await;
+        }
+        match tokio::time::timeout(DRAIN, self.raw_line()).await {
+            Ok(Ok(Some(_))) => Err(RunnerFailure::transport(
+                "runner sent a line after its result",
+            )),
+            // End of stream, a read error or a runner slow to close: the
+            // one result stands.
+            _ => Ok(()),
+        }
+    }
+
+    /// Reads the whole answer of a non-streaming request.
+    async fn answer(mut self) -> Result<Value, RunnerFailure> {
+        let mut progress = Vec::new();
+        for _ in 0..MAX_LINES {
+            let Some(line) = self.next().await? else {
+                break;
+            };
+            if line["type"] == "result" {
+                self.drain().await?;
+                let mut result = line;
+                result["progress"] = json!(progress);
+                return Ok(result);
+            }
+            let text = line["message"].as_str().unwrap_or_default();
+            if !text.is_empty() && progress.len() < MAX_PROGRESS_LINES {
+                progress.push(bounded(text));
+            }
+        }
+        Err(RunnerFailure::transport("runner sent too many lines"))
+    }
 }
 
 /// The root runner behind `permanu-runner.socket` (production, D-030).
@@ -260,31 +474,42 @@ pub struct SocketRunner {
     pub path: PathBuf,
 }
 
+impl SocketRunner {
+    async fn connect(&self, request: &Value) -> Result<EventLines, RunnerFailure> {
+        let stream = UnixStream::connect(&self.path)
+            .await
+            .map_err(|e| RunnerFailure::transport(format!("cannot reach the runner: {e}")))?;
+        let (reader, writer) = stream.into_split();
+        EventLines::start(Box::new(reader), Box::new(writer), request).await
+    }
+}
+
 #[tonic::async_trait]
 impl Runner for SocketRunner {
     async fn exchange(&self, request: Value, timeout: Duration) -> Result<Value, RunnerFailure> {
-        let run = async {
-            let stream = UnixStream::connect(&self.path)
-                .await
-                .map_err(|e| RunnerFailure::transport(format!("cannot reach the runner: {e}")))?;
-            let (reader, writer) = stream.into_split();
-            converse(reader, writer, &request).await
-        };
+        let run = async { self.connect(&request).await?.answer().await };
         tokio::time::timeout(timeout, run)
+            .await
+            .map_err(|_| RunnerFailure::transport(TIMED_OUT))?
+    }
+
+    async fn open(&self, request: Value) -> Result<EventLines, RunnerFailure> {
+        tokio::time::timeout(READ_TIMEOUT, self.connect(&request))
             .await
             .map_err(|_| RunnerFailure::transport(TIMED_OUT))?
     }
 }
 
-/// Runs `<program> rpc` once per request (tests and development).
+/// Runs `<program> rpc` once per request (development builds only).
+#[cfg(feature = "dev-paths")]
 #[derive(Debug, Clone)]
 pub struct StdioRunner {
     pub program: PathBuf,
 }
 
-#[tonic::async_trait]
-impl Runner for StdioRunner {
-    async fn exchange(&self, request: Value, timeout: Duration) -> Result<Value, RunnerFailure> {
+#[cfg(feature = "dev-paths")]
+impl StdioRunner {
+    async fn spawn(&self, request: &Value) -> Result<EventLines, RunnerFailure> {
         let mut child = Command::new(&self.program)
             .arg("rpc")
             .stdin(Stdio::piped())
@@ -294,29 +519,38 @@ impl Runner for StdioRunner {
             .kill_on_drop(true)
             .spawn()
             .map_err(|e| RunnerFailure::transport(format!("cannot start the runner: {e}")))?;
-        let run = async {
-            let stdin = child
-                .stdin
-                .take()
-                .ok_or_else(|| RunnerFailure::transport("no stdin"))?;
-            let stdout = child
-                .stdout
-                .take()
-                .ok_or_else(|| RunnerFailure::transport("no stdout"))?;
-            let done = converse(stdout, stdin, &request).await;
-            let _ = child.wait().await;
-            done
-        };
+        let stdin = child
+            .stdin
+            .take()
+            .ok_or_else(|| RunnerFailure::transport("no stdin"))?;
+        let stdout = child
+            .stdout
+            .take()
+            .ok_or_else(|| RunnerFailure::transport("no stdout"))?;
+        let mut lines = EventLines::start(Box::new(stdout), Box::new(stdin), request).await?;
+        lines._child = Some(child);
+        Ok(lines)
+    }
+}
+
+#[cfg(feature = "dev-paths")]
+#[tonic::async_trait]
+impl Runner for StdioRunner {
+    async fn exchange(&self, request: Value, timeout: Duration) -> Result<Value, RunnerFailure> {
+        let run = async { self.spawn(&request).await?.answer().await };
         tokio::time::timeout(timeout, run)
             .await
             .map_err(|_| RunnerFailure::transport(TIMED_OUT))?
+    }
+
+    async fn open(&self, request: Value) -> Result<EventLines, RunnerFailure> {
+        self.spawn(&request).await
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::os::unix::fs::PermissionsExt;
 
     fn plan() -> PlanRef {
         PlanRef {
@@ -326,141 +560,279 @@ mod tests {
         }
     }
 
-    /// A runner that answers every request with fixed lines and records it.
-    struct Canned {
-        lines: Vec<Value>,
-        seen: std::sync::Mutex<Vec<Value>>,
-    }
-
-    #[tonic::async_trait]
-    impl Runner for Canned {
-        async fn exchange(&self, request: Value, _: Duration) -> Result<Value, RunnerFailure> {
-            self.seen.lock().unwrap().push(request);
-            let mut progress = Vec::new();
-            for line in &self.lines {
-                if let Some(done) = terminal(line, &mut progress)? {
-                    return Ok(done);
-                }
-            }
-            Err(RunnerFailure::transport("no result"))
-        }
-    }
-
-    fn canned(lines: Vec<Value>) -> Canned {
-        Canned {
-            lines,
-            seen: std::sync::Mutex::new(Vec::new()),
-        }
-    }
-
-    #[tokio::test]
-    async fn bind_parses_success_and_every_failure_shape() {
-        let ok = canned(vec![json!({"ok": true, "kind": "deploy",
-            "consumed_at": "c", "execution_deadline": "e"})]);
-        let bound = bind_plan(&ok, &plan()).await.unwrap();
-        assert_eq!(bound.kind, "deploy");
-        assert_eq!(bound.consumed_at, "c");
-        assert_eq!(
-            ok.seen.lock().unwrap()[0],
-            json!({"op": "bind_plan", "plan_id": plan().plan_id,
-                   "plan_digest_hex": plan().plan_digest_hex, "action_index": 2})
-        );
-        let consumed = canned(vec![json!({"ok": false, "error": {
-            "code": "E_PLAN_CONSUMED", "message": "m", "consumed_at": "t"}})]);
-        let failure = bind_plan(&consumed, &plan()).await.unwrap_err();
-        assert_eq!(failure.plan_code(), PlanCode::PlanConsumed);
-        assert_eq!(failure.consumed_at.as_deref(), Some("t"));
-        let trust = canned(vec![
-            json!({"ok": false, "error": {"code": "trust_store_invalid", "message": "m"}}),
-        ]);
-        assert_eq!(
-            bind_plan(&trust, &plan()).await.unwrap_err().plan_code(),
-            PlanCode::TrustStoreInvalid
-        );
-        let unknown = canned(vec![json!({"ok": false, "error": {"code": "E_WHAT"}})]);
-        assert_eq!(
-            bind_plan(&unknown, &plan()).await.unwrap_err().plan_code(),
-            PlanCode::Internal
-        );
-        let garbage = canned(vec![json!({"hello": 1})]);
-        assert_eq!(
-            bind_plan(&garbage, &plan()).await.unwrap_err().plan_code(),
-            PlanCode::Internal
-        );
-    }
-
-    #[tokio::test]
-    async fn ops_send_an_empty_payload_and_read_either_response_shape() {
-        let stream = canned(vec![
-            json!({"kind": "progress", "stage": "pull", "safe_message": "Pulling image"}),
-            json!({"kind": "progress", "stage": "start"}),
-            json!({"kind": "result", "result": {"success": true, "final_state": "candidate"}}),
-        ]);
-        let done = run_op(&stream, "prepare_release", &plan(), Duration::from_secs(1))
-            .await
-            .unwrap();
-        assert_eq!(done.progress, vec!["Pulling image", "start"]);
-        assert_eq!(
-            stream.seen.lock().unwrap()[0],
-            json!({"op": "prepare_release", "payload": {}, "plan": {
-                "plan_id": plan().plan_id, "plan_digest_hex": plan().plan_digest_hex,
-                "action_index": 2}})
-        );
-        let failed = canned(vec![json!({"kind": "result", "result": {
-            "success": false, "final_state": "failed",
-            "error": {"code": "health_failed", "safe_message": "candidate unhealthy",
-                      "retryable": false}}})]);
-        let failure = run_op(&failed, "verify_health", &plan(), Duration::from_secs(1))
-            .await
-            .unwrap_err();
-        assert_eq!(failure.code, "health_failed");
-        assert_eq!(failure.message, "candidate unhealthy");
-        let short = canned(vec![json!({"ok": false, "error": {"code": "E_PLAN_ARGS"}})]);
-        assert_eq!(
-            run_op(&short, "activate_release", &plan(), Duration::from_secs(1))
-                .await
-                .unwrap_err()
-                .plan_code(),
-            PlanCode::PlanArgs
-        );
-    }
-
-    #[tokio::test]
-    async fn bootstrap_trust_carries_only_the_envelope() {
-        let ok = canned(vec![json!({"ok": true})]);
-        bootstrap_trust(&ok, "{\"plan\":{}}").await.unwrap();
-        assert_eq!(
-            ok.seen.lock().unwrap()[0],
-            json!({"op": "bootstrap_trust", "payload": {"signed_plan": "{\"plan\":{}}"}})
-        );
-    }
-
-    #[tokio::test]
-    async fn socket_runner_speaks_ndjson_per_connection() {
-        let dir = crate::signed_plan::test_support::temp_dir("runner-sock");
+    /// A socket runner that answers the next connection with fixed bytes
+    /// and hands back the request line it read.
+    async fn scripted(
+        name: &str,
+        answer: &'static str,
+    ) -> (
+        SocketRunner,
+        tokio::task::JoinHandle<Value>,
+        std::path::PathBuf,
+    ) {
+        let dir = crate::signed_plan::test_support::temp_dir(name);
         let path = dir.join("runner.sock");
         let listener = tokio::net::UnixListener::bind(&path).unwrap();
         let server = tokio::spawn(async move {
             let (stream, _) = listener.accept().await.unwrap();
             let (reader, mut writer) = stream.into_split();
             let mut line = String::new();
-            BufReader::new(reader).read_line(&mut line).await.unwrap();
-            writer
-                .write_all(b"{\"kind\":\"progress\",\"stage\":\"x\"}\n{\"ok\":true}\n")
-                .await
-                .unwrap();
-            line
+            let mut reader = BufReader::new(reader);
+            reader.read_line(&mut line).await.unwrap();
+            writer.write_all(answer.as_bytes()).await.unwrap();
+            // The scripted answer is all this runner says.
+            writer.shutdown().await.unwrap();
+            let mut rest = String::new();
+            let _ = reader.read_line(&mut rest).await;
+            serde_json::from_str(&line).unwrap()
         });
-        let runner = SocketRunner { path: path.clone() };
-        let done = run_op(&runner, "restart_release", &plan(), Duration::from_secs(5))
+        (SocketRunner { path }, server, dir)
+    }
+
+    #[tokio::test]
+    async fn bind_sends_the_pinned_request_and_reads_the_result_line() {
+        let (runner, server, dir) = scripted(
+            "rn-bind",
+            "{\"type\":\"result\",\"op\":\"bind_plan\",\"ok\":true,\"kind\":\"deploy\",\
+             \"consumed_at\":\"c\",\"execution_deadline\":\"e\"}\n",
+        )
+        .await;
+        let bound = bind_plan(&runner, &plan()).await.unwrap();
+        assert_eq!(bound.kind, "deploy");
+        assert_eq!(bound.consumed_at, "c");
+        assert_eq!(bound.execution_deadline, "e");
+        assert_eq!(
+            server.await.unwrap(),
+            json!({"op": "bind_plan", "plan": {"plan_id": plan().plan_id,
+                   "plan_digest_hex": plan().plan_digest_hex, "action_index": 2},
+                   "payload": {}})
+        );
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[tokio::test]
+    async fn bind_failures_carry_the_runner_code() {
+        let (runner, _server, dir) = scripted(
+            "rn-bindf",
+            "{\"type\":\"result\",\"op\":\"bind_plan\",\"ok\":false,\"error\":\
+             {\"code\":\"E_PLAN_CONSUMED\",\"message\":\"m\",\"consumed_at\":\"t\"}}\n",
+        )
+        .await;
+        let failure = bind_plan(&runner, &plan()).await.unwrap_err();
+        assert_eq!(failure.plan_code(), PlanCode::PlanConsumed);
+        assert_eq!(failure.consumed_at.as_deref(), Some("t"));
+        std::fs::remove_dir_all(dir).unwrap();
+
+        let (runner, _server, dir) = scripted(
+            "rn-bindu",
+            "{\"type\":\"result\",\"ok\":false,\"error\":{\"code\":\"E_WHAT\"}}\n",
+        )
+        .await;
+        assert_eq!(
+            bind_plan(&runner, &plan()).await.unwrap_err().plan_code(),
+            PlanCode::Internal
+        );
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[tokio::test]
+    async fn ops_collect_progress_then_one_result() {
+        let (runner, server, dir) = scripted(
+            "rn-op",
+            "{\"type\":\"progress\",\"op\":\"prepare_release\",\"at\":\"x\",\"message\":\"pulling image\"}\n\
+             {\"type\":\"progress\",\"op\":\"prepare_release\",\"at\":\"x\"}\n\
+             {\"type\":\"result\",\"op\":\"prepare_release\",\"ok\":true,\"state\":\"candidate\"}\n",
+        )
+        .await;
+        let done = run_op(&runner, "prepare_release", &plan(), Duration::from_secs(5))
             .await
             .unwrap();
-        assert_eq!(done.progress, vec!["x"]);
-        let sent: Value = serde_json::from_str(&server.await.unwrap()).unwrap();
-        assert_eq!(sent["op"], "restart_release");
-        assert_eq!(sent["payload"], json!({}));
-        // Nobody listening: a transport failure, never a success.
-        std::fs::remove_file(&path).unwrap();
+        assert_eq!(done.progress, vec!["pulling image"]);
+        assert_eq!(done.result["state"], "candidate");
+        assert_eq!(
+            server.await.unwrap(),
+            json!({"op": "prepare_release", "payload": {}, "plan": {
+                "plan_id": plan().plan_id, "plan_digest_hex": plan().plan_digest_hex,
+                "action_index": 2}})
+        );
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[tokio::test]
+    async fn a_failed_op_carries_its_failure_code() {
+        let (runner, _server, dir) = scripted(
+            "rn-opf",
+            "{\"type\":\"result\",\"op\":\"activate_release\",\"ok\":false,\"error\":\
+             {\"code\":\"health_failed\",\"message\":\"public check failed\",\
+             \"failure_code\":\"public_health\"}}\n",
+        )
+        .await;
+        let failure = run_op(&runner, "activate_release", &plan(), Duration::from_secs(5))
+            .await
+            .unwrap_err();
+        assert_eq!(failure.code, "health_failed");
+        assert_eq!(failure.message, "public check failed");
+        assert_eq!(failure.failure_code.as_deref(), Some("public_health"));
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    // Section 14.8: a second result, an unknown type, a result without ok
+    // and a connection that closes early are failed ops, never successes.
+    #[tokio::test]
+    async fn protocol_violations_fail_the_op() {
+        for (name, answer) in [
+            (
+                "rn-two",
+                "{\"type\":\"result\",\"op\":\"restart_release\",\"ok\":true}\n\
+                 {\"type\":\"result\",\"op\":\"restart_release\",\"ok\":true}\n",
+            ),
+            (
+                "rn-kind",
+                "{\"kind\":\"result\",\"result\":{\"success\":true}}\n",
+            ),
+            ("rn-flat", "{\"ok\":true}\n"),
+            (
+                "rn-nook",
+                "{\"type\":\"result\",\"op\":\"restart_release\"}\n",
+            ),
+            (
+                "rn-early",
+                "{\"type\":\"progress\",\"op\":\"restart_release\",\"at\":\"x\"}\n",
+            ),
+            (
+                "rn-otherop",
+                "{\"type\":\"result\",\"op\":\"prepare_release\",\"ok\":true}\n",
+            ),
+            ("rn-torn", "{\"type\":\"result\",\"ok\":true}"),
+        ] {
+            let (runner, _server, dir) = scripted(name, answer).await;
+            let failure = run_op(&runner, "restart_release", &plan(), Duration::from_secs(5))
+                .await
+                .unwrap_err();
+            assert_eq!(failure.plan_code(), PlanCode::Internal, "{name}");
+            std::fs::remove_dir_all(dir).unwrap();
+        }
+    }
+
+    #[tokio::test]
+    async fn bootstrap_trust_carries_only_the_envelope_text() {
+        let (runner, server, dir) = scripted(
+            "rn-boot",
+            "{\"type\":\"result\",\"op\":\"bootstrap_trust\",\"ok\":true}\n",
+        )
+        .await;
+        bootstrap_trust(&runner, "{\"plan\":{}}").await.unwrap();
+        assert_eq!(
+            server.await.unwrap(),
+            json!({"op": "bootstrap_trust", "payload": {"signed_plan": "{\"plan\":{}}"}})
+        );
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[tokio::test]
+    async fn list_containers_sends_only_the_set_filters() {
+        let (runner, server, dir) = scripted(
+            "rn-list",
+            "{\"type\":\"result\",\"op\":\"list_containers\",\"ok\":true,\"containers\":[\
+             {\"id\":\"c1\",\"name\":\"web-1\",\"image\":\"i\",\"state\":\"running\",\
+             \"status\":\"Up\",\"created_at\":\"t\",\"project_id\":\"p\",\
+             \"environment_id\":\"e\",\"service_id\":\"s\",\"deployment_id\":\"d\",\
+             \"spec_digest_hex\":\"h\"},{\"name\":\"no-id\"}]}\n",
+        )
+        .await;
+        let containers = list_containers(
+            &runner,
+            &ContainerFilter {
+                service_id: "s".to_owned(),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+        assert_eq!(containers.len(), 1);
+        assert_eq!(containers[0].deployment_id, "d");
+        assert_eq!(containers[0].name, "web-1");
+        assert_eq!(
+            server.await.unwrap(),
+            json!({"op": "list_containers", "payload": {"service_id": "s"}})
+        );
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[tokio::test]
+    async fn container_logs_reads_both_streams() {
+        let (runner, server, dir) = scripted(
+            "rn-logs",
+            "{\"type\":\"result\",\"op\":\"container_logs\",\"ok\":true,\
+             \"stdout\":[\"2026-09-23T10:00:00Z a\"],\"stderr\":[\"2026-09-23T10:00:01Z b\"]}\n",
+        )
+        .await;
+        let lines = container_logs(&runner, "c1", 50_000, Some("2026-09-23T09:00:00Z"))
+            .await
+            .unwrap();
+        assert_eq!(
+            lines,
+            vec![
+                LogLine {
+                    stream: "stdout",
+                    line: "2026-09-23T10:00:00Z a".to_owned()
+                },
+                LogLine {
+                    stream: "stderr",
+                    line: "2026-09-23T10:00:01Z b".to_owned()
+                }
+            ]
+        );
+        assert_eq!(
+            server.await.unwrap(),
+            json!({"op": "container_logs", "payload": {"container_id": "c1",
+                   "tail": 10_000, "since": "2026-09-23T09:00:00Z"}})
+        );
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[tokio::test]
+    async fn inspect_and_follow_use_their_payloads() {
+        let (runner, server, dir) = scripted(
+            "rn-insp",
+            "{\"type\":\"result\",\"op\":\"inspect_container\",\"ok\":true,\
+             \"container\":{\"id\":\"c1\",\"restart_count\":2}}\n",
+        )
+        .await;
+        let container = inspect_container(&runner, "c1").await.unwrap();
+        assert_eq!(container["restart_count"], 2);
+        assert_eq!(
+            server.await.unwrap(),
+            json!({"op": "inspect_container", "payload": {"container_id": "c1"}})
+        );
+        std::fs::remove_dir_all(dir).unwrap();
+
+        let (runner, server, dir) = scripted(
+            "rn-follow",
+            "{\"type\":\"progress\",\"op\":\"container_logs_follow\",\"at\":\"t\",\
+             \"stream\":\"stdout\",\"line\":\"2026-09-23T10:00:00Z hi\"}\n\
+             {\"type\":\"result\",\"op\":\"container_logs_follow\",\"ok\":true}\n",
+        )
+        .await;
+        let mut lines = container_logs_follow(&runner, "c1", None).await.unwrap();
+        let first = lines.next().await.unwrap().unwrap();
+        assert_eq!(first["line"], "2026-09-23T10:00:00Z hi");
+        let last = lines.next().await.unwrap().unwrap();
+        assert_eq!(last["type"], "result");
+        assert_eq!(lines.next().await.unwrap(), None);
+        drop(lines);
+        assert_eq!(
+            server.await.unwrap(),
+            json!({"op": "container_logs_follow", "payload": {"container_id": "c1"}})
+        );
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[tokio::test]
+    async fn nobody_listening_is_a_transport_failure() {
+        let runner = SocketRunner {
+            path: std::path::PathBuf::from("/nonexistent/permanu/runner.sock"),
+        };
         assert_eq!(
             run_op(&runner, "restart_release", &plan(), Duration::from_secs(5))
                 .await
@@ -468,11 +840,12 @@ mod tests {
                 .plan_code(),
             PlanCode::Internal
         );
-        std::fs::remove_dir_all(dir).unwrap();
     }
 
+    #[cfg(feature = "dev-paths")]
     #[tokio::test]
-    async fn stdio_runner_sends_exactly_the_three_fields() {
+    async fn stdio_runner_speaks_the_same_protocol() {
+        use std::os::unix::fs::PermissionsExt;
         let dir = crate::signed_plan::test_support::temp_dir("runner-stdio");
         let script = dir.join("runner");
         let capture = dir.join("request");
@@ -480,7 +853,7 @@ mod tests {
             &script,
             format!(
                 "#!/bin/sh\n[ \"$1\" = rpc ] || exit 64\nIFS= read -r line\nprintf '%s' \"$line\" > {}\n\
-                 printf '%s\\n' '{{\"ok\":true,\"kind\":\"deploy\",\"consumed_at\":\"2026-09-23T10:00:09Z\",\"execution_deadline\":\"x\"}}'\n",
+                 printf '%s\\n' '{{\"type\":\"result\",\"op\":\"bind_plan\",\"ok\":true,\"kind\":\"deploy\",\"consumed_at\":\"2026-09-23T10:00:09Z\"}}'\n",
                 capture.display()
             ),
         )
@@ -490,11 +863,8 @@ mod tests {
         let bound = bind_plan(&runner, &plan()).await.unwrap();
         assert_eq!(bound.consumed_at, "2026-09-23T10:00:09Z");
         let sent: Value = serde_json::from_slice(&std::fs::read(&capture).unwrap()).unwrap();
-        assert_eq!(
-            sent,
-            json!({"op":"bind_plan","plan_id":plan().plan_id,
-                   "plan_digest_hex":plan().plan_digest_hex,"action_index":2})
-        );
+        assert_eq!(sent["plan"]["action_index"], 2);
+        assert_eq!(sent["payload"], json!({}));
         let missing = StdioRunner {
             program: dir.join("absent"),
         };

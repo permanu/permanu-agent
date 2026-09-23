@@ -503,10 +503,11 @@ pub async fn run(
             }
         };
     let runner: Arc<dyn runner::Runner> = match &cfg.runner_path {
+        #[cfg(feature = "dev-paths")]
         Some(program) => Arc::new(runner::StdioRunner {
             program: program.clone(),
         }),
-        None => Arc::new(runner::SocketRunner {
+        _ => Arc::new(runner::SocketRunner {
             path: cfg.runner_socket.clone(),
         }),
     };

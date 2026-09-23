@@ -1,8 +1,11 @@
 //! A contained local-mode server for tests: temp trust file, admission store,
 //! public age recipient, fake host probe, a settable clock and a fake runner
-//! that speaks the runner protocol on a unix socket (signed-plan.md 14.1 to
-//! 14.6): `bind_plan`, bound ops with payload `{}`, `bootstrap_trust`,
-//! `update_trusted_keys` and `cancel_execution`, with its own consumed log.
+//! that speaks the pinned runner wire protocol on a unix socket
+//! (signed-plan.md 14.1 to 14.8): strict `{op, plan?, payload}` requests,
+//! `progress` lines and exactly one `result` line; `bind_plan`, bound ops
+//! with payload `{}`, `bootstrap_trust`, `update_trusted_keys`,
+//! `cancel_execution` and the read-only container ops, with its own consumed
+//! log.
 
 use std::collections::{HashMap, HashSet};
 use std::fs;
@@ -99,8 +102,10 @@ impl Clock for FixedClock {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum OpBehavior {
     Succeed,
-    /// Fails with this runner code (event-stream `result` shape).
+    /// Fails with this runner code.
     Fail(&'static str),
+    /// Fails with this runner code and `error.failure_code`.
+    FailCode(&'static str, &'static str),
     /// Never answers until a `cancel_execution` releases it.
     Hang,
 }
@@ -118,6 +123,12 @@ pub struct FakeRunner {
     pub fail_bind_with: Mutex<Option<PlanCode>>,
     pub behaviors: Mutex<HashMap<String, OpBehavior>>,
     pub write_results: AtomicBool,
+    /// Permanu containers `list_containers` reports (section 14.3 shape).
+    pub containers: Mutex<Vec<Value>>,
+    /// `container_logs` answers per container id: (stdout, stderr).
+    pub logs: Mutex<HashMap<String, (Vec<String>, Vec<String>)>>,
+    /// Lines `container_logs_follow` streams before it waits for the close.
+    pub follow_lines: Mutex<HashMap<String, Vec<String>>>,
     consumed: Mutex<HashSet<(String, u32)>>,
     ops: Mutex<HashMap<(String, u32), Vec<String>>>,
     finished: Mutex<HashSet<(String, u32)>>,
@@ -130,6 +141,29 @@ fn refuse(code: &str, message: &str) -> Value {
     json!({"ok": false, "error": {"code": code, "message": message}})
 }
 
+/// Section 14.8 request check: exactly `op`, `payload` (an object) and, for
+/// `bind_plan` and bound ops only, `plan`.
+fn request_shape_ok(request: &Value) -> bool {
+    let Some(map) = request.as_object() else {
+        return false;
+    };
+    let unbound = matches!(
+        request["op"].as_str(),
+        Some(
+            "bootstrap_trust"
+                | "list_containers"
+                | "inspect_container"
+                | "container_logs"
+                | "container_logs_follow"
+        )
+    );
+    map.keys()
+        .all(|key| matches!(key.as_str(), "op" | "plan" | "payload"))
+        && request["op"].is_string()
+        && request["payload"].is_object()
+        && (unbound != map.contains_key("plan"))
+}
+
 impl FakeRunner {
     /// `(plan_id, plan_digest_hex, action_index)` of every `bind_plan`.
     pub fn binds(&self) -> Vec<(String, String, u32)> {
@@ -140,9 +174,9 @@ impl FakeRunner {
             .filter(|r| r["op"] == "bind_plan")
             .map(|r| {
                 (
-                    r["plan_id"].as_str().unwrap().to_owned(),
-                    r["plan_digest_hex"].as_str().unwrap().to_owned(),
-                    r["action_index"].as_u64().unwrap() as u32,
+                    r["plan"]["plan_id"].as_str().unwrap().to_owned(),
+                    r["plan"]["plan_digest_hex"].as_str().unwrap().to_owned(),
+                    r["plan"]["action_index"].as_u64().unwrap() as u32,
                 )
             })
             .collect()
@@ -154,7 +188,7 @@ impl FakeRunner {
             .lock()
             .unwrap()
             .iter()
-            .filter(|r| r["plan"]["plan_id"] == plan_id)
+            .filter(|r| r["plan"]["plan_id"] == plan_id && r["op"] != "bind_plan")
             .map(|r| {
                 (
                     r["op"].as_str().unwrap().to_owned(),
@@ -231,20 +265,92 @@ impl FakeRunner {
 
     async fn handle(&self, request: Value) -> Value {
         self.requests.lock().unwrap().push(request.clone());
+        if !request_shape_ok(&request) {
+            return refuse("E_PARSE", "request is not {op, plan?, payload}");
+        }
         match request["op"].as_str().unwrap_or_default() {
             "bind_plan" => self.bind(&request),
             "bootstrap_trust" => self.bootstrap(&request),
+            "list_containers" => self.list(&request["payload"]),
+            "inspect_container" => self.inspect(&request["payload"]),
+            "container_logs" => self.container_logs(&request["payload"]),
             op => self.bound_op(op, &request).await,
         }
+    }
+
+    fn known_container(&self, payload: &Value) -> Option<Value> {
+        let id = payload["container_id"].as_str()?;
+        self.containers
+            .lock()
+            .unwrap()
+            .iter()
+            .find(|c| c["id"] == id || c["name"] == id)
+            .cloned()
+    }
+
+    fn list(&self, payload: &Value) -> Value {
+        let matches = |c: &Value| {
+            ["project_id", "environment_id", "service_id"]
+                .iter()
+                .all(|field| payload.get(*field).is_none_or(|want| c[*field] == *want))
+        };
+        let containers: Vec<Value> = self
+            .containers
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|c| matches(c))
+            .cloned()
+            .collect();
+        json!({"ok": true, "containers": containers})
+    }
+
+    fn inspect(&self, payload: &Value) -> Value {
+        match self.known_container(payload) {
+            Some(c) => json!({"ok": true, "container": {
+                "id": c["id"], "name": c["name"], "image": c["image"],
+                "created_at": c["created_at"], "restart_count": 1,
+                "state": {"status": c["state"], "running": c["state"] == "running",
+                          "restarting": false, "exit_code": 0,
+                          "started_at": "2026-09-23T10:00:00Z", "finished_at": null,
+                          "health": "healthy"},
+                "labels": {}, "networks": [], "mounts": []}}),
+            None => refuse("not_found", "no such Permanu container"),
+        }
+    }
+
+    fn container_logs(&self, payload: &Value) -> Value {
+        let Some(c) = self.known_container(payload) else {
+            return refuse("not_found", "no such Permanu container");
+        };
+        let tail = payload["tail"].as_u64().unwrap_or(0) as usize;
+        if !(1..=10_000).contains(&tail) {
+            return refuse("invalid_request", "tail out of range");
+        }
+        let id = c["id"].as_str().unwrap_or_default();
+        let (stdout, stderr) = self
+            .logs
+            .lock()
+            .unwrap()
+            .get(id)
+            .cloned()
+            .unwrap_or_default();
+        let last = |lines: Vec<String>| lines[lines.len().saturating_sub(tail)..].to_vec();
+        json!({"ok": true, "stdout": last(stdout), "stderr": last(stderr)})
     }
 
     fn bind(&self, request: &Value) -> Value {
         if let Some(code) = *self.fail_bind_with.lock().unwrap() {
             return refuse(code.as_str(), "refused");
         }
-        let plan_id = request["plan_id"].as_str().unwrap_or_default();
-        let digest = request["plan_digest_hex"].as_str().unwrap_or_default();
-        let index = request["action_index"].as_u64().unwrap_or_default() as u32;
+        if request["payload"] != json!({}) {
+            return refuse("E_PARSE", "bind_plan payload must be {}");
+        }
+        let plan_id = request["plan"]["plan_id"].as_str().unwrap_or_default();
+        let digest = request["plan"]["plan_digest_hex"]
+            .as_str()
+            .unwrap_or_default();
+        let index = request["plan"]["action_index"].as_u64().unwrap_or_default() as u32;
         if !self
             .consumed
             .lock()
@@ -311,10 +417,11 @@ impl FakeRunner {
                 return refuse("E_PLAN_WINDOW", "stopped by cancel_execution");
             }
             OpBehavior::Fail(code) => {
-                return json!({"kind": "result", "result": {"success": false,
-                    "final_state": "failed",
-                    "error": {"code": code, "safe_message": format!("{op} failed"),
-                              "retryable": false}}});
+                return refuse(code, &format!("{op} failed"));
+            }
+            OpBehavior::FailCode(code, failure_code) => {
+                return json!({"ok": false, "error": {"code": code,
+                    "message": format!("{op} failed"), "failure_code": failure_code}});
             }
             OpBehavior::Succeed => {}
         }
@@ -369,31 +476,67 @@ impl FakeRunner {
         json!({"ok": true})
     }
 
-    /// Serves one connection: newline-delimited requests, one answer each.
+    /// Serves one connection like `permanu-runner serve`: one request line
+    /// at a time, answered with `progress` lines and exactly one `result`
+    /// line (section 14.8); a request that is not JSON gets one `E_PARSE`
+    /// result and the connection closes.
     async fn serve_connection(self: Arc<Self>, stream: UnixStream) {
         let (reader, mut writer) = stream.into_split();
         let mut lines = BufReader::new(reader).lines();
+        let at = format_timestamp(self.clock.now());
         while let Ok(Some(line)) = lines.next_line().await {
             let Ok(request) = serde_json::from_str::<Value>(&line) else {
+                let _ = writer
+                    .write_all(b"{\"type\":\"result\",\"ok\":false,\"error\":{\"code\":\"E_PARSE\",\"message\":\"not JSON\"}}\n")
+                    .await;
                 return;
             };
-            let response = self.handle(request).await;
-            if request_is_progress_worthy(&response) {
-                let _ = writer
-                    .write_all(b"{\"kind\":\"progress\",\"stage\":\"work\",\"safe_message\":\"working\"}\n")
-                    .await;
+            let op = request["op"].as_str().unwrap_or_default().to_owned();
+            if op == "container_logs_follow" && request_shape_ok(&request) {
+                self.requests.lock().unwrap().push(request.clone());
+                let id = request["payload"]["container_id"]
+                    .as_str()
+                    .unwrap_or_default();
+                let follow = self.follow_lines.lock().unwrap().get(id).cloned();
+                let Some(follow) = follow else {
+                    let out = json!({"type": "result", "op": op, "ok": false,
+                        "error": {"code": "not_found", "message": "no such container"}});
+                    let _ = writer.write_all(format!("{out}\n").as_bytes()).await;
+                    continue;
+                };
+                for line in follow {
+                    let out = json!({"type": "progress", "op": op, "at": at,
+                                     "stream": "stdout", "line": line});
+                    if writer
+                        .write_all(format!("{out}\n").as_bytes())
+                        .await
+                        .is_err()
+                    {
+                        return;
+                    }
+                }
+                // Streams until the agent closes the connection.
+                let _ = lines.next_line().await;
+                return;
             }
-            let mut out = serde_json::to_vec(&response).unwrap();
+            let response = self.handle(request).await;
+            if response["ok"] == true && !op.is_empty() {
+                let progress = json!({"type": "progress", "op": op, "at": at,
+                                      "message": "working"});
+                let _ = writer.write_all(format!("{progress}\n").as_bytes()).await;
+            }
+            let mut result = response;
+            result["type"] = json!("result");
+            if !op.is_empty() {
+                result["op"] = json!(op);
+            }
+            let mut out = serde_json::to_vec(&result).unwrap();
             out.push(b'\n');
             if writer.write_all(&out).await.is_err() {
                 return;
             }
         }
     }
-}
-
-fn request_is_progress_worthy(response: &Value) -> bool {
-    response == &json!({"ok": true})
 }
 
 pub struct Options {
@@ -488,6 +631,9 @@ impl Harness {
             fail_bind_with: Mutex::new(None),
             behaviors: Mutex::new(HashMap::new()),
             write_results: AtomicBool::new(true),
+            containers: Mutex::new(Vec::new()),
+            logs: Mutex::new(HashMap::new()),
+            follow_lines: Mutex::new(HashMap::new()),
             consumed: Mutex::new(HashSet::new()),
             ops: Mutex::new(HashMap::new()),
             finished: Mutex::new(HashSet::new()),

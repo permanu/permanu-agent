@@ -107,8 +107,15 @@ fn exec_of(kind: &str, params: &Value) -> Exec {
         "rollback" => Exec::Ops(&["rollback_release"]),
         "restart" => Exec::Ops(&["restart_release"]),
         "operation.cancel" => Exec::Ops(&["cancel_execution"]),
-        "agent.update" => Exec::Ops(&["install_artifact"]),
-        "component.update" if matches!(params["component"].as_str(), Some("dwaar" | "runner")) => {
+        // v1.0.4 (D-040): agent.update runs its own op; install_artifact
+        // serves component.update only.
+        "agent.update" => Exec::Ops(&["update_agent"]),
+        "component.update"
+            if matches!(
+                params["component"].as_str(),
+                Some("dwaar" | "runner" | "permanu-env")
+            ) =>
+        {
             Exec::Ops(&["install_artifact"])
         }
         "key.add" | "key.revoke" => Exec::Ops(&["update_trusted_keys"]),
@@ -129,14 +136,35 @@ fn failure_code_of(kind: &str, op: &str) -> &'static str {
     }
 }
 
-/// `failure_code_of`, except that a start-phase op that ran out of time
-/// fails `start` (D-033).
-fn op_failure_code(kind: &str, op: &str, failure: &RunnerFailure) -> &'static str {
-    let start_phase = matches!(op, "prepare_release" | "verify_health" | "restart_release");
-    if start_phase && failure.message == runner::TIMED_OUT {
-        "start"
-    } else {
-        failure_code_of(kind, op)
+/// Engine API `DeployFailureCode` values a runner may name in
+/// `error.failure_code` (section 14.8).
+const DEPLOY_FAILURE_CODES: &[&str] = &[
+    "build",
+    "prepare",
+    "start",
+    "candidate_health",
+    "activate",
+    "public_health",
+    "recovery",
+];
+
+/// A start-phase op that ran out of time (D-033).
+fn timed_out(op: &str, failure: &RunnerFailure) -> bool {
+    matches!(op, "prepare_release" | "verify_health" | "restart_release")
+        && failure.message == runner::TIMED_OUT
+}
+
+/// The `failure_code` of a failed op: `start` on a start-phase timeout,
+/// else the runner's own `error.failure_code` for a service step (for
+/// example `public_health` after the switch), else the section 14.6 table.
+fn op_failure_code(kind: &str, op: &str, failure: &RunnerFailure) -> String {
+    let table = failure_code_of(kind, op);
+    if timed_out(op, failure) {
+        return "start".to_owned();
+    }
+    match failure.failure_code.as_deref() {
+        Some(code) if !table.is_empty() && DEPLOY_FAILURE_CODES.contains(&code) => code.to_owned(),
+        _ => table.to_owned(),
     }
 }
 
@@ -899,7 +927,7 @@ impl ChangeCore {
                         op,
                         OperationState::Failed,
                         &describe(failure),
-                        op_failure_code(&action.kind, op, failure),
+                        &op_failure_code(&action.kind, op, failure),
                     );
                 }
             }
@@ -932,7 +960,7 @@ impl ChangeCore {
             if let Err(failure) = self.op(record, plan, action, op, timeout).await {
                 return Outcome::with(
                     "failed",
-                    op_failure_code(&action.kind, op, &failure),
+                    &op_failure_code(&action.kind, op, &failure),
                     describe(&failure),
                 );
             }
@@ -999,9 +1027,12 @@ impl ChangeCore {
     }
 
     /// `deploy`: the start phase (`prepare_release`, `verify_health`) within
-    /// the start timeout, then `activate_release`; on failure
-    /// `rollback_release` when the service has an earlier release, else
-    /// `cleanup_candidate` (section 14.6).
+    /// the start timeout, then `activate_release`. Failure paths (section
+    /// 14.6, D-038): a failed `prepare_release` → `cleanup_candidate`; a
+    /// failed `verify_health`, the start timeout or a failed
+    /// `activate_release` → `rollback_release` when the service has an
+    /// earlier release, else `cleanup_candidate`. A failed recovery op ends
+    /// the action `failed` with failure code `recovery`.
     async fn run_deploy(
         &self,
         record: &AdmissionRecord,
@@ -1016,6 +1047,8 @@ impl ChangeCore {
             return Outcome::with("failed", "", "failure path already ran");
         }
         let current = Mutex::new("prepare_release");
+        // Err: (failure code, message, whether an earlier release may be
+        // restored).
         let start = async {
             for op in ["prepare_release", "verify_health"] {
                 if ran(op) {
@@ -1026,7 +1059,12 @@ impl ChangeCore {
                     .op(record, plan, action, op, self.timing.start_timeout)
                     .await
                 {
-                    return Err((op_failure_code("deploy", op, &failure), describe(&failure)));
+                    let restorable = op != "prepare_release" || timed_out(op, &failure);
+                    return Err((
+                        op_failure_code("deploy", op, &failure),
+                        describe(&failure),
+                        restorable,
+                    ));
                 }
                 if self.is_cancelled(&record.plan_id) {
                     return Ok(());
@@ -1051,13 +1089,13 @@ impl ChangeCore {
                     &message,
                     "start",
                 );
-                Some(("start", message))
+                Some(("start".to_owned(), message, true))
             }
         };
         if self.is_cancelled(&record.plan_id) {
             return Outcome::with("cancelled", "", "");
         }
-        let (code, message) = match failure {
+        let (code, message, restorable) = match failure {
             Some(failure) => failure,
             None if ran("activate_release") => return Outcome::succeeded(),
             None => match self
@@ -1071,7 +1109,11 @@ impl ChangeCore {
                 .await
             {
                 Ok(()) => return Outcome::succeeded(),
-                Err(failure) => ("activate", describe(&failure)),
+                Err(failure) => (
+                    op_failure_code("deploy", "activate_release", &failure),
+                    describe(&failure),
+                    true,
+                ),
             },
         };
         if self.is_cancelled(&record.plan_id) {
@@ -1080,38 +1122,25 @@ impl ChangeCore {
         let service_id = plan["actions"][action.action_index as usize]["params"]["service_id"]
             .as_str()
             .unwrap_or_default();
-        let previous = self
-            .store
-            .has_previous_release(record, service_id)
-            .unwrap_or(false);
-        if previous {
-            match self
-                .op(
-                    record,
-                    plan,
-                    action,
-                    "rollback_release",
-                    self.timing.op_timeout,
-                )
-                .await
-            {
-                Ok(()) => Outcome::with("rolled_back", code, message),
-                Err(failure) => Outcome::with("failed", "recovery", describe(&failure)),
-            }
+        let previous = restorable
+            && self
+                .store
+                .has_previous_release(record, service_id)
+                .unwrap_or(false);
+        let (recovery, outcome) = if previous {
+            ("rollback_release", "rolled_back")
         } else {
-            if let Err(failure) = self
-                .op(
-                    record,
-                    plan,
-                    action,
-                    "cleanup_candidate",
-                    self.timing.op_timeout,
-                )
-                .await
-            {
-                warn!(plan_id = %record.plan_id, error = %describe(&failure), "cleanup_candidate failed");
+            ("cleanup_candidate", "failed")
+        };
+        match self
+            .op(record, plan, action, recovery, self.timing.op_timeout)
+            .await
+        {
+            Ok(()) => Outcome::with(outcome, &code, message),
+            Err(failure) => {
+                warn!(plan_id = %record.plan_id, op = recovery, error = %describe(&failure), "recovery op failed");
+                Outcome::with("failed", "recovery", describe(&failure))
             }
-            Outcome::with("failed", code, message)
         }
     }
 
@@ -1364,14 +1393,15 @@ mod tests {
             exec_of("operation.cancel", &none),
             Exec::Ops(&["cancel_execution"])
         );
-        assert_eq!(
-            exec_of("agent.update", &none),
-            Exec::Ops(&["install_artifact"])
-        );
-        assert_eq!(
-            exec_of("component.update", &json!({"component": "dwaar"})),
-            Exec::Ops(&["install_artifact"])
-        );
+        // v1.0.4 (D-040): agent.update has its own op.
+        assert_eq!(exec_of("agent.update", &none), Exec::Ops(&["update_agent"]));
+        for component in ["dwaar", "runner", "permanu-env"] {
+            assert_eq!(
+                exec_of("component.update", &json!({"component": component})),
+                Exec::Ops(&["install_artifact"]),
+                "{component}"
+            );
+        }
         assert_eq!(
             exec_of("component.update", &json!({"component": "os_packages"})),
             Exec::NotImplemented
