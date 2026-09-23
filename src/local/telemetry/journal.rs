@@ -94,6 +94,27 @@ const DROPPED_FIELDS: &[&str] = &[
 
 pub fn drop_header_fields(fields: &mut HashMap<String, String>) {
     fields.retain(|name, _| !DROPPED_FIELDS.contains(&name.to_ascii_lowercase().as_str()));
+    // 9.6: the client address is stored truncated to /24 or /48 whatever
+    // the proxy wrote; anything that is not an address is dropped.
+    if let Some(ip) = fields.remove("client_ip") {
+        if let Some(truncated) = truncate_ip(&ip) {
+            fields.insert("client_ip".to_owned(), truncated);
+        }
+    }
+}
+
+/// An address truncated to its /24 (IPv4) or /48 (IPv6) network.
+pub fn truncate_ip(text: &str) -> Option<String> {
+    match text.parse::<std::net::IpAddr>().ok()? {
+        std::net::IpAddr::V4(v4) => {
+            let [a, b, c, _] = v4.octets();
+            Some(std::net::Ipv4Addr::new(a, b, c, 0).to_string())
+        }
+        std::net::IpAddr::V6(v6) => {
+            let s = v6.segments();
+            Some(std::net::Ipv6Addr::new(s[0], s[1], s[2], 0, 0, 0, 0, 0).to_string())
+        }
+    }
 }
 
 /// One Dwaar access-log line (its JSON request log), as far as the
@@ -403,10 +424,17 @@ mod tests {
         let mut fields: HashMap<String, String> = [
             ("Authorization".to_owned(), "x".to_owned()),
             ("host".to_owned(), "a".to_owned()),
+            ("client_ip".to_owned(), "203.0.113.77".to_owned()),
         ]
         .into_iter()
         .collect();
         drop_header_fields(&mut fields);
-        assert_eq!(fields.len(), 1);
+        assert_eq!(fields.len(), 2);
+        assert_eq!(fields["client_ip"], "203.0.113.0");
+        assert_eq!(
+            truncate_ip("2001:db8:1:2::5").as_deref(),
+            Some("2001:db8:1::")
+        );
+        assert_eq!(truncate_ip("not-an-ip"), None);
     }
 }
