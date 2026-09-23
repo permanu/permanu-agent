@@ -220,6 +220,9 @@ impl InfoService for InfoSvc {
                 server_id,
                 ssh_host_key_digests_hex: self.probe.ssh_host_key_digests_hex(),
                 age_recipient: self.age_recipient.clone(),
+                release_keys: None,
+                recovery_recipient_fingerprint: String::new(),
+                bundle_manifest_digest_hex: String::new(),
             }),
             capabilities: capabilities(&self.age_recipient),
             server: Some(self.probe.server_facts().await),
@@ -231,6 +234,7 @@ impl InfoService for InfoSvc {
                 timezone: self.probe.timezone(),
             }),
             session_id: hex::encode(session),
+            status: None,
         }))
     }
 
@@ -602,6 +606,7 @@ mod tests {
             client_version: "0.0.0-test".to_string(),
             protocol_versions: versions.iter().map(|v| v.to_string()).collect(),
             client_time: Some(timestamp(SystemTime::now())),
+            engine_id: String::new(),
         }
     }
 
