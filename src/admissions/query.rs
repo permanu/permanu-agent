@@ -30,6 +30,8 @@ pub struct AdmissionRecord {
     pub head_after_hex: String,
     pub rule_id: Option<String>,
     pub expires_at: String,
+    /// v1.0.2: plan.environment_id ('' for server-level plans).
+    pub environment_id: String,
 }
 
 /// One `admission_actions` row.
@@ -67,7 +69,8 @@ pub struct HeadRecord {
 
 const ADMISSION_COLUMNS: &str = "plan_id, plan_digest_hex, signed_plan_json, submitter, \
     operation_id, admitted_at, finished_at, outcome, admission_seq, nonce, author_kind, \
-    signer_key_ids, action_kinds, project_id, environment, head_after_hex, rule_id, expires_at";
+    signer_key_ids, action_kinds, project_id, environment, head_after_hex, rule_id, expires_at, \
+    environment_id";
 
 fn admission_from_row(row: &Row<'_>) -> rusqlite::Result<AdmissionRecord> {
     let list = |text: String| serde_json::from_str::<Vec<String>>(&text).unwrap_or_default();
@@ -90,6 +93,7 @@ fn admission_from_row(row: &Row<'_>) -> rusqlite::Result<AdmissionRecord> {
         head_after_hex: row.get(15)?,
         rule_id: row.get(16)?,
         expires_at: row.get(17)?,
+        environment_id: row.get(18)?,
     })
 }
 
@@ -199,9 +203,11 @@ impl AdmissionStore {
         Ok(rows)
     }
 
-    /// The agent finishes an action it executed itself (or that can no
-    /// longer run). Never touches a consumed action: the runner owns those.
-    pub fn finish_unconsumed_action(
+    /// The agent records an action's outcome: one it applied itself, one that
+    /// can no longer run, or a bound one whose final op returned before the
+    /// runner's `result` line arrived. Never overwrites a result; a later
+    /// `result` line wins (section 14.5).
+    pub fn finish_action(
         &self,
         plan_id: &str,
         action_index: u32,
@@ -212,13 +218,44 @@ impl AdmissionStore {
         let tx = conn.transaction()?;
         let changed = tx.execute(
             "UPDATE admission_actions SET finished_at = ?1, outcome = ?2 \
-             WHERE plan_id = ?3 AND action_index = ?4 AND consumed_at IS NULL \
-             AND finished_at IS NULL",
+             WHERE plan_id = ?3 AND action_index = ?4 AND finished_at IS NULL",
             params![format_timestamp(now), outcome, plan_id, action_index],
         )?;
         super::reconcile::finish_admission_if_done(&tx, plan_id)?;
         tx.commit()?;
         Ok(changed == 1)
+    }
+
+    /// Whether `service_id` has a release to return to: an earlier admission
+    /// of the scope whose `deploy`, `rollback` or `restart` of it succeeded
+    /// (signed-plan.md 14.6 failure path).
+    pub fn has_previous_release(
+        &self,
+        record: &AdmissionRecord,
+        service_id: &str,
+    ) -> Result<bool, StoreError> {
+        let conn = self.lock();
+        let mut statement = conn.prepare(
+            "SELECT a.signed_plan_json, x.action_index FROM admission_actions x \
+             JOIN admissions a ON a.plan_id = x.plan_id \
+             WHERE a.project_id = ?1 AND a.environment = ?2 AND a.admission_seq < ?3 \
+             AND x.kind IN ('deploy', 'rollback', 'restart') AND x.outcome = 'succeeded' \
+             ORDER BY a.admission_seq DESC",
+        )?;
+        let mut rows = statement.query(params![
+            record.project_id,
+            record.environment,
+            record.admission_seq
+        ])?;
+        while let Some(row) = rows.next()? {
+            let text: String = row.get(0)?;
+            let index: usize = row.get(1)?;
+            let envelope: serde_json::Value = serde_json::from_str(&text).unwrap_or_default();
+            if envelope["plan"]["actions"][index]["params"]["service_id"] == service_id {
+                return Ok(true);
+            }
+        }
+        Ok(false)
     }
 
     /// Admissions whose execution window ended with actions unconsumed get

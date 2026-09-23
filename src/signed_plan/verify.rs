@@ -106,6 +106,13 @@ pub trait PolicyContext {
     fn trust(&self) -> &TrustStore;
     /// Digest of the admission with this plan id, if any (step 8).
     fn admission_digest(&self, plan_id: &str) -> Result<Option<String>, PlanCode>;
+    /// Signer key ids of the admission with this id and digest, if any
+    /// (step 11: a `ci` key may cancel only a plan it signed, D-033).
+    fn admission_signer_key_ids(
+        &self,
+        plan_id: &str,
+        plan_digest_hex: &str,
+    ) -> Result<Option<Vec<String>>, PlanCode>;
     /// Whether the nonce or plan id is already reserved (step 8).
     fn seen(&self, nonce: &str, plan_id: &str) -> Result<bool, PlanCode>;
     /// Current head of a scope; genesis when none (step 9).
@@ -373,10 +380,27 @@ pub fn verify_signed_plan(
             }
             continue;
         }
-        let allowed: Vec<&Value> = signers
+        let mut allowed: Vec<&Value> = signers
             .iter()
             .filter(|s| role_allows(s["role"].as_str().unwrap_or_default(), kind))
             .collect();
+        if *kind == "operation.cancel" && allowed.iter().any(|s| s["role"] == "ci") {
+            // A ci key counts only for a cancel of an admitted plan it signed
+            // itself (section 6.1 step 11, D-033).
+            let params = &plan["actions"][0]["params"];
+            let cancelled = ctx.admission_signer_key_ids(
+                params["plan_id"].as_str().unwrap_or_default(),
+                params["plan_digest_hex"].as_str().unwrap_or_default(),
+            )?;
+            allowed.retain(|s| {
+                s["role"] != "ci"
+                    || cancelled.as_ref().is_some_and(|ids| {
+                        s["key_id"]
+                            .as_str()
+                            .is_some_and(|id| ids.iter().any(|x| x == id))
+                    })
+            });
+        }
         if allowed.is_empty() {
             return Err(PlanCode::KindForbidden);
         }
@@ -620,10 +644,13 @@ pub struct BootstrapPlan {
     pub owner_key: Value,
 }
 
-/// Section 7.3 step 3, applied only while trusted-keys.json is absent.
+/// Section 7.3 step 3, applied only while trusted-keys.json is absent,
+/// including the step 7 time window (v1.0.2, D-033) so an expired
+/// `server.add` never writes trusted-keys.json.
 pub fn verify_bootstrap(
     text: &[u8],
     host_key_digests: &[String],
+    now: i64,
 ) -> Result<BootstrapPlan, PlanCode> {
     let (plan, signatures) = match parse_envelope(text) {
         Ok(parsed) => parsed,
@@ -667,6 +694,7 @@ pub fn verify_bootstrap(
     if !key.verify_prehash(&digest, &raw) {
         return Err(PlanCode::SigInvalid);
     }
+    check_time(&plan, now)?;
     Ok(BootstrapPlan {
         server_id: server_id.to_owned(),
         owner_key: owner.clone(),

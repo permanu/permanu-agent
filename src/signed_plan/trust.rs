@@ -3,8 +3,12 @@
 //! of section 7.4 (bootstrap, `key.add`, `key.revoke`).
 
 use std::collections::{BTreeMap, BTreeSet};
-use std::fs::{self, File, OpenOptions};
-use std::io::{Read, Write};
+use std::fs::OpenOptions;
+#[cfg(test)]
+use std::fs::{self, File};
+use std::io::Read;
+#[cfg(test)]
+use std::io::Write;
 use std::os::unix::fs::{MetadataExt, OpenOptionsExt};
 use std::path::{Path, PathBuf};
 
@@ -266,7 +270,8 @@ pub enum TrustState {
 #[derive(Debug, Clone)]
 pub struct TrustPaths {
     pub file: PathBuf,
-    /// `flock` target of the section 7.4 write procedure.
+    /// `flock` target of the section 7.4 write procedure (the runner's, D-030).
+    #[cfg_attr(not(test), allow(dead_code))]
     pub lock: PathBuf,
     /// uid that must own the file (root in production).
     pub owner_uid: u32,
@@ -358,6 +363,7 @@ pub enum TrustWriteError {
     CurrentInvalid(String),
     /// The new object failed section 7.2, or the change is not allowed.
     Rejected(String),
+    #[cfg_attr(not(test), allow(dead_code))]
     Io(String),
 }
 
@@ -376,6 +382,7 @@ impl std::fmt::Display for TrustWriteError {
 #[derive(Debug, Clone)]
 pub enum TrustChange<'a> {
     /// Section 7.3 step 4: `keys = [owner_key]`, `revocations = []`.
+    #[cfg_attr(not(test), allow(dead_code))]
     Bootstrap {
         server_id: &'a str,
         owner_key: &'a Value,
@@ -452,6 +459,10 @@ fn push(document: &mut Value, field: &str, value: Value) -> Result<(), TrustWrit
     Ok(())
 }
 
+/// The section 7.4 write procedure. Since v1.0.2 (D-030) the root runner
+/// writes trusted-keys.json (`bootstrap_trust`, `update_trusted_keys`) and the
+/// non-root agent never does; the procedure stays here for the test runner.
+#[cfg(test)]
 impl TrustPaths {
     /// The section 7.4 write procedure: flock, read and validate, build the
     /// superset, validate, write a temp file 0644, fsync, rename, fsync dir.
@@ -539,6 +550,7 @@ impl TrustPaths {
     }
 }
 
+#[cfg(test)]
 use std::os::unix::fs::DirBuilderExt;
 
 #[cfg(test)]

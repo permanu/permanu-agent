@@ -9,6 +9,7 @@
         "id": "01a0cdb5-3500-7001-8000-000000000001",
         "project_id": "01a0cdb5-3500-70b1-8000-000000000001",
         "environment": "production",
+        "environment_id": "01a0cdb5-3500-70b2-8000-000000000001",
         "service_ids": [
           "01a0cdb5-3500-70c1-8000-000000000001"
         ],
@@ -21,7 +22,7 @@
             "params": {
               "service_id": "01a0cdb5-3500-70c1-8000-000000000001",
               "commit_sha": "4f2a9c1e8b7d6a5f4e3d2c1b0a9f8e7d6c5b4a39",
-              "spec_digest_hex": "f9e2f5ba422e79750428675b3191f942f6d85747981184a232a08b369e4da410"
+              "spec_digest_hex": "8ab54d633eff45b8a42f096f2f42f9837fba778f2cf8a884d73d34b70619f607"
             }
           }
         ],
@@ -40,16 +41,17 @@
         },
         "invocation": null
       },
-      "jcs": "{\"actions\":[{\"kind\":\"deploy\",\"params\":{\"commit_sha\":\"4f2a9c1e8b7d6a5f4e3d2c1b0a9f8e7d6c5b4a39\",\"service_id\":\"01a0cdb5-3500-70c1-8000-000000000001\",\"spec_digest_hex\":\"f9e2f5ba422e79750428675b3191f942f6d85747981184a232a08b369e4da410\"}}],\"author\":{\"agent_session_id\":null,\"kind\":\"user\"},\"base\":{\"force\":false,\"heads\":{\"01a0cdb5-3500-70a1-8000-000000000001\":\"4a98af3eeae054bf7585746ce20fa5907ec9c079ee1b049a7d01146d1c92ebfb\"}},\"created_at\":\"2026-09-23T10:00:00Z\",\"environment\":\"production\",\"expires_at\":\"2026-09-23T10:10:00Z\",\"id\":\"01a0cdb5-3500-7001-8000-000000000001\",\"invocation\":null,\"nonce\":\"SG86F2cYlLnxQtwmsiISuA\",\"project_id\":\"01a0cdb5-3500-70b1-8000-000000000001\",\"service_ids\":[\"01a0cdb5-3500-70c1-8000-000000000001\"],\"targets\":[\"01a0cdb5-3500-70a1-8000-000000000001\"],\"version\":1}",
+      "jcs": "{\"actions\":[{\"kind\":\"deploy\",\"params\":{\"commit_sha\":\"4f2a9c1e8b7d6a5f4e3d2c1b0a9f8e7d6c5b4a39\",\"service_id\":\"01a0cdb5-3500-70c1-8000-000000000001\",\"spec_digest_hex\":\"8ab54d633eff45b8a42f096f2f42f9837fba778f2cf8a884d73d34b70619f607\"}}],\"author\":{\"agent_session_id\":null,\"kind\":\"user\"},\"base\":{\"force\":false,\"heads\":{\"01a0cdb5-3500-70a1-8000-000000000001\":\"4a98af3eeae054bf7585746ce20fa5907ec9c079ee1b049a7d01146d1c92ebfb\"}},\"created_at\":\"2026-09-23T10:00:00Z\",\"environment\":\"production\",\"environment_id\":\"01a0cdb5-3500-70b2-8000-000000000001\",\"expires_at\":\"2026-09-23T10:10:00Z\",\"id\":\"01a0cdb5-3500-7001-8000-000000000001\",\"invocation\":null,\"nonce\":\"SG86F2cYlLnxQtwmsiISuA\",\"project_id\":\"01a0cdb5-3500-70b1-8000-000000000001\",\"service_ids\":[\"01a0cdb5-3500-70c1-8000-000000000001\"],\"targets\":[\"01a0cdb5-3500-70a1-8000-000000000001\"],\"version\":1}",
       "digest_input_prefix": "permanu-plan-v1\n",
-      "digest_hex": "3ad6585581ed4f9e1b9355acf258c3d76971dafda5fd461109ea04274946414c",
-      "signature_rfc6979": "8QXNRwjZwSyiyryh02PHjeNB2v591D9QSm6NLX03UuoDXQ_vKo66-BBbVLqJr8mV-QDNUDbW8ITauDGB6sF5Ew",
+      "digest_hex": "2f95d6f908b7513e1f599cfc7cd2475e9e631bfcc6afe973248e5364acdb0962",
+      "signature_rfc6979": "cCSyy1SP3EOWo0b3L1qDQRfrvitwtwMAyf79nQiKmZKfuPCONm-FBlLAbkY2xi8o_3S5SydqutqvCP66xJDoKg",
       "signed_plan": {
         "plan": {
           "version": 1,
           "id": "01a0cdb5-3500-7001-8000-000000000001",
           "project_id": "01a0cdb5-3500-70b1-8000-000000000001",
           "environment": "production",
+          "environment_id": "01a0cdb5-3500-70b2-8000-000000000001",
           "service_ids": [
             "01a0cdb5-3500-70c1-8000-000000000001"
           ],
@@ -62,7 +64,7 @@
               "params": {
                 "service_id": "01a0cdb5-3500-70c1-8000-000000000001",
                 "commit_sha": "4f2a9c1e8b7d6a5f4e3d2c1b0a9f8e7d6c5b4a39",
-                "spec_digest_hex": "f9e2f5ba422e79750428675b3191f942f6d85747981184a232a08b369e4da410"
+                "spec_digest_hex": "8ab54d633eff45b8a42f096f2f42f9837fba778f2cf8a884d73d34b70619f607"
               }
             }
           ],
@@ -85,7 +87,7 @@
           {
             "key_id": "dYLNItf797wK7n5moGt2cw",
             "alg": "ES256-raw",
-            "sig": "8QXNRwjZwSyiyryh02PHjeNB2v591D9QSm6NLX03UuoDXQ_vKo66-BBbVLqJr8mV-QDNUDbW8ITauDGB6sF5Ew",
+            "sig": "cCSyy1SP3EOWo0b3L1qDQRfrvitwtwMAyf79nQiKmZKfuPCONm-FBlLAbkY2xi8o_3S5SydqutqvCP66xJDoKg",
             "signed_at": "2026-09-23T10:00:05Z"
           }
         ]
@@ -152,11 +154,12 @@
               "server_ids": [
                 "01a0cdb5-3500-70a1-8000-000000000001"
               ]
-            }
+            },
+            "secrets_as_files_only": false
           },
-          "jcs": "{\"cap_add\":[],\"command\":[\"node\",\"server.js\"],\"entrypoint\":null,\"env\":{\"DATABASE_URL\":{\"kind\":\"secret\",\"ref\":\"DATABASE_URL\"},\"NODE_ENV\":{\"kind\":\"plain\",\"ref\":null},\"REDIS_URL\":{\"kind\":\"reference\",\"ref\":\"01a0cdb5-3500-70d1-8000-000000000001.REDIS_URL\"}},\"healthcheck\":{\"command\":null,\"interval_seconds\":10,\"kind\":\"http\",\"path\":\"/healthz\",\"port\":3000,\"retries\":3,\"start_period_seconds\":5,\"timeout_seconds\":3},\"image_digest_hex\":\"87ebc0f19e05e181dc22921cf7dbcf9f30e348d432da95fd36aea5ef8044a960\",\"image_repository\":\"registry.permanu.internal/acme/web\",\"mounts\":[],\"network\":{\"aliases\":[],\"mode\":\"project\"},\"placement\":{\"server_ids\":[\"01a0cdb5-3500-70a1-8000-000000000001\"]},\"ports\":[{\"container_port\":3000,\"protocol\":\"tcp\",\"public\":true}],\"privileged\":false,\"replicas\":2,\"resources\":{\"cpu_millis\":1000,\"memory_bytes\":536870912,\"pids_limit\":512},\"service_id\":\"01a0cdb5-3500-70c1-8000-000000000001\",\"user\":\"1000:1000\",\"version\":1,\"working_dir\":\"/app\"}",
+          "jcs": "{\"cap_add\":[],\"command\":[\"node\",\"server.js\"],\"entrypoint\":null,\"env\":{\"DATABASE_URL\":{\"kind\":\"secret\",\"ref\":\"DATABASE_URL\"},\"NODE_ENV\":{\"kind\":\"plain\",\"ref\":null},\"REDIS_URL\":{\"kind\":\"reference\",\"ref\":\"01a0cdb5-3500-70d1-8000-000000000001.REDIS_URL\"}},\"healthcheck\":{\"command\":null,\"interval_seconds\":10,\"kind\":\"http\",\"path\":\"/healthz\",\"port\":3000,\"retries\":3,\"start_period_seconds\":5,\"timeout_seconds\":3},\"image_digest_hex\":\"87ebc0f19e05e181dc22921cf7dbcf9f30e348d432da95fd36aea5ef8044a960\",\"image_repository\":\"registry.permanu.internal/acme/web\",\"mounts\":[],\"network\":{\"aliases\":[],\"mode\":\"project\"},\"placement\":{\"server_ids\":[\"01a0cdb5-3500-70a1-8000-000000000001\"]},\"ports\":[{\"container_port\":3000,\"protocol\":\"tcp\",\"public\":true}],\"privileged\":false,\"replicas\":2,\"resources\":{\"cpu_millis\":1000,\"memory_bytes\":536870912,\"pids_limit\":512},\"secrets_as_files_only\":false,\"service_id\":\"01a0cdb5-3500-70c1-8000-000000000001\",\"user\":\"1000:1000\",\"version\":1,\"working_dir\":\"/app\"}",
           "digest_input_prefix": "permanu-spec-v1\n",
-          "spec_digest_hex": "f9e2f5ba422e79750428675b3191f942f6d85747981184a232a08b369e4da410"
+          "spec_digest_hex": "8ab54d633eff45b8a42f096f2f42f9837fba778f2cf8a884d73d34b70619f607"
         }
       ]
     },
@@ -169,6 +172,7 @@
         "id": "01a0cdb5-3500-7001-8000-000000000002",
         "project_id": "01a0cdb5-3500-70b1-8000-000000000001",
         "environment": "production",
+        "environment_id": "01a0cdb5-3500-70b2-8000-000000000001",
         "service_ids": [
           "01a0cdb5-3500-70c1-8000-000000000001"
         ],
@@ -200,16 +204,17 @@
         },
         "invocation": null
       },
-      "jcs": "{\"actions\":[{\"kind\":\"secret.set\",\"params\":{\"ciphertext_digest_hex\":\"49d342afdeab639cf6d39649075a3e5b372d44dfa01e945d4aee9d0595dced66\",\"name\":\"DATABASE_URL\",\"service_id\":\"01a0cdb5-3500-70c1-8000-000000000001\"}}],\"author\":{\"agent_session_id\":\"01a0cdb5-3500-70e1-8000-000000000001\",\"kind\":\"agent-draft\"},\"base\":{\"force\":false,\"heads\":{\"01a0cdb5-3500-70a1-8000-000000000001\":\"4a98af3eeae054bf7585746ce20fa5907ec9c079ee1b049a7d01146d1c92ebfb\"}},\"created_at\":\"2026-09-23T10:00:00Z\",\"environment\":\"production\",\"expires_at\":\"2026-09-23T10:10:00Z\",\"id\":\"01a0cdb5-3500-7001-8000-000000000002\",\"invocation\":null,\"nonce\":\"rip3isu6Bs-j5p2Ddo5ySw\",\"project_id\":\"01a0cdb5-3500-70b1-8000-000000000001\",\"service_ids\":[\"01a0cdb5-3500-70c1-8000-000000000001\"],\"targets\":[\"01a0cdb5-3500-70a1-8000-000000000001\"],\"version\":1}",
+      "jcs": "{\"actions\":[{\"kind\":\"secret.set\",\"params\":{\"ciphertext_digest_hex\":\"49d342afdeab639cf6d39649075a3e5b372d44dfa01e945d4aee9d0595dced66\",\"name\":\"DATABASE_URL\",\"service_id\":\"01a0cdb5-3500-70c1-8000-000000000001\"}}],\"author\":{\"agent_session_id\":\"01a0cdb5-3500-70e1-8000-000000000001\",\"kind\":\"agent-draft\"},\"base\":{\"force\":false,\"heads\":{\"01a0cdb5-3500-70a1-8000-000000000001\":\"4a98af3eeae054bf7585746ce20fa5907ec9c079ee1b049a7d01146d1c92ebfb\"}},\"created_at\":\"2026-09-23T10:00:00Z\",\"environment\":\"production\",\"environment_id\":\"01a0cdb5-3500-70b2-8000-000000000001\",\"expires_at\":\"2026-09-23T10:10:00Z\",\"id\":\"01a0cdb5-3500-7001-8000-000000000002\",\"invocation\":null,\"nonce\":\"rip3isu6Bs-j5p2Ddo5ySw\",\"project_id\":\"01a0cdb5-3500-70b1-8000-000000000001\",\"service_ids\":[\"01a0cdb5-3500-70c1-8000-000000000001\"],\"targets\":[\"01a0cdb5-3500-70a1-8000-000000000001\"],\"version\":1}",
       "digest_input_prefix": "permanu-plan-v1\n",
-      "digest_hex": "bf4048d49e9933ca740ee677a2e8200355310c9febc5f14eb553bb4dc0116782",
-      "signature_rfc6979": "cGRdLSSqm1Yr8ucAzHJgpeW1ywqXREzEM9iEdyni1ecs6ljFlfWiGFAtAD9btDRwfmM0GbXlxClnogLORYG-Tg",
+      "digest_hex": "dbe51896d70c0bc19462c80d9dfdf1a23e7dfeea4474823f7df7d039c4b38d02",
+      "signature_rfc6979": "oZMDJGdwkRYkRiOUElPkWCxnb65vs5TS7Gs72wsn2ZeipQj2SSKl39173ZSkC1AIisP0PqDlkwz4QhQjeCoqyw",
       "signed_plan": {
         "plan": {
           "version": 1,
           "id": "01a0cdb5-3500-7001-8000-000000000002",
           "project_id": "01a0cdb5-3500-70b1-8000-000000000001",
           "environment": "production",
+          "environment_id": "01a0cdb5-3500-70b2-8000-000000000001",
           "service_ids": [
             "01a0cdb5-3500-70c1-8000-000000000001"
           ],
@@ -245,7 +250,7 @@
           {
             "key_id": "dYLNItf797wK7n5moGt2cw",
             "alg": "ES256-raw",
-            "sig": "cGRdLSSqm1Yr8ucAzHJgpeW1ywqXREzEM9iEdyni1ecs6ljFlfWiGFAtAD9btDRwfmM0GbXlxClnogLORYG-Tg",
+            "sig": "oZMDJGdwkRYkRiOUElPkWCxnb65vs5TS7Gs72wsn2ZeipQj2SSKl39173ZSkC1AIisP0PqDlkwz4QhQjeCoqyw",
             "signed_at": "2026-09-23T10:00:05Z"
           }
         ]
@@ -261,6 +266,7 @@
         "id": "01a0cdb5-3500-7001-8000-000000000003",
         "project_id": "01a0cdb5-3500-70b1-8000-000000000001",
         "environment": "production",
+        "environment_id": "01a0cdb5-3500-70b2-8000-000000000001",
         "service_ids": [],
         "targets": [
           "01a0cdb5-3500-70a1-8000-000000000001"
@@ -316,16 +322,17 @@
         },
         "invocation": null
       },
-      "jcs": "{\"actions\":[{\"kind\":\"rule.create\",\"params\":{\"rule\":{\"allowed_kinds\":[\"deploy\"],\"expires_at\":\"2027-09-01T00:00:00Z\",\"id\":\"01a0cdb5-3500-70f1-8000-000000000001\",\"label\":\"Auto-deploy main to production\",\"limits\":{\"max_invocations_per_hour\":30,\"max_replicas\":4},\"not_before\":\"2026-09-01T00:00:00Z\",\"scope\":{\"branch_patterns\":[\"refs/heads/main\"],\"environment\":\"production\",\"project_id\":\"01a0cdb5-3500-70b1-8000-000000000001\",\"repo\":\"github.com/acme/web\",\"server_ids\":[\"01a0cdb5-3500-70a1-8000-000000000001\"],\"service_ids\":[\"01a0cdb5-3500-70c1-8000-000000000001\"]},\"trigger\":\"git.push\",\"version\":1}}}],\"author\":{\"agent_session_id\":null,\"kind\":\"user\"},\"base\":{\"force\":false,\"heads\":{\"01a0cdb5-3500-70a1-8000-000000000001\":\"4a98af3eeae054bf7585746ce20fa5907ec9c079ee1b049a7d01146d1c92ebfb\"}},\"created_at\":\"2026-09-23T10:00:00Z\",\"environment\":\"production\",\"expires_at\":\"2026-09-23T10:10:00Z\",\"id\":\"01a0cdb5-3500-7001-8000-000000000003\",\"invocation\":null,\"nonce\":\"8T5_vf08KTHVNoBQwIEYyw\",\"project_id\":\"01a0cdb5-3500-70b1-8000-000000000001\",\"service_ids\":[],\"targets\":[\"01a0cdb5-3500-70a1-8000-000000000001\"],\"version\":1}",
+      "jcs": "{\"actions\":[{\"kind\":\"rule.create\",\"params\":{\"rule\":{\"allowed_kinds\":[\"deploy\"],\"expires_at\":\"2027-09-01T00:00:00Z\",\"id\":\"01a0cdb5-3500-70f1-8000-000000000001\",\"label\":\"Auto-deploy main to production\",\"limits\":{\"max_invocations_per_hour\":30,\"max_replicas\":4},\"not_before\":\"2026-09-01T00:00:00Z\",\"scope\":{\"branch_patterns\":[\"refs/heads/main\"],\"environment\":\"production\",\"project_id\":\"01a0cdb5-3500-70b1-8000-000000000001\",\"repo\":\"github.com/acme/web\",\"server_ids\":[\"01a0cdb5-3500-70a1-8000-000000000001\"],\"service_ids\":[\"01a0cdb5-3500-70c1-8000-000000000001\"]},\"trigger\":\"git.push\",\"version\":1}}}],\"author\":{\"agent_session_id\":null,\"kind\":\"user\"},\"base\":{\"force\":false,\"heads\":{\"01a0cdb5-3500-70a1-8000-000000000001\":\"4a98af3eeae054bf7585746ce20fa5907ec9c079ee1b049a7d01146d1c92ebfb\"}},\"created_at\":\"2026-09-23T10:00:00Z\",\"environment\":\"production\",\"environment_id\":\"01a0cdb5-3500-70b2-8000-000000000001\",\"expires_at\":\"2026-09-23T10:10:00Z\",\"id\":\"01a0cdb5-3500-7001-8000-000000000003\",\"invocation\":null,\"nonce\":\"8T5_vf08KTHVNoBQwIEYyw\",\"project_id\":\"01a0cdb5-3500-70b1-8000-000000000001\",\"service_ids\":[],\"targets\":[\"01a0cdb5-3500-70a1-8000-000000000001\"],\"version\":1}",
       "digest_input_prefix": "permanu-plan-v1\n",
-      "digest_hex": "c0c4a8cfe2b6411940951dc163b0fa5d7aa18b3923b323043fc57f3667beb873",
-      "signature_rfc6979": "iwg_OyJDU5Xjs9BCVUjUrMB2Uz7VmUrEMwpiIt3LBySnyfV3HFZhYv1eMpEANzCRTTdIHVB47T1H-D-khdQ1Mw",
+      "digest_hex": "2e73bcd8afe490c1d7cbfa2fc1ababfca06e54c3366fbe74838c64ef7750f8da",
+      "signature_rfc6979": "zjylyivw4EUIR2LnBsx8FpriAUdCAM68Qo42wefyDLxMYG2_IoULiYcpyoaEvs6XcFnPP0lmaqOBMTR-U38Y-w",
       "signed_plan": {
         "plan": {
           "version": 1,
           "id": "01a0cdb5-3500-7001-8000-000000000003",
           "project_id": "01a0cdb5-3500-70b1-8000-000000000001",
           "environment": "production",
+          "environment_id": "01a0cdb5-3500-70b2-8000-000000000001",
           "service_ids": [],
           "targets": [
             "01a0cdb5-3500-70a1-8000-000000000001"
@@ -385,7 +392,7 @@
           {
             "key_id": "dYLNItf797wK7n5moGt2cw",
             "alg": "ES256-raw",
-            "sig": "iwg_OyJDU5Xjs9BCVUjUrMB2Uz7VmUrEMwpiIt3LBySnyfV3HFZhYv1eMpEANzCRTTdIHVB47T1H-D-khdQ1Mw",
+            "sig": "zjylyivw4EUIR2LnBsx8FpriAUdCAM68Qo42wefyDLxMYG2_IoULiYcpyoaEvs6XcFnPP0lmaqOBMTR-U38Y-w",
             "signed_at": "2026-09-23T10:00:05Z"
           }
         ]
@@ -401,6 +408,7 @@
         "id": "01a0cdb5-3500-7001-8000-000000000004",
         "project_id": null,
         "environment": null,
+        "environment_id": null,
         "service_ids": [],
         "targets": [
           "01a0cdb5-3500-70a1-8000-000000000001",
@@ -451,16 +459,17 @@
         },
         "invocation": null
       },
-      "jcs": "{\"actions\":[{\"kind\":\"key.add\",\"params\":{\"entry\":{\"added_at\":\"2026-09-10T12:00:00Z\",\"added_by\":{\"key_id\":\"dYLNItf797wK7n5moGt2cw\",\"sig\":\"52ACAd0NawsSN-H0CteLoqblic5UUGWQaYj_HReJTCG0PprOMtdSS1SNempVhTmQUdW8z7x4scxAP1srZ3fKDg\"},\"alg\":\"ES256-raw\",\"key_id\":\"Hph9XRkn48eogeehAgeI9A\",\"label\":\"Studio Mac (TEST)\",\"presence\":\"user_presence\",\"role\":\"deployer\",\"scope\":{\"environments\":[\"production\"],\"project_ids\":[\"01a0cdb5-3500-70b1-8000-000000000001\"],\"server_level\":true},\"spki\":\"MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAEdmRf38x23xyGMpgTwTalEnHxfavPlG8Il3hzc5zBRSeeRHeJkHcobVI/Kin6aG6to57fKD7zjrq8DS1+yJFAVQ==\"}}}],\"author\":{\"agent_session_id\":null,\"kind\":\"user\"},\"base\":{\"force\":false,\"heads\":{\"01a0cdb5-3500-70a1-8000-000000000001\":\"0000000000000000000000000000000000000000000000000000000000000000\",\"01a0cdb5-3500-70a1-8000-000000000002\":\"0000000000000000000000000000000000000000000000000000000000000000\"}},\"created_at\":\"2026-09-23T10:00:00Z\",\"environment\":null,\"expires_at\":\"2026-09-23T10:10:00Z\",\"id\":\"01a0cdb5-3500-7001-8000-000000000004\",\"invocation\":null,\"nonce\":\"osfhfz7m5VRysjEvW6GSow\",\"project_id\":null,\"service_ids\":[],\"targets\":[\"01a0cdb5-3500-70a1-8000-000000000001\",\"01a0cdb5-3500-70a1-8000-000000000002\"],\"version\":1}",
+      "jcs": "{\"actions\":[{\"kind\":\"key.add\",\"params\":{\"entry\":{\"added_at\":\"2026-09-10T12:00:00Z\",\"added_by\":{\"key_id\":\"dYLNItf797wK7n5moGt2cw\",\"sig\":\"52ACAd0NawsSN-H0CteLoqblic5UUGWQaYj_HReJTCG0PprOMtdSS1SNempVhTmQUdW8z7x4scxAP1srZ3fKDg\"},\"alg\":\"ES256-raw\",\"key_id\":\"Hph9XRkn48eogeehAgeI9A\",\"label\":\"Studio Mac (TEST)\",\"presence\":\"user_presence\",\"role\":\"deployer\",\"scope\":{\"environments\":[\"production\"],\"project_ids\":[\"01a0cdb5-3500-70b1-8000-000000000001\"],\"server_level\":true},\"spki\":\"MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAEdmRf38x23xyGMpgTwTalEnHxfavPlG8Il3hzc5zBRSeeRHeJkHcobVI/Kin6aG6to57fKD7zjrq8DS1+yJFAVQ==\"}}}],\"author\":{\"agent_session_id\":null,\"kind\":\"user\"},\"base\":{\"force\":false,\"heads\":{\"01a0cdb5-3500-70a1-8000-000000000001\":\"0000000000000000000000000000000000000000000000000000000000000000\",\"01a0cdb5-3500-70a1-8000-000000000002\":\"0000000000000000000000000000000000000000000000000000000000000000\"}},\"created_at\":\"2026-09-23T10:00:00Z\",\"environment\":null,\"environment_id\":null,\"expires_at\":\"2026-09-23T10:10:00Z\",\"id\":\"01a0cdb5-3500-7001-8000-000000000004\",\"invocation\":null,\"nonce\":\"osfhfz7m5VRysjEvW6GSow\",\"project_id\":null,\"service_ids\":[],\"targets\":[\"01a0cdb5-3500-70a1-8000-000000000001\",\"01a0cdb5-3500-70a1-8000-000000000002\"],\"version\":1}",
       "digest_input_prefix": "permanu-plan-v1\n",
-      "digest_hex": "e26eaa83133a4e381dd5e249d0c59cffc1d4d3dc4993378abf795c470788a8f1",
-      "signature_rfc6979": "H5nTr37S_I7v91FriaZgrylkwOUNdADTJywk3LG2adD-t8i110_4kDELfNChm5_NzzJ-YG1DF--dvCclXc-B_Q",
+      "digest_hex": "5cc96d24ea60824800a57bb091d60ef46a9f8289cfa596cc474d9a99219ecd5f",
+      "signature_rfc6979": "uB9Cv7Ny7QXoKbbm99vMzzCMV0-fMuTd1LnRFzEwRSC2tqZ7_IK45JoJCn6tG0_oEwDEL7iiVfn5skwiP1N50A",
       "signed_plan": {
         "plan": {
           "version": 1,
           "id": "01a0cdb5-3500-7001-8000-000000000004",
           "project_id": null,
           "environment": null,
+          "environment_id": null,
           "service_ids": [],
           "targets": [
             "01a0cdb5-3500-70a1-8000-000000000001",
@@ -515,7 +524,7 @@
           {
             "key_id": "dYLNItf797wK7n5moGt2cw",
             "alg": "ES256-raw",
-            "sig": "H5nTr37S_I7v91FriaZgrylkwOUNdADTJywk3LG2adD-t8i110_4kDELfNChm5_NzzJ-YG1DF--dvCclXc-B_Q",
+            "sig": "uB9Cv7Ny7QXoKbbm99vMzzCMV0-fMuTd1LnRFzEwRSC2tqZ7_IK45JoJCn6tG0_oEwDEL7iiVfn5skwiP1N50A",
             "signed_at": "2026-09-23T10:00:05Z"
           }
         ]
@@ -531,6 +540,7 @@
         "id": "01a0cdb5-3500-7001-8000-000000000005",
         "project_id": null,
         "environment": null,
+        "environment_id": null,
         "service_ids": [],
         "targets": [
           "01a0cdb5-3500-70a1-8000-000000000003"
@@ -551,7 +561,8 @@
                 "scope": null,
                 "added_at": "2026-09-23T10:00:00Z",
                 "added_by": null
-              }
+              },
+              "bundle_manifest_digest_hex": "53838717fb3b4431019f61e00370e2e7e08e7968825cc1a95436545d502a9638"
             }
           }
         ],
@@ -570,16 +581,17 @@
         },
         "invocation": null
       },
-      "jcs": "{\"actions\":[{\"kind\":\"server.add\",\"params\":{\"owner_key\":{\"added_at\":\"2026-09-23T10:00:00Z\",\"added_by\":null,\"alg\":\"ES256-raw\",\"key_id\":\"dYLNItf797wK7n5moGt2cw\",\"label\":\"Arvee's MacBook Pro (TEST)\",\"presence\":\"biometry\",\"role\":\"owner\",\"scope\":null,\"spki\":\"MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAE6XWYQLf32I8syOd1sqHM4D2tbpXOK1fVZEbCbpWsmAqwTuhnKjwSKXaU8KedoSJM6fLNIf1vGqa1EEmRdCc4kw==\"},\"server_id\":\"01a0cdb5-3500-70a1-8000-000000000003\",\"ssh_host_key_digest_hex\":\"98bdd1c884b11e163742d27fabf7510d05ccaeb000fb4694e7a603a53351c0b8\"}}],\"author\":{\"agent_session_id\":null,\"kind\":\"user\"},\"base\":{\"force\":false,\"heads\":{\"01a0cdb5-3500-70a1-8000-000000000003\":\"0000000000000000000000000000000000000000000000000000000000000000\"}},\"created_at\":\"2026-09-23T10:00:00Z\",\"environment\":null,\"expires_at\":\"2026-09-23T10:10:00Z\",\"id\":\"01a0cdb5-3500-7001-8000-000000000005\",\"invocation\":null,\"nonce\":\"BK37Tdk5U0z9BOsRsa5jDA\",\"project_id\":null,\"service_ids\":[],\"targets\":[\"01a0cdb5-3500-70a1-8000-000000000003\"],\"version\":1}",
+      "jcs": "{\"actions\":[{\"kind\":\"server.add\",\"params\":{\"bundle_manifest_digest_hex\":\"53838717fb3b4431019f61e00370e2e7e08e7968825cc1a95436545d502a9638\",\"owner_key\":{\"added_at\":\"2026-09-23T10:00:00Z\",\"added_by\":null,\"alg\":\"ES256-raw\",\"key_id\":\"dYLNItf797wK7n5moGt2cw\",\"label\":\"Arvee's MacBook Pro (TEST)\",\"presence\":\"biometry\",\"role\":\"owner\",\"scope\":null,\"spki\":\"MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAE6XWYQLf32I8syOd1sqHM4D2tbpXOK1fVZEbCbpWsmAqwTuhnKjwSKXaU8KedoSJM6fLNIf1vGqa1EEmRdCc4kw==\"},\"server_id\":\"01a0cdb5-3500-70a1-8000-000000000003\",\"ssh_host_key_digest_hex\":\"98bdd1c884b11e163742d27fabf7510d05ccaeb000fb4694e7a603a53351c0b8\"}}],\"author\":{\"agent_session_id\":null,\"kind\":\"user\"},\"base\":{\"force\":false,\"heads\":{\"01a0cdb5-3500-70a1-8000-000000000003\":\"0000000000000000000000000000000000000000000000000000000000000000\"}},\"created_at\":\"2026-09-23T10:00:00Z\",\"environment\":null,\"environment_id\":null,\"expires_at\":\"2026-09-23T10:10:00Z\",\"id\":\"01a0cdb5-3500-7001-8000-000000000005\",\"invocation\":null,\"nonce\":\"BK37Tdk5U0z9BOsRsa5jDA\",\"project_id\":null,\"service_ids\":[],\"targets\":[\"01a0cdb5-3500-70a1-8000-000000000003\"],\"version\":1}",
       "digest_input_prefix": "permanu-plan-v1\n",
-      "digest_hex": "7a7c6e59d3491e60d52a548e41e12c4a171be6179255763ca0ef175422dbd198",
-      "signature_rfc6979": "fOp_GTb09b92UQSx8kMFAXEvlKHE5-5f0r0XAK7Fb-5WxwyKBZJX3GCHg9QouxhxB4mJRHpenBC5B-0Arjoe4Q",
+      "digest_hex": "a1e907c4cdc789e9861785be06c8f073ec13c8b5b0329a5677da79370b5bd859",
+      "signature_rfc6979": "qaYXKxD6KhawbwX_OfTOeOE64l98goKMtINVExS3w8eYyZSplmNYJobEjDt3HM6yCb3oBbj7KlgRe_-h2V8xhw",
       "signed_plan": {
         "plan": {
           "version": 1,
           "id": "01a0cdb5-3500-7001-8000-000000000005",
           "project_id": null,
           "environment": null,
+          "environment_id": null,
           "service_ids": [],
           "targets": [
             "01a0cdb5-3500-70a1-8000-000000000003"
@@ -600,7 +612,8 @@
                   "scope": null,
                   "added_at": "2026-09-23T10:00:00Z",
                   "added_by": null
-                }
+                },
+                "bundle_manifest_digest_hex": "53838717fb3b4431019f61e00370e2e7e08e7968825cc1a95436545d502a9638"
               }
             }
           ],
@@ -623,7 +636,7 @@
           {
             "key_id": "dYLNItf797wK7n5moGt2cw",
             "alg": "ES256-raw",
-            "sig": "fOp_GTb09b92UQSx8kMFAXEvlKHE5-5f0r0XAK7Fb-5WxwyKBZJX3GCHg9QouxhxB4mJRHpenBC5B-0Arjoe4Q",
+            "sig": "qaYXKxD6KhawbwX_OfTOeOE64l98goKMtINVExS3w8eYyZSplmNYJobEjDt3HM6yCb3oBbj7KlgRe_-h2V8xhw",
             "signed_at": "2026-09-23T10:00:05Z"
           }
         ]
@@ -639,6 +652,7 @@
         "id": "01a0cdb5-3500-7001-8000-000000000006",
         "project_id": "01a0cdb5-3500-70b1-8000-000000000001",
         "environment": "production",
+        "environment_id": "01a0cdb5-3500-70b2-8000-000000000001",
         "service_ids": [
           "01a0cdb5-3500-70c1-8000-000000000001"
         ],
@@ -650,7 +664,7 @@
             "kind": "restart",
             "params": {
               "service_id": "01a0cdb5-3500-70c1-8000-000000000001",
-              "spec_digest_hex": "b78adc95a654038d554689569fc43f2f7db6fece4c5049d3dab17370f21ec1bf"
+              "spec_digest_hex": "1b2c4b415d6576942d6b2de9d089ae2de7389d81c88c18d864f2f9dc984951fc"
             }
           }
         ],
@@ -669,16 +683,17 @@
         },
         "invocation": null
       },
-      "jcs": "{\"actions\":[{\"kind\":\"restart\",\"params\":{\"service_id\":\"01a0cdb5-3500-70c1-8000-000000000001\",\"spec_digest_hex\":\"b78adc95a654038d554689569fc43f2f7db6fece4c5049d3dab17370f21ec1bf\"}}],\"author\":{\"agent_session_id\":null,\"kind\":\"user\"},\"base\":{\"force\":false,\"heads\":{\"01a0cdb5-3500-70a1-8000-000000000001\":\"4a98af3eeae054bf7585746ce20fa5907ec9c079ee1b049a7d01146d1c92ebfb\"}},\"created_at\":\"2026-09-23T10:00:00Z\",\"environment\":\"production\",\"expires_at\":\"2026-09-23T10:10:00Z\",\"id\":\"01a0cdb5-3500-7001-8000-000000000006\",\"invocation\":null,\"nonce\":\"vzb_7w-95W5zFyFVITl9xw\",\"project_id\":\"01a0cdb5-3500-70b1-8000-000000000001\",\"service_ids\":[\"01a0cdb5-3500-70c1-8000-000000000001\"],\"targets\":[\"01a0cdb5-3500-70a1-8000-000000000001\"],\"version\":1}",
+      "jcs": "{\"actions\":[{\"kind\":\"restart\",\"params\":{\"service_id\":\"01a0cdb5-3500-70c1-8000-000000000001\",\"spec_digest_hex\":\"1b2c4b415d6576942d6b2de9d089ae2de7389d81c88c18d864f2f9dc984951fc\"}}],\"author\":{\"agent_session_id\":null,\"kind\":\"user\"},\"base\":{\"force\":false,\"heads\":{\"01a0cdb5-3500-70a1-8000-000000000001\":\"4a98af3eeae054bf7585746ce20fa5907ec9c079ee1b049a7d01146d1c92ebfb\"}},\"created_at\":\"2026-09-23T10:00:00Z\",\"environment\":\"production\",\"environment_id\":\"01a0cdb5-3500-70b2-8000-000000000001\",\"expires_at\":\"2026-09-23T10:10:00Z\",\"id\":\"01a0cdb5-3500-7001-8000-000000000006\",\"invocation\":null,\"nonce\":\"vzb_7w-95W5zFyFVITl9xw\",\"project_id\":\"01a0cdb5-3500-70b1-8000-000000000001\",\"service_ids\":[\"01a0cdb5-3500-70c1-8000-000000000001\"],\"targets\":[\"01a0cdb5-3500-70a1-8000-000000000001\"],\"version\":1}",
       "digest_input_prefix": "permanu-plan-v1\n",
-      "digest_hex": "c0c804bd641f2b7be16292224242d8471cce5c2e320995d0a230bb2c4e371443",
-      "signature_rfc6979": "jq_y2pLx31XKxdk59jI_hB7Q8mCFUxxXlyoM8MmTLFqPXt7jRkwW4bsOebZtgbhsNcHhgEebATSYGsEndwfBVQ",
+      "digest_hex": "e44558994d6d14c82d1ad6c484648fa58785e67298d193ec536e57e0848d15d2",
+      "signature_rfc6979": "z4HjPMo186Fmj9yu5Wmei6jOWuxwwM59gDc-FEhklP2ad6RlxT8MRYMH-cvRMn2eHi3jKD902joFqTYkHfzOvg",
       "signed_plan": {
         "plan": {
           "version": 1,
           "id": "01a0cdb5-3500-7001-8000-000000000006",
           "project_id": "01a0cdb5-3500-70b1-8000-000000000001",
           "environment": "production",
+          "environment_id": "01a0cdb5-3500-70b2-8000-000000000001",
           "service_ids": [
             "01a0cdb5-3500-70c1-8000-000000000001"
           ],
@@ -690,7 +705,7 @@
               "kind": "restart",
               "params": {
                 "service_id": "01a0cdb5-3500-70c1-8000-000000000001",
-                "spec_digest_hex": "b78adc95a654038d554689569fc43f2f7db6fece4c5049d3dab17370f21ec1bf"
+                "spec_digest_hex": "1b2c4b415d6576942d6b2de9d089ae2de7389d81c88c18d864f2f9dc984951fc"
               }
             }
           ],
@@ -713,7 +728,7 @@
           {
             "key_id": "Hph9XRkn48eogeehAgeI9A",
             "alg": "ES256-raw",
-            "sig": "jq_y2pLx31XKxdk59jI_hB7Q8mCFUxxXlyoM8MmTLFqPXt7jRkwW4bsOebZtgbhsNcHhgEebATSYGsEndwfBVQ",
+            "sig": "z4HjPMo186Fmj9yu5Wmei6jOWuxwwM59gDc-FEhklP2ad6RlxT8MRYMH-cvRMn2eHi3jKD902joFqTYkHfzOvg",
             "signed_at": "2026-09-23T10:00:05Z"
           }
         ]
@@ -780,11 +795,12 @@
               "server_ids": [
                 "01a0cdb5-3500-70a1-8000-000000000001"
               ]
-            }
+            },
+            "secrets_as_files_only": false
           },
-          "jcs": "{\"cap_add\":[],\"command\":[\"node\",\"server.js\"],\"entrypoint\":null,\"env\":{\"DATABASE_URL\":{\"kind\":\"secret\",\"ref\":\"DATABASE_URL\"},\"NODE_ENV\":{\"kind\":\"plain\",\"ref\":null},\"REDIS_URL\":{\"kind\":\"reference\",\"ref\":\"01a0cdb5-3500-70d1-8000-000000000001.REDIS_URL\"}},\"healthcheck\":{\"command\":null,\"interval_seconds\":10,\"kind\":\"http\",\"path\":\"/healthz\",\"port\":3000,\"retries\":3,\"start_period_seconds\":5,\"timeout_seconds\":3},\"image_digest_hex\":\"97db6c9091eee82a42e8b2bea76caa45687c1fb40a760a84c71500d520c07987\",\"image_repository\":\"registry.permanu.internal/acme/web\",\"mounts\":[],\"network\":{\"aliases\":[],\"mode\":\"project\"},\"placement\":{\"server_ids\":[\"01a0cdb5-3500-70a1-8000-000000000001\"]},\"ports\":[{\"container_port\":3000,\"protocol\":\"tcp\",\"public\":true}],\"privileged\":false,\"replicas\":2,\"resources\":{\"cpu_millis\":1000,\"memory_bytes\":536870912,\"pids_limit\":512},\"service_id\":\"01a0cdb5-3500-70c1-8000-000000000001\",\"user\":\"1000:1000\",\"version\":1,\"working_dir\":\"/app\"}",
+          "jcs": "{\"cap_add\":[],\"command\":[\"node\",\"server.js\"],\"entrypoint\":null,\"env\":{\"DATABASE_URL\":{\"kind\":\"secret\",\"ref\":\"DATABASE_URL\"},\"NODE_ENV\":{\"kind\":\"plain\",\"ref\":null},\"REDIS_URL\":{\"kind\":\"reference\",\"ref\":\"01a0cdb5-3500-70d1-8000-000000000001.REDIS_URL\"}},\"healthcheck\":{\"command\":null,\"interval_seconds\":10,\"kind\":\"http\",\"path\":\"/healthz\",\"port\":3000,\"retries\":3,\"start_period_seconds\":5,\"timeout_seconds\":3},\"image_digest_hex\":\"97db6c9091eee82a42e8b2bea76caa45687c1fb40a760a84c71500d520c07987\",\"image_repository\":\"registry.permanu.internal/acme/web\",\"mounts\":[],\"network\":{\"aliases\":[],\"mode\":\"project\"},\"placement\":{\"server_ids\":[\"01a0cdb5-3500-70a1-8000-000000000001\"]},\"ports\":[{\"container_port\":3000,\"protocol\":\"tcp\",\"public\":true}],\"privileged\":false,\"replicas\":2,\"resources\":{\"cpu_millis\":1000,\"memory_bytes\":536870912,\"pids_limit\":512},\"secrets_as_files_only\":false,\"service_id\":\"01a0cdb5-3500-70c1-8000-000000000001\",\"user\":\"1000:1000\",\"version\":1,\"working_dir\":\"/app\"}",
           "digest_input_prefix": "permanu-spec-v1\n",
-          "spec_digest_hex": "b78adc95a654038d554689569fc43f2f7db6fece4c5049d3dab17370f21ec1bf"
+          "spec_digest_hex": "1b2c4b415d6576942d6b2de9d089ae2de7389d81c88c18d864f2f9dc984951fc"
         }
       ]
     }
@@ -822,7 +838,7 @@
     "rule_jcs": "{\"allowed_kinds\":[\"deploy\"],\"expires_at\":\"2027-09-01T00:00:00Z\",\"id\":\"01a0cdb5-3500-70f1-8000-000000000001\",\"label\":\"Auto-deploy main to production\",\"limits\":{\"max_invocations_per_hour\":30,\"max_replicas\":4},\"not_before\":\"2026-09-01T00:00:00Z\",\"scope\":{\"branch_patterns\":[\"refs/heads/main\"],\"environment\":\"production\",\"project_id\":\"01a0cdb5-3500-70b1-8000-000000000001\",\"repo\":\"github.com/acme/web\",\"server_ids\":[\"01a0cdb5-3500-70a1-8000-000000000001\"],\"service_ids\":[\"01a0cdb5-3500-70c1-8000-000000000001\"]},\"trigger\":\"git.push\",\"version\":1}",
     "rule_digest_hex": "42931b7b326d2bf54bf2e038076808f13fda19a46e9da1af363536a59ff00e90",
     "state_head_before_hex": "4a98af3eeae054bf7585746ce20fa5907ec9c079ee1b049a7d01146d1c92ebfb",
-    "state_head_after_user_deploy_hex": "873dbc34b38acb2f1a812871b9aa71c18c207c204f3aa370f1be16c5a9ebc3f4",
+    "state_head_after_user_deploy_hex": "42a7cd654847d00d1de9ad06f62d672f7fad05a37d898281a12e2c3879c26262",
     "store_quarantine_seconds": 1200,
     "test_key_ids": [
       "AqhPUHwy5byXy_JwVWyl7w",

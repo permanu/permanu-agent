@@ -2,9 +2,10 @@
 //! (signed-plan.md sections 6.3, 6.4, 8; D-022). The agent is its only
 //! writer; the runner opens it read-only through group `permanu-runner`.
 //!
-//! - Schema: `schema_v1.sql` is the normative DDL of section 6.4, verbatim;
-//!   `schema_v1_agent.sql` adds agent-only tables and one trailing nullable
-//!   column, as section 6.4 allows. `PRAGMA user_version` is the migration
+//! - Schema: `schema_v1.sql` is the normative DDL of section 6.4 (v1.0.1),
+//!   verbatim; `schema_v1_agent.sql` adds agent-only tables and one trailing
+//!   nullable column, as section 6.4 allows; `schema_v2.sql` adds the v1.0.2
+//!   columns with `ADD COLUMN` (user_version 2). `PRAGMA user_version` is the migration
 //!   cursor; a newer store than this binary knows is refused (fail closed).
 //! - Files: database, `-wal` and `-shm` are `0640` with the configured owner
 //!   and group, the directory `0750`; WAL files persist across restarts
@@ -20,7 +21,7 @@ mod reconcile;
 #[cfg(test)]
 mod tests;
 
-pub use admit::{Admission, AdmitInput};
+pub use admit::{Admission, AdmitInput, INPUT_KINDS};
 pub use query::{execution_deadline, ActionRecord, AdmissionRecord};
 pub use reconcile::{read_consumed_log, ReconcileEffect};
 
@@ -44,8 +45,9 @@ pub const OPERATION_EVENT_RETENTION_SECONDS: i64 = 7 * 86_400;
 
 const SCHEMA_V1: &str = include_str!("schema_v1.sql");
 const SCHEMA_V1_AGENT: &str = include_str!("schema_v1_agent.sql");
+const SCHEMA_V2: &str = include_str!("schema_v2.sql");
 /// Index i migrates user_version i → i + 1.
-const MIGRATIONS: &[&[&str]] = &[&[SCHEMA_V1, SCHEMA_V1_AGENT]];
+const MIGRATIONS: &[&[&str]] = &[&[SCHEMA_V1, SCHEMA_V1_AGENT], &[SCHEMA_V2]];
 pub const SCHEMA_VERSION: i64 = MIGRATIONS.len() as i64;
 
 const FILE_MODE: u32 = 0o640;
@@ -362,9 +364,10 @@ fn create(
     migrate(&mut conn)?;
     conn.execute(
         "INSERT INTO meta (id, store_created_at, schema_version, quarantine_ends_at) \
-         VALUES (1, ?1, 1, ?2)",
+         VALUES (1, ?1, ?2, ?3)",
         rusqlite::params![
             format_timestamp(now),
+            SCHEMA_VERSION,
             quarantine_ends_at.map(format_timestamp)
         ],
     )?;

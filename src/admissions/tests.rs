@@ -5,7 +5,7 @@ use rusqlite::params;
 use serde_json::Value;
 
 use super::*;
-use crate::signed_plan::test_support::{plan_vector, temp_dir, test_trust, SERVER_A};
+use crate::signed_plan::test_support::{plan_vector, temp_dir, test_trust, TestSigner, SERVER_A};
 use crate::signed_plan::text::timestamp;
 use crate::signed_plan::verify::Submitter;
 use crate::signed_plan::PlanCode;
@@ -14,7 +14,7 @@ const NOW: &str = "2026-09-23T10:05:00Z";
 const USER_DEPLOY_HEAD_BEFORE: &str =
     "4a98af3eeae054bf7585746ce20fa5907ec9c079ee1b049a7d01146d1c92ebfb";
 const USER_DEPLOY_HEAD_AFTER: &str =
-    "873dbc34b38acb2f1a812871b9aa71c18c207c204f3aa370f1be16c5a9ebc3f4";
+    "42a7cd654847d00d1de9ad06f62d672f7fad05a37d898281a12e2c3879c26262";
 const PROJECT: &str = "01a0cdb5-3500-70b1-8000-000000000001";
 
 fn now() -> i64 {
@@ -92,7 +92,7 @@ fn creates_the_normative_schema_with_wal_modes_and_version() {
     let version: i64 = conn
         .query_row("PRAGMA user_version", [], |r| r.get(0))
         .unwrap();
-    assert_eq!(version, 1);
+    assert_eq!(version, 2);
     let fk: i64 = conn
         .query_row("PRAGMA foreign_keys", [], |r| r.get(0))
         .unwrap();
@@ -232,7 +232,7 @@ fn admits_the_user_deploy_vector_advances_the_head_and_dedupes() {
     assert!(!admission.deduplicated);
     assert_eq!(
         admission.plan_digest_hex,
-        "3ad6585581ed4f9e1b9355acf258c3d76971dafda5fd461109ea04274946414c"
+        "2f95d6f908b7513e1f599cfc7cd2475e9e631bfcc6afe973248e5364acdb0962"
     );
     assert_eq!(admission.admitted_at, NOW);
     assert_eq!(admission.deployment_ids.len(), 1);
@@ -547,7 +547,7 @@ fn runner_read_queries_work_on_the_agent_store() {
     let spec: String = conn
         .query_row(
             "SELECT spec_jcs FROM specs WHERE spec_digest_hex = ?1",
-            params!["f9e2f5ba422e79750428675b3191f942f6d85747981184a232a08b369e4da410"],
+            params!["8ab54d633eff45b8a42f096f2f42f9837fba778f2cf8a884d73d34b70619f607"],
             |r| r.get(0),
         )
         .unwrap();
@@ -557,5 +557,201 @@ fn runner_read_queries_work_on_the_agent_store() {
          WHERE rule_digest_hex = ?1",
     )
     .unwrap();
+    fs::remove_dir_all(dir).unwrap();
+}
+
+const ENVIRONMENT_ID: &str = "01a0cdb5-3500-70b2-8000-000000000001";
+const WEB: &str = "01a0cdb5-3500-70c1-8000-000000000001";
+
+#[test]
+fn a_v1_store_migrates_to_the_v1_0_2_columns() {
+    let dir = temp_dir("store-v1");
+    let path = dir.join("agent/admissions.db");
+    fs::create_dir_all(path.parent().unwrap()).unwrap();
+    {
+        let conn = rusqlite::Connection::open(&path).unwrap();
+        conn.execute_batch(SCHEMA_V1).unwrap();
+        conn.execute_batch(SCHEMA_V1_AGENT).unwrap();
+        conn.pragma_update(None, "user_version", 1).unwrap();
+        conn.execute(
+            "INSERT INTO meta (id, store_created_at, schema_version) VALUES (1, ?1, 1)",
+            params![NOW],
+        )
+        .unwrap();
+    }
+    let (store, report) = AdmissionStore::open(&config(&dir), true, now()).unwrap();
+    assert!(!report.created && !report.recreated);
+    let conn = store.lock();
+    let version: i64 = conn
+        .query_row("PRAGMA user_version", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(version, 2);
+    let schema: i64 = conn
+        .query_row("SELECT schema_version FROM meta", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(schema, 2);
+    // Every v1.0.2 column the runner reads exists with its default.
+    conn.query_row("SELECT environment_id FROM admissions LIMIT 0", [], |_| {
+        Ok(())
+    })
+    .ok();
+    conn.execute_batch(
+        "SELECT action_index, project_id, environment, service_id, name FROM sealed_secrets",
+    )
+    .unwrap();
+    drop(conn);
+    fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn a_new_store_records_schema_version_two() {
+    let dir = temp_dir("store-v2");
+    let (store, _) = AdmissionStore::open(&config(&dir), false, now()).unwrap();
+    let schema: i64 = store
+        .lock()
+        .query_row("SELECT schema_version FROM meta", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(schema, 2);
+    fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn admission_records_environment_id_and_deployment_ids() {
+    let dir = temp_dir("store-envid");
+    let (store, _) = AdmissionStore::open(&config(&dir), false, now()).unwrap();
+    seed_head(&store, USER_DEPLOY_HEAD_BEFORE);
+    let (envelope, specs) = user_deploy();
+    let admission = store
+        .admit(&test_trust(), &input(&envelope, &specs, now()))
+        .unwrap();
+    let record = store.admission(&admission.plan_id).unwrap().unwrap();
+    assert_eq!(record.environment_id, ENVIRONMENT_ID);
+    let stored: (String, Option<String>) = store
+        .lock()
+        .query_row(
+            "SELECT a.environment_id, x.deployment_id FROM admissions a \
+             JOIN admission_actions x ON x.plan_id = a.plan_id WHERE a.plan_id = ?1",
+            params![admission.plan_id],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .unwrap();
+    assert_eq!(stored.0, ENVIRONMENT_ID);
+    assert_eq!(stored.1, admission.deployment_ids[0]);
+    fs::remove_dir_all(dir).unwrap();
+}
+
+/// The user-deploy vector re-signed with `actions` in place of its own.
+fn signed_with_actions(signer: &TestSigner, tail: &str, actions: Value) -> String {
+    let mut plan = plan_vector("user-deploy")["plan"].clone();
+    plan["id"] = Value::String(format!("01a0cdb5-3500-7001-8000-{tail}"));
+    plan["nonce"] = Value::String(format!("{tail}AAAAAAAAAA"));
+    plan["actions"] = actions;
+    signer.envelope(&plan)
+}
+
+fn deploy_action() -> Value {
+    plan_vector("user-deploy")["plan"]["actions"][0].clone()
+}
+
+#[test]
+fn input_actions_must_be_composed_with_a_later_deploy() {
+    let Some(owner) = TestSigner::load("owner") else {
+        eprintln!("skipped: docs keys.json not found");
+        return;
+    };
+    let dir = temp_dir("store-compose");
+    let (store, _) = AdmissionStore::open(&config(&dir), false, now()).unwrap();
+    seed_head(&store, USER_DEPLOY_HEAD_BEFORE);
+    let trust = test_trust();
+    let (_, specs) = user_deploy();
+    let env_set = serde_json::json!({"kind": "env.set", "params": {
+        "service_id": WEB, "set": {"LOG_LEVEL": "debug"}, "unset": []}});
+    // Alone, and before-only compositions, are refused (D-028).
+    for (tail, actions, supplied) in [
+        ("0000000000c1", serde_json::json!([env_set]), &[][..]),
+        (
+            "0000000000c2",
+            serde_json::json!([deploy_action(), env_set]),
+            &specs[..],
+        ),
+    ] {
+        let envelope = signed_with_actions(&owner, tail, actions);
+        assert_eq!(
+            store
+                .admit(&trust, &input(&envelope, supplied, now()))
+                .unwrap_err(),
+            PlanCode::ExecPrecondition,
+            "{tail}"
+        );
+    }
+    assert_eq!(store.count("seen"), 0);
+    let envelope = signed_with_actions(
+        &owner,
+        "0000000000c3",
+        serde_json::json!([env_set, deploy_action()]),
+    );
+    store
+        .admit(&trust, &input(&envelope, &specs, now()))
+        .unwrap();
+    fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn sealed_secret_rows_carry_their_action_and_scope() {
+    use sha2::{Digest, Sha256};
+    let Some(owner) = TestSigner::load("owner") else {
+        eprintln!("skipped: docs keys.json not found");
+        return;
+    };
+    let dir = temp_dir("store-sealed-scope");
+    let (store, _) = AdmissionStore::open(&config(&dir), false, now()).unwrap();
+    seed_head(&store, USER_DEPLOY_HEAD_BEFORE);
+    let (_, specs) = user_deploy();
+    let ciphertext = b"age-encryption.org/v1\n-> X25519 test\n".to_vec();
+    let digest = hex::encode(Sha256::digest(&ciphertext));
+    let envelope = signed_with_actions(
+        &owner,
+        "0000000000c4",
+        serde_json::json!([
+            {"kind": "secret.set", "params": {
+                "service_id": WEB, "name": "API_KEY", "ciphertext_digest_hex": digest}},
+            deploy_action()
+        ]),
+    );
+    let sealed = vec![ciphertext.clone()];
+    let mut with_secret = input(&envelope, &specs, now());
+    with_secret.sealed_secrets = &sealed;
+    let admission = store.admit(&test_trust(), &with_secret).unwrap();
+    let row: (String, Vec<u8>, i64, String, String, String, String) = store
+        .lock()
+        .query_row(
+            "SELECT plan_id, ciphertext, action_index, project_id, environment, service_id, \
+             name FROM sealed_secrets WHERE ciphertext_digest_hex = ?1",
+            params![digest],
+            |r| {
+                Ok((
+                    r.get(0)?,
+                    r.get(1)?,
+                    r.get(2)?,
+                    r.get(3)?,
+                    r.get(4)?,
+                    r.get(5)?,
+                    r.get(6)?,
+                ))
+            },
+        )
+        .unwrap();
+    assert_eq!(
+        row,
+        (
+            admission.plan_id,
+            ciphertext,
+            0,
+            PROJECT.to_owned(),
+            "production".to_owned(),
+            WEB.to_owned(),
+            "API_KEY".to_owned()
+        )
+    );
     fs::remove_dir_all(dir).unwrap();
 }

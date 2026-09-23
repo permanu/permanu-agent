@@ -1,5 +1,5 @@
 //! Test helpers: the vendored contract vectors (`tests/vectors/signed-plan`,
-//! docs tag contracts-v1.0.1), a `PolicyContext` over the vector context, and
+//! docs tag contracts-v1.0.2), a `PolicyContext` over the vector context, and
 //! a TEST signer that loads `keys.json` from the docs checkout. `keys.json`
 //! holds public TEST private keys and is never vendored (gitleaks); tests that
 //! need it skip when the docs checkout is absent.
@@ -91,6 +91,26 @@ impl PolicyContext for VectorContext {
             find(&self.context["admissions"], |a| a["plan_id"] == plan_id)
                 .and_then(|a| a["plan_digest_hex"].as_str().map(str::to_owned)),
         )
+    }
+
+    fn admission_signer_key_ids(
+        &self,
+        plan_id: &str,
+        plan_digest_hex: &str,
+    ) -> Result<Option<Vec<String>>, PlanCode> {
+        Ok(find(&self.context["admissions"], |a| {
+            a["plan_id"] == plan_id && a["plan_digest_hex"] == plan_digest_hex
+        })
+        .map(|a| {
+            a["signer_key_ids"]
+                .as_array()
+                .map(|ids| {
+                    ids.iter()
+                        .filter_map(|id| id.as_str().map(str::to_owned))
+                        .collect()
+                })
+                .unwrap_or_default()
+        }))
     }
 
     fn seen(&self, nonce: &str, plan_id: &str) -> Result<bool, PlanCode> {

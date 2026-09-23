@@ -256,10 +256,14 @@ pub struct LocalConfig {
     pub admissions_db: PathBuf,
     /// signed-plan.md 14.5: the runner's consumed log (read-only here).
     pub consumed_log: PathBuf,
-    /// `permanu-runner`, run as `<runner_path> rpc` for `bind_plan`.
-    pub runner_path: PathBuf,
-    /// signed-plan.md 3.2: the agent's age X25519 identity.
-    pub age_identity_path: PathBuf,
+    /// signed-plan.md 14.1 (D-030): the root, socket-activated runner.
+    pub runner_socket: PathBuf,
+    /// Development builds only (`dev-paths`): run `<runner_path> rpc` over
+    /// stdio instead of the runner socket.
+    pub runner_path: Option<PathBuf>,
+    /// signed-plan.md 3.2 (D-027): the server's public age recipient. The
+    /// agent never reads the identity.
+    pub age_recipient_path: PathBuf,
     /// Owner and group of the store files (D-022).
     pub store_user: String,
     pub store_group: String,
@@ -289,12 +293,11 @@ impl LocalConfig {
             trusted_keys_path: PathBuf::from(crate::trusted_keys::TRUSTED_KEYS_PATH),
             admissions_db: PathBuf::from(crate::admissions::DEFAULT_ADMISSIONS_DB),
             consumed_log: PathBuf::from("/var/lib/permanu/runner/consumed.log"),
-            runner_path: PathBuf::from(
-                lookup("PERMANU_RUNNER_PATH")
-                    .filter(|v| v.starts_with('/'))
-                    .unwrap_or_else(|| crate::local::runner::DEFAULT_RUNNER_PATH.to_string()),
+            runner_socket: PathBuf::from(crate::local::runner::DEFAULT_RUNNER_SOCKET),
+            runner_path: None,
+            age_recipient_path: PathBuf::from(
+                crate::local::age_recipient::DEFAULT_AGE_RECIPIENT_PATH,
             ),
-            age_identity_path: PathBuf::from(crate::local::age_identity::DEFAULT_AGE_IDENTITY_PATH),
             store_user: "permanu-agent".to_string(),
             store_group: "permanu-runner".to_string(),
             trust_lock_path: PathBuf::from("/run/permanu/trust.lock"),
@@ -303,7 +306,13 @@ impl LocalConfig {
         };
         #[cfg(feature = "dev-paths")]
         if let Some(root) = lookup("PERMANU_AGENT_DEV_ROOT").and_then(|v| dev_root(&v)) {
-            return cfg.under_dev_root(&root, lookup("PERMANU_AGENT_SOCKET").is_some());
+            let runner = lookup("PERMANU_RUNNER_PATH")
+                .filter(|v| v.starts_with('/'))
+                .map(PathBuf::from);
+            return Self {
+                runner_path: runner,
+                ..cfg.under_dev_root(&root, lookup("PERMANU_AGENT_SOCKET").is_some())
+            };
         }
         cfg
     }
@@ -323,7 +332,8 @@ impl LocalConfig {
             trusted_keys_path: root.join("etc/trusted-keys.json"),
             admissions_db: root.join("agent/admissions.db"),
             consumed_log: root.join("runner/consumed.log"),
-            age_identity_path: root.join("agent/age-identity"),
+            runner_socket: root.join("run/runner.sock"),
+            age_recipient_path: root.join("agent/age-recipient"),
             trust_lock_path: root.join("run/trust.lock"),
             ssh_host_key_dir: root.join("etc/ssh"),
             // SAFETY: geteuid has no preconditions.
@@ -391,13 +401,11 @@ mod mode_tests {
             cfg.consumed_log,
             PathBuf::from("/var/lib/permanu/runner/consumed.log")
         );
+        assert_eq!(cfg.runner_socket, PathBuf::from("/run/permanu/runner.sock"));
+        assert_eq!(cfg.runner_path, None);
         assert_eq!(
-            cfg.runner_path,
-            PathBuf::from("/usr/local/libexec/permanu-runner")
-        );
-        assert_eq!(
-            cfg.age_identity_path,
-            PathBuf::from("/var/lib/permanu/agent/age-identity")
+            cfg.age_recipient_path,
+            PathBuf::from("/var/lib/permanu/agent/age-recipient")
         );
         assert_eq!(cfg.store_user, "permanu-agent");
         assert_eq!(cfg.store_group, "permanu-runner");
@@ -434,6 +442,8 @@ mod mode_tests {
         );
         assert_eq!(cfg.socket_group.as_deref(), Some("permanu"));
         assert_eq!(cfg.file_owner_uid, 0);
+        // Production always reaches the runner through its socket.
+        assert_eq!(cfg.runner_path, None);
     }
 
     #[cfg(feature = "dev-paths")]
@@ -447,9 +457,10 @@ mod mode_tests {
         assert_eq!(cfg.trust_lock_path, root.join("run/trust.lock"));
         assert_eq!(cfg.admissions_db, root.join("agent/admissions.db"));
         assert_eq!(cfg.consumed_log, root.join("runner/consumed.log"));
-        assert_eq!(cfg.age_identity_path, root.join("agent/age-identity"));
+        assert_eq!(cfg.age_recipient_path, root.join("agent/age-recipient"));
+        assert_eq!(cfg.runner_socket, root.join("run/runner.sock"));
         assert_eq!(cfg.ssh_host_key_dir, root.join("etc/ssh"));
-        assert_eq!(cfg.runner_path, root.join("fake-runner"));
+        assert_eq!(cfg.runner_path, Some(root.join("fake-runner")));
         // SAFETY: geteuid has no preconditions.
         assert_eq!(cfg.file_owner_uid, unsafe { libc::geteuid() });
     }

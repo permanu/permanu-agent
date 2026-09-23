@@ -93,6 +93,7 @@ fn admission_proto(record: AdmissionRecord, include_signed_plan: bool) -> Admiss
         expires_at: ts(&record.expires_at),
         submitter: record.submitter,
         operation_id: record.operation_id,
+        environment_id: record.environment_id,
     }
 }
 
