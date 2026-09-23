@@ -417,7 +417,9 @@ enum AnalyticsMeasure {
 }
 
 message AnalyticsQuery {
-  // Empty = all domains routed by this server's Dwaar.
+  // Route hosts (the Host a Dwaar route matched: a domain.add hostname, or
+  // before domains exist the service's generated host). Empty = all hosts
+  // routed by this server's Dwaar. v2.1.2 (contracts v1.1.2, D-060).
   repeated string domains = 1;
   TimeRange range = 2;
   // Time bucket width. 0 = a single bucket covering the whole range.
@@ -432,6 +434,11 @@ message AnalyticsQuery {
   // Top-N rows per bucket by the first measure. 0 = 50; max 500.
   uint32 limit = 8;
   bool follow = 9;
+  // v2.1.2 (contracts v1.1.2, D-060; capability "analytics.v1"). Only
+  // records of these services: the agent attributes each Dwaar record to the
+  // service of the route it matched, so analytics are keyed by service_id and
+  // route host and work before any domain exists. Empty = every service.
+  repeated string service_ids = 10;
 }
 
 message AnalyticsDimensionValue {
