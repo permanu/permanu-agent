@@ -448,7 +448,8 @@ async fn after_downtime_a_recent_fire_time_runs_once_and_an_old_one_is_reported(
     assert_eq!(f.runner.ops("backup_run").len(), 1);
     let runs = backup_runs(&f);
     let missed = runs.last().unwrap();
-    assert_eq!(missed.status, BackupRunStatus::Failed as i32);
+    // proto v2.1.3 (contracts v1.1.3, D-061): its own status.
+    assert_eq!(missed.status, BackupRunStatus::Missed as i32);
     assert!(missed.error.starts_with("missed:"));
     assert!(f
         .sink
@@ -501,4 +502,127 @@ fn locations_follow_the_section_3_8_layout() {
         location(&dest, "srv", "res", "bid"),
         "r2://backups/team/a/permanu/v1/srv/res/bid.age"
     );
+}
+
+const CHANNEL_A: &str = "01a0cdb5-3500-7c01-8000-000000000001";
+const CHANNEL_B: &str = "01a0cdb5-3500-7c01-8000-000000000002";
+
+/// contracts v1.1.3 (D-061): `BackupPolicy.channel_ids` comes only from the
+/// signed `backup.policy.set`, and a missed run notifies those channels.
+#[tokio::test]
+async fn signed_channels_are_listed_and_notified_on_a_missed_run() {
+    let f = Fixture::new("backup-channels", "2026-09-23T00:00:00Z");
+    let mut signed = policy(PG, "0 5 * * *", Value::Null);
+    signed["params"]["channel_ids"] = json!([CHANNEL_A, CHANNEL_B]);
+    signed["params"]["db_credentials_ref"] =
+        json!({"user": "DB_USER", "password": "DB_PASSWORD", "database": "DB_NAME"});
+    f.record(1, &[signed], "succeeded");
+    let s = scheduler(&f);
+    tick_at(&f, &s, "2026-09-23T00:00:05Z").await;
+    let defs = s.definitions();
+    let listed = s.policy_proto(&defs.policies[PG], &defs);
+    assert_eq!(listed.channel_ids, vec![CHANNEL_A, CHANNEL_B]);
+    tick_at(&f, &s, "2026-09-23T07:30:00Z").await;
+    let events = f.sink.0.lock().unwrap().clone();
+    let missed = events
+        .iter()
+        .find(|e| e.kind == Cond::BackupFailed && e.occurred)
+        .expect("a missed run is reported");
+    assert_eq!(missed.channel_ids, vec![CHANNEL_A, CHANNEL_B]);
+    assert!(missed.standalone, "the policy's own channels are notified");
+}
+
+fn verify_line(plan: &str, checks: Value, verified_at: Value) -> Value {
+    json!({"v": 1, "seq": 1, "at": "2026-09-23T10:00:30Z", "event": "run_result",
+           "plan_id": plan, "plan_digest_hex": format!("{:064x}", 2), "action_index": 0,
+           "op": "backup_verify", "scheduled_for": null, "attempt": 1, "run_id": "rr-v",
+           "outcome": "succeeded", "backup_id": BACKUP_A, "backup_digest_hex": "ab".repeat(32),
+           "resource_id": PG, "checks": checks, "verified_at": verified_at})
+}
+
+/// contracts v1.1.4 (D-062): a plan-bound `backup.verify` sets the
+/// artifact's `last_verification` from the runner's `run_result` line of
+/// that backup, exactly as a scheduled verify does.
+#[tokio::test]
+async fn a_manual_verify_sets_the_artifacts_last_verification() {
+    for (checks, verified_at, want) in [
+        (
+            json!({"plaintext_digest": true, "archive_readable": true,
+                   "restore_completed": true, "tables_present": true}),
+            json!("2026-09-23T10:00:29Z"),
+            RestoreVerificationStatus::Passed,
+        ),
+        (
+            json!({"plaintext_digest": true, "archive_readable": true,
+                   "restore_completed": true, "tables_present": false}),
+            Value::Null,
+            RestoreVerificationStatus::Failed,
+        ),
+    ] {
+        let f = Fixture::new("backup-manual-verify", "2026-09-23T10:00:00Z");
+        f.record(1, &[policy(PG, "0 3 * * *", Value::Null)], "succeeded");
+        let s = scheduler(&f);
+        s.put_artifact(&BackupArtifact {
+            id: BACKUP_A.to_owned(),
+            policy_id: PG.to_owned(),
+            created_at: Some(pts(1)),
+            ..Default::default()
+        });
+        let plan = f.record(
+            2,
+            &[json!({"kind": "backup.verify", "params": {"resource_id": PG, "backup_id": BACKUP_A}})],
+            "succeeded",
+        );
+        f.append_consumed(&verify_line(&plan, checks, verified_at));
+        tick_at(&f, &s, "2026-09-23T10:01:00Z").await;
+        let artifact: BackupArtifact = f
+            .deps
+            .ops
+            .get(RecordKind::Artifact, BACKUP_A)
+            .unwrap()
+            .decode()
+            .unwrap();
+        assert_eq!(artifact.last_verification, want as i32);
+        let verification: RestoreVerification = f
+            .deps
+            .ops
+            .list(
+                RecordKind::Verification,
+                &Listing {
+                    limit: 5,
+                    ..Default::default()
+                },
+            )
+            .first()
+            .unwrap()
+            .decode()
+            .unwrap();
+        assert_eq!(verification.status, want as i32);
+        assert_eq!(verification.trigger, backup_run::Trigger::Manual as i32);
+        assert_eq!(verification.checks.len(), 4);
+    }
+}
+
+/// contracts v1.1.3 (D-061): a plan-bound `backup.run` whose `run_result`
+/// trigger is `pre_deploy` (or `pre_restore`) is `TRIGGER_PRE_CHANGE`.
+#[tokio::test]
+async fn a_pre_deploy_backup_is_a_pre_change_run() {
+    let f = Fixture::new("backup-pre-deploy", "2026-09-23T02:00:00Z");
+    f.record(1, &[policy(PG, "0 3 * * *", Value::Null)], "succeeded");
+    let s = scheduler(&f);
+    let plan = f.record(
+        2,
+        &[json!({"kind": "backup.run", "params": {"resource_id": PG}})],
+        "succeeded",
+    );
+    f.append_consumed(&json!({"v": 1, "seq": 1, "at": "2026-09-23T02:00:01Z",
+        "event": "run_result", "plan_id": plan, "plan_digest_hex": format!("{:064x}", 2),
+        "action_index": 0, "op": "backup_run", "scheduled_for": null, "attempt": 1,
+        "run_id": "rr-b", "outcome": "succeeded", "backup_id": BACKUP_B,
+        "backup_digest_hex": "cd".repeat(32), "size_bytes": 1, "resource_id": PG,
+        "destination_ref": "local", "trigger": "pre_deploy",
+        "created_at": "2026-09-23T02:00:01Z", "verified_at": null}));
+    tick_at(&f, &s, "2026-09-23T02:00:05Z").await;
+    let runs = backup_runs(&f);
+    assert_eq!(runs[0].trigger, backup_run::Trigger::PreChange as i32);
 }
