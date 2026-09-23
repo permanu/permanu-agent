@@ -159,6 +159,8 @@ fn params_for(kind: &str) -> Option<&'static [(&'static str, Shape)]> {
             ("server_id", UUID7),
             ("ssh_host_key_digest_hex", HEX64),
             ("owner_key", KEY_ENTRY),
+            // v1.0.2 (D-029): the server bundle the engine installed.
+            ("bundle_manifest_digest_hex", HEX64),
         ],
         "server.remove" => &[("server_id", UUID7), ("wipe", Shape::Bool)],
         "agent.update" => &[
@@ -172,6 +174,7 @@ fn params_for(kind: &str) -> Option<&'static [(&'static str, Shape)]> {
             ),
             ("version", Shape::Text(1, 64)),
             ("artifact_digest_hex", Shape::Nullable(&HEX64)),
+            ("bundle_manifest_digest_hex", Shape::Nullable(&HEX64)),
         ],
         "shell.open" => &[
             ("service_id", Shape::Nullable(&UUID7)),
@@ -244,6 +247,8 @@ const PLAN: Shape = Shape::Object(&[
     ("id", UUID7),
     ("project_id", Shape::Nullable(&UUID7)),
     ("environment", Shape::Nullable(&REF)),
+    // v1.0.2 (D-026): null exactly when environment is null.
+    ("environment_id", Shape::Nullable(&UUID7)),
     ("service_ids", Shape::Set(&UUID7, 0, 64)),
     ("targets", Shape::Set(&UUID7, 1, 32)),
     ("actions", Shape::Custom(actions)),
@@ -282,6 +287,9 @@ fn plan_rules_hold(plan: &Value) -> bool {
     }
     let author = &plan["author"];
     if (author["kind"] == "agent-draft") == author["agent_session_id"].is_null() {
+        return false;
+    }
+    if plan["environment"].is_null() != plan["environment_id"].is_null() {
         return false;
     }
     if !scope_rules_hold(plan, &kinds) {
@@ -329,6 +337,9 @@ fn action_rules_hold(plan: &Value, action: &Value) -> bool {
                 && key_entry_ok(&params["owner_key"])
         }
         "server.remove" => single_target(&params["server_id"]),
+        "component.update" => {
+            (params["component"] == "os_packages") == params["bundle_manifest_digest_hex"].is_null()
+        }
         "env.set" => {
             let unset = super::string_set(&params["unset"]);
             params["set"]

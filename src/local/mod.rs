@@ -7,7 +7,7 @@
 //! `UNIMPLEMENTED` with the `ERROR_REASON_CAPABILITY_MISSING` trailer. The
 //! only path that changes the host is an admitted signed plan.
 
-pub mod age_identity;
+pub mod age_recipient;
 pub mod change;
 pub mod errors;
 pub mod events;
@@ -53,6 +53,12 @@ use crate::{
 use facts::{timestamp, HostProbe};
 
 pub const PROTOCOL_VERSION: &str = "2.0";
+/// agent-protocol.md section 2 (v2.0.2, D-033): the agent admits signed-plan
+/// v1 and drives execution; it serves the section 6.4 store with the v1.0.2
+/// columns; and, with a recipient, the runner decrypts sealed secrets.
+pub const CAPABILITY_SIGNED_PLANS: &str = "signed_plans.v1";
+pub const CAPABILITY_ADMISSIONS: &str = "admissions.v1";
+pub const CAPABILITY_AGE: &str = "age.v1";
 pub const ERROR_REASON_HEADER: &str = "permanu-error-reason";
 /// agent-protocol.md section 7.
 pub const MAX_MESSAGE_BYTES: usize = 4 * 1024 * 1024;
@@ -202,7 +208,7 @@ impl InfoService for InfoSvc {
                 ssh_host_key_digests_hex: self.probe.ssh_host_key_digests_hex(),
                 age_recipient: self.age_recipient.clone(),
             }),
-            capabilities: Vec::new(),
+            capabilities: capabilities(&self.age_recipient),
             server: Some(self.probe.server_facts().await),
             trusted_keys: Some(trusted_keys),
             clock: Some(ClockInfo {
@@ -229,6 +235,18 @@ impl InfoService for InfoSvc {
             agent_time: Some(timestamp(SystemTime::now())),
         }))
     }
+}
+
+/// `HelloResponse.capabilities`: `age.v1` only when a recipient is set.
+fn capabilities(age_recipient: &str) -> Vec<String> {
+    let mut ids = vec![
+        CAPABILITY_SIGNED_PLANS.to_string(),
+        CAPABILITY_ADMISSIONS.to_string(),
+    ];
+    if !age_recipient.is_empty() {
+        ids.push(CAPABILITY_AGE.to_string());
+    }
+    ids
 }
 
 pub struct StateSvc {
@@ -474,14 +492,21 @@ pub async fn run(
         now,
     )?;
     let age_recipient =
-        match age_identity::load_or_generate(&cfg.age_identity_path, owner.map(|o| (o.uid, o.gid)))
-        {
+        match age_recipient::read_recipient(&cfg.age_recipient_path, cfg.file_owner_uid) {
             Ok(recipient) => recipient,
             Err(err) => {
-                warn!(error = %err, "no age identity; secrets cannot be sealed for this server");
+                warn!(error = %err, "no age recipient; secrets cannot be sealed for this server");
                 String::new()
             }
         };
+    let runner: Arc<dyn runner::Runner> = match &cfg.runner_path {
+        Some(program) => Arc::new(runner::StdioRunner {
+            program: program.clone(),
+        }),
+        None => Arc::new(runner::SocketRunner {
+            path: cfg.runner_socket.clone(),
+        }),
+    };
     let probe: Arc<dyn HostProbe> = Arc::new(facts::SystemProbe {
         server_id,
         ssh_host_key_dir: cfg.ssh_host_key_dir.clone(),
@@ -490,11 +515,12 @@ pub async fn run(
         store: Arc::new(store),
         trust: trust.clone(),
         probe: probe.clone(),
-        runner: Arc::new(runner::StdioRunner::new(cfg.runner_path.clone())),
+        runner,
         events: events::EventBus::new(),
         clock: Arc::new(execution::SystemClock),
         consumed_log: cfg.consumed_log.clone(),
         consumed_log_owner: cfg.file_owner_uid,
+        timing: execution::Timing::default(),
     });
     if report.recreated {
         warn!(
@@ -552,6 +578,15 @@ mod tests {
             .map(str::to_string)
     }
 
+    #[test]
+    fn age_capability_needs_a_recipient() {
+        assert_eq!(capabilities(""), vec!["signed_plans.v1", "admissions.v1"]);
+        assert_eq!(
+            capabilities("age1xyz"),
+            vec!["signed_plans.v1", "admissions.v1", "age.v1"]
+        );
+    }
+
     #[tokio::test]
     async fn hello_round_trip_over_unix_socket() {
         let trust =
@@ -593,7 +628,10 @@ mod tests {
         assert!(clock.estimated_skew.is_some());
         assert_eq!(clock.timezone, "Etc/UTC");
         assert_eq!(hello.session_id.len(), 32);
-        assert!(hello.capabilities.is_empty());
+        assert_eq!(
+            hello.capabilities,
+            vec!["signed_plans.v1", "admissions.v1", "age.v1"]
+        );
 
         let facts = client
             .get_server_facts(GetServerFactsRequest {})

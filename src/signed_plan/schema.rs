@@ -217,6 +217,8 @@ pub(crate) const SPEC: Shape = Shape::Object(&[
         "placement",
         Shape::Object(&[("server_ids", Shape::Set(&UUID7, 1, 32))]),
     ),
+    // v1.0.2 (D-027): secrets only as files under /run/secrets.
+    ("secrets_as_files_only", Shape::Bool),
 ]);
 
 fn image_repository(value: &Value) -> bool {

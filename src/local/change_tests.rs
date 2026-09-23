@@ -9,16 +9,16 @@ use tokio_stream::StreamExt;
 use tonic::Code;
 
 use super::errors::PLAN_ERROR_HEADER;
-use super::test_harness::{Harness, Options};
+use super::test_harness::{Harness, OpBehavior, Options};
 use super::ERROR_REASON_HEADER;
 use crate::proto::agent::v2::{
     change_service_client::ChangeServiceClient, deploy_status_event::Phase, event,
     event_service_client::EventServiceClient, info_service_client::InfoServiceClient,
     operation_event, trusted_keys_summary::TrustState, CancelOperationRequest, EventKind,
     GetOperationRequest, GetStateHeadRequest, GetTrustedKeysRequest, HelloRequest,
-    ListAdmissionsRequest, ListOperationsRequest, ListStandingRulesRequest, OperationState,
-    PageRequest, SignedPlan, SubmitSignedPlanRequest, SubscribeRequest, VerifySignedPlanRequest,
-    WatchOperationRequest,
+    ListAdmissionsRequest, ListOperationsRequest, ListStandingRulesRequest, Operation,
+    OperationRef, OperationState, PageRequest, SignedPlan, SubmitSignedPlanRequest,
+    SubscribeRequest, VerifySignedPlanRequest, WatchOperationRequest,
 };
 use crate::signed_plan::crypto::{KEY_ADD_PREFIX, SPEC_PREFIX};
 use crate::signed_plan::jcs::canonicalize;
@@ -28,6 +28,8 @@ use crate::signed_plan::PlanCode;
 
 const SERVER_C: &str = "01a0cdb5-3500-70a1-8000-000000000003";
 const PROJECT: &str = "01a0cdb5-3500-70b1-8000-000000000001";
+const ENVIRONMENT_ID: &str = "01a0cdb5-3500-70b2-8000-000000000001";
+const WEB: &str = "01a0cdb5-3500-70c1-8000-000000000001";
 
 fn signed(case: &Value) -> SignedPlan {
     SignedPlan {
@@ -146,8 +148,15 @@ async fn bootstrap_admits_server_add_writes_trust_and_dedupes() {
     assert_eq!(hello.trusted_keys.unwrap().state, TrustState::Valid as i32);
 
     wait_for_state(&h, &reference.operation_id, OperationState::Succeeded).await;
-    // server.add is executed by the agent, never bound to the runner.
-    assert!(h.runner.calls.lock().unwrap().is_empty());
+    // The runner wrote the trust file (D-030); server.add itself is applied
+    // by the agent and never bound.
+    let requests = h.runner.requests.lock().unwrap().clone();
+    assert_eq!(requests.len(), 1);
+    assert_eq!(requests[0]["op"], "bootstrap_trust");
+    assert_eq!(
+        requests[0]["payload"]["signed_plan"],
+        String::from_utf8(signed(&case).envelope_json).unwrap()
+    );
 
     let head = change
         .get_state_head(GetStateHeadRequest::default())
@@ -258,6 +267,8 @@ async fn an_expired_bootstrap_writes_no_trust_file() {
         .unwrap_err();
     assert_eq!(trailer(&status, PLAN_ERROR_HEADER), "E_EXPIRED");
     assert!(!h.trust_file.exists());
+    // The time window is checked before the runner is asked (D-033).
+    assert!(h.runner.requests.lock().unwrap().is_empty());
     h.stop().await;
 }
 
@@ -477,80 +488,181 @@ fn fresh_deploy(signer: &TestSigner, id_tail: &str, nonce: &str, head: &str) -> 
     }
 }
 
-#[tokio::test]
-async fn deploy_binds_to_the_runner_and_reconciles_to_live() {
-    let Some(owner) = TestSigner::load("owner") else {
-        eprintln!("skipped: docs keys.json not found");
-        return;
-    };
-    let trust = serde_json::to_string(&vector("policy-cases")["context"]["trusted_keys"]).unwrap();
-    let h = Harness::start("deploy", Some(&trust)).await;
-    let mut deploys = EventServiceClient::new(h.channel.clone())
+fn vector_trust() -> String {
+    serde_json::to_string(&vector("policy-cases")["context"]["trusted_keys"]).unwrap()
+}
+
+async fn submit_ok(h: &Harness, plan: SignedPlan) -> OperationRef {
+    ChangeServiceClient::new(h.channel.clone())
+        .submit_signed_plan(submit(plan))
+        .await
+        .unwrap()
+        .into_inner()
+}
+
+async fn operation(h: &Harness, operation_id: &str) -> Operation {
+    ChangeServiceClient::new(h.channel.clone())
+        .get_operation(GetOperationRequest {
+            operation_id: operation_id.to_owned(),
+        })
+        .await
+        .unwrap()
+        .into_inner()
+}
+
+/// Every step of an operation as `(action_index, name, state, failure_code)`.
+fn steps(operation: &Operation) -> Vec<(u32, String, i32, String)> {
+    operation
+        .steps
+        .iter()
+        .map(|s| {
+            (
+                s.action_index,
+                s.name.clone(),
+                s.state,
+                s.failure_code.clone(),
+            )
+        })
+        .collect()
+}
+
+fn names(operation: &Operation, action_index: u32) -> Vec<String> {
+    operation
+        .steps
+        .iter()
+        .filter(|s| s.action_index == action_index && !s.action.is_empty())
+        .map(|s| s.name.clone())
+        .collect()
+}
+
+/// Deploy status events until the first final phase.
+async fn deploy_phases(
+    events: &mut tonic::Streaming<crate::proto::agent::v2::Event>,
+) -> Vec<(i32, String)> {
+    let mut phases = Vec::new();
+    loop {
+        let event = tokio::time::timeout(Duration::from_secs(10), events.next())
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap();
+        let Some(event::Payload::Deploy(status)) = event.payload else {
+            continue;
+        };
+        assert_eq!(status.project_id, PROJECT);
+        assert_eq!(status.environment_id, ENVIRONMENT_ID);
+        assert!(crate::signed_plan::text::uuid7(&status.deployment_id));
+        let done = [
+            Phase::Live,
+            Phase::Failed,
+            Phase::RolledBack,
+            Phase::Cancelled,
+        ]
+        .iter()
+        .any(|p| *p as i32 == status.phase);
+        phases.push((status.phase, status.failure_code));
+        if done {
+            return phases;
+        }
+    }
+}
+
+async fn deploy_events(h: &Harness) -> tonic::Streaming<crate::proto::agent::v2::Event> {
+    EventServiceClient::new(h.channel.clone())
         .subscribe(SubscribeRequest {
             kinds: vec![EventKind::DeployStatus as i32],
             ..Default::default()
         })
         .await
         .unwrap()
-        .into_inner();
-    let mut change = ChangeServiceClient::new(h.channel.clone());
-    let plan = fresh_deploy(
-        &owner,
-        "0000000000d1",
-        "AAAAAAAAAAAAAAAAAAAAAA",
-        GENESIS_HEAD,
-    );
-    let reference = change
-        .submit_signed_plan(submit(plan))
-        .await
-        .unwrap()
-        .into_inner();
-    wait_for_state(&h, &reference.operation_id, OperationState::Running).await;
-    let calls = h.runner.calls.lock().unwrap().clone();
+        .into_inner()
+}
+
+#[tokio::test]
+async fn deploy_success_binds_runs_the_op_sequence_and_goes_live() {
+    let Some(owner) = TestSigner::load("owner") else {
+        eprintln!("skipped: docs keys.json not found");
+        return;
+    };
+    let h = Harness::start("deploy", Some(&vector_trust())).await;
+    let mut deploys = deploy_events(&h).await;
+    let reference = submit_ok(
+        &h,
+        fresh_deploy(
+            &owner,
+            "0000000000d1",
+            "AAAAAAAAAAAAAAAAAAAAAA",
+            GENESIS_HEAD,
+        ),
+    )
+    .await;
+    wait_for_state(&h, &reference.operation_id, OperationState::Succeeded).await;
+    // bind_plan, then prepare → verify → activate, each with payload {}.
     assert_eq!(
-        calls,
+        h.runner.binds(),
         vec![(
             reference.plan_id.clone(),
             reference.plan_digest_hex.clone(),
             0
         )]
     );
-
-    let mut phases = Vec::new();
-    for _ in 0..2 {
-        let event = tokio::time::timeout(Duration::from_secs(5), deploys.next())
-            .await
-            .unwrap()
-            .unwrap()
-            .unwrap();
-        let Some(event::Payload::Deploy(status)) = event.payload else {
-            panic!("deploy event");
-        };
-        assert_eq!(status.operation_id, reference.operation_id);
-        assert_eq!(status.project_id, PROJECT);
-        assert!(crate::signed_plan::text::uuid7(&status.deployment_id));
-        phases.push(status.phase);
-    }
-    assert_eq!(phases, vec![Phase::Queued as i32, Phase::Starting as i32]);
-
-    h.runner.result(
-        &reference.plan_id,
-        &reference.plan_digest_hex,
-        0,
-        "succeeded",
+    assert_eq!(
+        h.runner.ops_for(&reference.plan_id),
+        vec![
+            ("prepare_release".to_owned(), 0),
+            ("verify_health".to_owned(), 0),
+            ("activate_release".to_owned(), 0),
+        ]
     );
-    wait_for_state(&h, &reference.operation_id, OperationState::Succeeded).await;
-    let event = tokio::time::timeout(Duration::from_secs(5), deploys.next())
+    let phases = deploy_phases(&mut deploys).await;
+    assert_eq!(
+        phases.iter().map(|p| p.0).collect::<Vec<_>>(),
+        vec![
+            Phase::Queued as i32,
+            Phase::Starting as i32,
+            Phase::HealthChecking as i32,
+            Phase::HealthChecking as i32,
+            Phase::Live as i32,
+        ]
+    );
+    let op = operation(&h, &reference.operation_id).await;
+    assert_eq!(op.plan_id, reference.plan_id);
+    assert_eq!(
+        steps(&op)[0],
+        (
+            0,
+            "admitted".to_owned(),
+            OperationState::Succeeded as i32,
+            String::new()
+        )
+    );
+    assert_eq!(
+        names(&op, 0),
+        vec![
+            "queued",
+            "bound",
+            "prepare_release",
+            "verify_health",
+            "activate_release",
+            "succeeded"
+        ]
+    );
+    // Every step of the deploy names its deployment.
+    let deployment = op.steps[1].deployment_id.clone();
+    assert!(crate::signed_plan::text::uuid7(&deployment));
+    assert!(op.steps[1..].iter().all(|s| s.deployment_id == deployment));
+
+    // The runner's result line was reconciled, and the head advanced.
+    let admission = ChangeServiceClient::new(h.channel.clone())
+        .list_admissions(ListAdmissionsRequest::default())
         .await
         .unwrap()
-        .unwrap()
-        .unwrap();
-    let Some(event::Payload::Deploy(status)) = event.payload else {
-        panic!("deploy event");
-    };
-    assert_eq!(status.phase, Phase::Live as i32);
-
-    // The head chain advanced; the next plan must name the new head.
+        .into_inner()
+        .admissions
+        .remove(0);
+    assert_eq!(admission.outcome, "succeeded");
+    assert_eq!(admission.environment_id, ENVIRONMENT_ID);
+    let mut change = ChangeServiceClient::new(h.channel.clone());
     let head = change
         .get_state_head(GetStateHeadRequest {
             project_id: PROJECT.to_owned(),
@@ -571,7 +683,6 @@ async fn deploy_binds_to_the_runner_and_reconciles_to_live() {
     );
     let status = change.submit_signed_plan(submit(stale)).await.unwrap_err();
     assert_eq!(trailer(&status, PLAN_ERROR_HEADER), "E_BASE_MISMATCH");
-
     let listed = change
         .list_operations(ListOperationsRequest::default())
         .await
@@ -583,73 +694,280 @@ async fn deploy_binds_to_the_runner_and_reconciles_to_live() {
 }
 
 #[tokio::test]
+async fn failed_health_rolls_back_to_the_previous_release() {
+    let Some(owner) = TestSigner::load("owner") else {
+        eprintln!("skipped: docs keys.json not found");
+        return;
+    };
+    let h = Harness::start("rollback", Some(&vector_trust())).await;
+    let first = submit_ok(
+        &h,
+        fresh_deploy(
+            &owner,
+            "0000000000a1",
+            "BAAAAAAAAAAAAAAAAAAAAA",
+            GENESIS_HEAD,
+        ),
+    )
+    .await;
+    wait_for_state(&h, &first.operation_id, OperationState::Succeeded).await;
+
+    h.runner
+        .behave("verify_health", OpBehavior::Fail("health_failed"));
+    let mut deploys = deploy_events(&h).await;
+    let second = submit_ok(
+        &h,
+        fresh_deploy(
+            &owner,
+            "0000000000a2",
+            "CAAAAAAAAAAAAAAAAAAAAA",
+            &next_head(GENESIS_HEAD, &first.plan_digest_hex),
+        ),
+    )
+    .await;
+    wait_for_state(&h, &second.operation_id, OperationState::RolledBack).await;
+    assert_eq!(
+        h.runner.ops_for(&second.plan_id),
+        vec![
+            ("prepare_release".to_owned(), 0),
+            ("verify_health".to_owned(), 0),
+            ("rollback_release".to_owned(), 0),
+        ]
+    );
+    let phases = deploy_phases(&mut deploys).await;
+    assert_eq!(
+        phases.last().unwrap(),
+        &(Phase::RolledBack as i32, "candidate_health".to_owned())
+    );
+    assert!(phases.contains(&(Phase::RollingBack as i32, String::new())));
+    let op = operation(&h, &second.operation_id).await;
+    assert_eq!(
+        names(&op, 0),
+        vec![
+            "queued",
+            "bound",
+            "prepare_release",
+            "verify_health",
+            "rollback_release",
+            "rolled_back"
+        ]
+    );
+    let health = op.steps.iter().find(|s| s.name == "verify_health").unwrap();
+    assert_eq!(health.state, OperationState::Failed as i32);
+    assert_eq!(health.failure_code, "candidate_health");
+    let last = op.steps.last().unwrap();
+    assert_eq!(last.state, OperationState::RolledBack as i32);
+    assert_eq!(last.failure_code, "candidate_health");
+    h.stop().await;
+}
+
+#[tokio::test]
+async fn failed_health_without_a_previous_release_cleans_up_and_fails() {
+    let Some(owner) = TestSigner::load("owner") else {
+        eprintln!("skipped: docs keys.json not found");
+        return;
+    };
+    let h = Harness::start("cleanup", Some(&vector_trust())).await;
+    h.runner
+        .behave("verify_health", OpBehavior::Fail("health_failed"));
+    // A runner that writes no result lines: the executor records outcomes.
+    h.runner
+        .write_results
+        .store(false, std::sync::atomic::Ordering::SeqCst);
+    let reference = submit_ok(
+        &h,
+        fresh_deploy(
+            &owner,
+            "0000000000b1",
+            "DAAAAAAAAAAAAAAAAAAAAA",
+            GENESIS_HEAD,
+        ),
+    )
+    .await;
+    wait_for_state(&h, &reference.operation_id, OperationState::Failed).await;
+    assert_eq!(
+        h.runner.ops_for(&reference.plan_id),
+        vec![
+            ("prepare_release".to_owned(), 0),
+            ("verify_health".to_owned(), 0),
+            ("cleanup_candidate".to_owned(), 0),
+        ]
+    );
+    let op = operation(&h, &reference.operation_id).await;
+    let last = op.steps.last().unwrap();
+    assert_eq!(
+        (last.name.as_str(), last.failure_code.as_str()),
+        ("failed", "candidate_health")
+    );
+    assert!(op.error.contains("health_failed"), "{}", op.error);
+    h.stop().await;
+}
+
+#[tokio::test]
+async fn a_start_phase_past_the_timeout_fails_with_start() {
+    let Some(owner) = TestSigner::load("owner") else {
+        eprintln!("skipped: docs keys.json not found");
+        return;
+    };
+    let h = Harness::with(
+        "timeout",
+        Options {
+            trust: Some(vector_trust()),
+            start_timeout: Duration::from_millis(300),
+            ..Default::default()
+        },
+    )
+    .await;
+    h.runner.behave("prepare_release", OpBehavior::Hang);
+    let mut deploys = deploy_events(&h).await;
+    let reference = submit_ok(
+        &h,
+        fresh_deploy(
+            &owner,
+            "0000000000b2",
+            "EAAAAAAAAAAAAAAAAAAAAA",
+            GENESIS_HEAD,
+        ),
+    )
+    .await;
+    wait_for_state(&h, &reference.operation_id, OperationState::Failed).await;
+    assert_eq!(
+        h.runner.ops_for(&reference.plan_id),
+        vec![
+            ("prepare_release".to_owned(), 0),
+            ("cleanup_candidate".to_owned(), 0),
+        ]
+    );
+    let phases = deploy_phases(&mut deploys).await;
+    assert_eq!(
+        phases.last().unwrap(),
+        &(Phase::Failed as i32, "start".to_owned())
+    );
+    let op = operation(&h, &reference.operation_id).await;
+    let prepare = op
+        .steps
+        .iter()
+        .find(|s| s.name == "prepare_release")
+        .unwrap();
+    assert_eq!(prepare.state, OperationState::Failed as i32);
+    assert_eq!(prepare.failure_code, "start");
+    assert_eq!(op.steps.last().unwrap().failure_code, "start");
+    h.stop().await;
+}
+
+#[tokio::test]
 async fn runner_refusal_fails_the_operation_with_the_mapped_reason() {
     let Some(owner) = TestSigner::load("owner") else {
         eprintln!("skipped: docs keys.json not found");
         return;
     };
-    let trust = serde_json::to_string(&vector("policy-cases")["context"]["trusted_keys"]).unwrap();
-    let h = Harness::start("refuse", Some(&trust)).await;
-    *h.runner.fail_with.lock().unwrap() = Some(PlanCode::PlanWindow);
-    let mut change = ChangeServiceClient::new(h.channel.clone());
-    let reference = change
-        .submit_signed_plan(submit(fresh_deploy(
+    let h = Harness::start("refuse", Some(&vector_trust())).await;
+    *h.runner.fail_bind_with.lock().unwrap() = Some(PlanCode::PlanWindow);
+    let reference = submit_ok(
+        &h,
+        fresh_deploy(
             &owner,
             "0000000000e1",
             "CCCCCCCCCCCCCCCCCCCCCA",
             GENESIS_HEAD,
-        )))
-        .await
-        .unwrap()
-        .into_inner();
+        ),
+    )
+    .await;
     wait_for_state(&h, &reference.operation_id, OperationState::Failed).await;
-    let operation = change
-        .get_operation(GetOperationRequest {
-            operation_id: reference.operation_id.clone(),
-        })
-        .await
-        .unwrap()
-        .into_inner();
+    let op = operation(&h, &reference.operation_id).await;
     assert!(
-        operation
-            .error
+        op.error
             .starts_with("ERROR_REASON_EXEC_PRECONDITION (E_PLAN_WINDOW)"),
         "{}",
-        operation.error
+        op.error
     );
-    assert_eq!(operation.steps[0].state, OperationState::Failed as i32);
+    // Nothing ran after the refused bind.
+    assert!(h.runner.ops_for(&reference.plan_id).is_empty());
+    assert_eq!(names(&op, 0), vec!["queued", "failed"]);
     h.stop().await;
 }
 
 #[tokio::test]
-async fn cancel_operation_admits_a_cancel_naming_that_operation() {
+async fn inputs_are_bound_and_take_the_composed_deploy_outcome() {
     let Some(owner) = TestSigner::load("owner") else {
         eprintln!("skipped: docs keys.json not found");
         return;
     };
-    let trust = serde_json::to_string(&vector("policy-cases")["context"]["trusted_keys"]).unwrap();
-    let h = Harness::start("cancel", Some(&trust)).await;
-    // Binds fail so the deploy finishes without consuming anything.
-    *h.runner.fail_with.lock().unwrap() = Some(PlanCode::Internal);
+    let h = Harness::start("inputs", Some(&vector_trust())).await;
+    let mut plan = plan_vector("user-deploy")["plan"].clone();
+    let deploy = plan["actions"][0].clone();
+    plan["id"] = Value::String("01a0cdb5-3500-7001-8000-0000000000c1".to_owned());
+    plan["nonce"] = Value::String("FAAAAAAAAAAAAAAAAAAAAA".to_owned());
+    plan["base"]["heads"][SERVER_A] = Value::String(GENESIS_HEAD.to_owned());
+    plan["actions"] = json!([
+        {"kind": "env.set", "params": {"service_id": WEB, "set": {"LOG_LEVEL": "debug"},
+                                       "unset": []}},
+        deploy
+    ]);
+    let case = plan_vector("user-deploy");
+    let reference = submit_ok(
+        &h,
+        SignedPlan {
+            envelope_json: owner.envelope(&plan).into_bytes(),
+            specs_jcs: vec![case["specs"][0]["jcs"]
+                .as_str()
+                .unwrap()
+                .as_bytes()
+                .to_vec()],
+            sealed_secrets: Vec::new(),
+        },
+    )
+    .await;
+    wait_for_state(&h, &reference.operation_id, OperationState::Succeeded).await;
+    // The input is bound (consumed once) and runs no op of its own.
+    let binds: Vec<u32> = h.runner.binds().iter().map(|b| b.2).collect();
+    assert_eq!(binds, vec![0, 1]);
+    assert!(h
+        .runner
+        .ops_for(&reference.plan_id)
+        .iter()
+        .all(|(_, index)| *index == 1));
+    let op = operation(&h, &reference.operation_id).await;
+    assert_eq!(names(&op, 0), vec!["queued", "bound", "succeeded"]);
+    h.stop().await;
+}
+
+#[tokio::test]
+async fn cancel_stops_a_running_deploy_and_returns_the_cancel_operation() {
+    let Some(owner) = TestSigner::load("owner") else {
+        eprintln!("skipped: docs keys.json not found");
+        return;
+    };
+    let h = Harness::start("cancel", Some(&vector_trust())).await;
+    h.runner.behave("prepare_release", OpBehavior::Hang);
     let mut change = ChangeServiceClient::new(h.channel.clone());
-    let deploy = change
-        .submit_signed_plan(submit(fresh_deploy(
+    let deploy = submit_ok(
+        &h,
+        fresh_deploy(
             &owner,
             "0000000000f1",
             "DDDDDDDDDDDDDDDDDDDDDA",
             GENESIS_HEAD,
-        )))
-        .await
-        .unwrap()
-        .into_inner();
-    wait_for_state(&h, &deploy.operation_id, OperationState::Failed).await;
+        ),
+    )
+    .await;
+    // Wait until the deploy is inside prepare_release.
+    for _ in 0..500 {
+        if !h.runner.ops_for(&deploy.plan_id).is_empty() {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    assert_eq!(
+        h.runner.ops_for(&deploy.plan_id),
+        vec![("prepare_release".to_owned(), 0)]
+    );
 
-    // CancelOperation for an unknown operation is refused before admission.
     let head = next_head(GENESIS_HEAD, &deploy.plan_digest_hex);
     let cancel_plan = json!({
         "version": 1, "id": "01a0cdb5-3500-7001-8000-0000000000f2",
-        "project_id": PROJECT, "environment": "production", "service_ids": [],
-        "targets": [SERVER_A],
+        "project_id": PROJECT, "environment": "production", "environment_id": ENVIRONMENT_ID,
+        "service_ids": [], "targets": [SERVER_A],
         "actions": [{"kind": "operation.cancel", "params": {
             "plan_id": deploy.plan_id, "plan_digest_hex": deploy.plan_digest_hex}}],
         "base": {"force": false, "heads": {SERVER_A: head}},
@@ -661,6 +979,7 @@ async fn cancel_operation_admits_a_cancel_naming_that_operation() {
         envelope_json: owner.envelope(&cancel_plan).into_bytes(),
         ..Default::default()
     };
+    // CancelOperation for an unknown operation is refused before admission.
     let wrong = change
         .cancel_operation(CancelOperationRequest {
             operation_id: "01a0cdb5-3500-7001-8000-0000000000ff".to_owned(),
@@ -669,7 +988,7 @@ async fn cancel_operation_admits_a_cancel_naming_that_operation() {
         .await
         .unwrap_err();
     assert_eq!(wrong.code(), Code::NotFound);
-    let cancelled = change
+    let cancel = change
         .cancel_operation(CancelOperationRequest {
             operation_id: deploy.operation_id.clone(),
             plan: Some(signed_cancel),
@@ -677,8 +996,39 @@ async fn cancel_operation_admits_a_cancel_naming_that_operation() {
         .await
         .unwrap()
         .into_inner();
-    assert_eq!(cancelled.actions, vec!["operation.cancel"]);
-    wait_for_state(&h, &cancelled.id, OperationState::Succeeded).await;
+    // D-033: the cancel plan's own operation.
+    assert_ne!(cancel.id, deploy.operation_id);
+    assert_eq!(cancel.actions, vec!["operation.cancel"]);
+    wait_for_state(&h, &cancel.id, OperationState::Succeeded).await;
+    wait_for_state(&h, &deploy.operation_id, OperationState::Cancelled).await;
+    assert!(h
+        .runner
+        .ops_for(&cancel.plan_id)
+        .contains(&("cancel_execution".to_owned(), 0)));
+    // The deploy stopped before its next step: no health check, no rollback.
+    assert_eq!(
+        h.runner.ops_for(&deploy.plan_id),
+        vec![("prepare_release".to_owned(), 0)]
+    );
+    let op = operation(&h, &deploy.operation_id).await;
+    assert_eq!(names(&op, 0).last().unwrap(), "cancelled");
+    h.stop().await;
+}
+
+#[tokio::test]
+async fn key_add_is_written_by_the_runner_not_the_agent() {
+    let h = Harness::start("key-add-runner", Some(&owner_only_trust())).await;
+    let reference = submit_ok(&h, signed(&plan_vector("key-add"))).await;
+    wait_for_state(&h, &reference.operation_id, OperationState::Succeeded).await;
+    assert_eq!(
+        h.runner.ops_for(&reference.plan_id),
+        vec![("update_trusted_keys".to_owned(), 0)]
+    );
+    let op = operation(&h, &reference.operation_id).await;
+    assert_eq!(
+        names(&op, 0),
+        vec!["queued", "bound", "update_trusted_keys", "succeeded"]
+    );
     h.stop().await;
 }
 

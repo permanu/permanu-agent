@@ -1,5 +1,5 @@
 //! The vendored signed-plan vectors must be byte-identical to the frozen
-//! contract (`docs` tag `contracts-v1.0.1`, `contracts/vectors/signed-plan`).
+//! contract (`docs` tag `contracts-v1.0.2`, `contracts/vectors/signed-plan`).
 //! `keys.json` (public TEST private keys) is deliberately not vendored.
 
 use std::collections::BTreeSet;
@@ -24,13 +24,13 @@ fn vendored_vectors_match_the_contract_tag_checksums() {
         assert_eq!(
             hex::encode(Sha256::digest(&bytes)),
             expected,
-            "{name} differs from contracts-v1.0.1"
+            "{name} differs from contracts-v1.0.2"
         );
         listed.insert(name.to_owned());
     }
     assert_eq!(
         header.as_deref(),
-        Some("contracts-v1.0.1 d5fdb1ebe17596c9f311c6aa9d364eea62252bef contracts/vectors/signed-plan")
+        Some("contracts-v1.0.2 95e58ddc639dd8f0c4b3b0f18a55e0642372dffe contracts/vectors/signed-plan")
     );
     let present: BTreeSet<String> = std::fs::read_dir(&directory)
         .expect("vector directory")
@@ -71,7 +71,64 @@ fn admissions_schema_is_the_normative_ddl() {
     let start = section.find("```sql\n").unwrap() + "```sql\n".len();
     let end = start + section[start..].find("```").unwrap();
     let ddl = &section[start..end];
-    let tables = &ddl[ddl.find("-- One row, written").unwrap()..];
-    let ours = std::fs::read_to_string(manifest.join("src/admissions/schema_v1.sql")).unwrap();
-    assert_eq!(ours, tables);
+    // Our store is the v1.0.1 DDL (verbatim) plus the migrations; every
+    // normative column must exist, in order, with the contract's type,
+    // nullability, key and default (trailing agent-only columns allowed).
+    let contract = rusqlite::Connection::open_in_memory().unwrap();
+    contract.execute_batch(ddl).unwrap();
+    let ours = rusqlite::Connection::open_in_memory().unwrap();
+    for file in ["schema_v1.sql", "schema_v1_agent.sql", "schema_v2.sql"] {
+        let sql = std::fs::read_to_string(manifest.join("src/admissions").join(file)).unwrap();
+        ours.execute_batch(&sql).unwrap();
+    }
+    let tables: Vec<String> = contract
+        .prepare("SELECT name FROM sqlite_master WHERE type = 'table' ORDER BY name")
+        .unwrap()
+        .query_map([], |r| r.get(0))
+        .unwrap()
+        .collect::<Result<_, _>>()
+        .unwrap();
+    assert_eq!(tables.len(), 13);
+    type Column = (String, String, i64, Option<String>, i64);
+    let columns = |conn: &rusqlite::Connection, table: &str| -> Vec<Column> {
+        conn.prepare(&format!("PRAGMA table_info({table})"))
+            .unwrap()
+            .query_map([], |r| {
+                Ok((r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?, r.get(5)?))
+            })
+            .unwrap()
+            .collect::<Result<_, _>>()
+            .unwrap()
+    };
+    for table in &tables {
+        let mut want = columns(&contract, table);
+        let mut have = columns(&ours, table);
+        assert!(have.len() >= want.len(), "{table}");
+        have.truncate(want.len());
+        if table == "meta" {
+            // DEFAULT 2 in v1.0.2; ADD COLUMN cannot change the v1.0.1
+            // default and the agent always writes the value.
+            for column in want.iter_mut().chain(have.iter_mut()) {
+                if column.0 == "schema_version" {
+                    column.3 = None;
+                }
+            }
+        }
+        assert_eq!(have, want, "{table}");
+    }
+    let indexes = |conn: &rusqlite::Connection| -> Vec<(String, String)> {
+        conn.prepare(
+            "SELECT name, tbl_name FROM sqlite_master WHERE type = 'index' \
+             AND name NOT LIKE 'sqlite_autoindex%' ORDER BY name",
+        )
+        .unwrap()
+        .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))
+        .unwrap()
+        .collect::<Result<_, _>>()
+        .unwrap()
+    };
+    let ours_indexes = indexes(&ours);
+    for index in indexes(&contract) {
+        assert!(ours_indexes.contains(&index), "{index:?}");
+    }
 }

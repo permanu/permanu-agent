@@ -81,6 +81,25 @@ impl PolicyContext for TxContext<'_> {
             .map_err(internal)
     }
 
+    fn admission_signer_key_ids(
+        &self,
+        plan_id: &str,
+        plan_digest_hex: &str,
+    ) -> Result<Option<Vec<String>>, PlanCode> {
+        let ids: Option<String> = self
+            .tx
+            .query_row(
+                "SELECT signer_key_ids FROM admissions WHERE plan_id = ?1 \
+                 AND plan_digest_hex = ?2",
+                params![plan_id, plan_digest_hex],
+                |r| r.get(0),
+            )
+            .optional()
+            .map_err(internal)?;
+        ids.map(|text| serde_json::from_str(&text).map_err(|_| PlanCode::Internal))
+            .transpose()
+    }
+
     fn seen(&self, nonce: &str, plan_id: &str) -> Result<bool, PlanCode> {
         let count: i64 = self
             .tx
@@ -307,8 +326,8 @@ impl AdmissionStore {
 }
 
 /// Implementation-specific checks after step 12 (section 6.1): they fail
-/// `E_EXEC_PRECONDITION` (or `E_KIND_FORBIDDEN` for the ci cancel rule) and
-/// run before anything is written. Returns the sealed secrets by digest.
+/// `E_EXEC_PRECONDITION` and run before anything is written. Returns the
+/// sealed secrets by digest.
 fn execution_preconditions(
     ctx: &TxContext<'_>,
     verified: &VerifiedPlan,
@@ -318,16 +337,7 @@ fn execution_preconditions(
         .as_array()
         .map_or(&[][..], Vec::as_slice);
     // Sealed secrets (section 3.2): exactly one ciphertext per signed digest.
-    let wanted: BTreeSet<&str> = actions
-        .iter()
-        .filter_map(|a| match a["kind"].as_str() {
-            Some("secret.set") => a["params"]["ciphertext_digest_hex"].as_str(),
-            Some("alert.channel.create" | "alert.channel.update") => {
-                a["params"]["credential_ciphertext_digest_hex"].as_str()
-            }
-            _ => None,
-        })
-        .collect();
+    let wanted: BTreeSet<&str> = actions.iter().filter_map(sealed_digest).collect();
     if sealed_secrets.len() > MAX_SEALED_SECRETS {
         return Err(PlanCode::ExecPrecondition);
     }
@@ -346,6 +356,8 @@ fn execution_preconditions(
     if supplied_set != wanted {
         return Err(PlanCode::ExecPrecondition);
     }
+
+    check_input_composition(ctx, verified)?;
 
     let mut trust = ctx.trust.clone();
     for action in actions {
@@ -380,7 +392,7 @@ fn execution_preconditions(
                     return Err(PlanCode::ExecPrecondition);
                 }
             }
-            "operation.cancel" => check_cancel(ctx, verified, params)?,
+            "operation.cancel" => check_cancel(ctx, params)?,
             "restart" => {
                 // restart MUST name the service's currently admitted spec.
                 let current: Option<String> = ctx
@@ -402,40 +414,122 @@ fn execution_preconditions(
     Ok(supplied)
 }
 
-/// `operation.cancel`: the named admission exists with that digest, and a
-/// `ci` signer counts only for plans it signed itself (section 3.2).
-fn check_cancel(
-    ctx: &TxContext<'_>,
-    verified: &VerifiedPlan,
-    params: &Value,
-) -> Result<(), PlanCode> {
-    let plan_id = params["plan_id"].as_str().unwrap_or_default();
-    let row: Option<(String, String)> = ctx
+/// Input kinds never execute on their own on a server (section 3.2, D-028).
+pub const INPUT_KINDS: &[&str] = &[
+    "env.set",
+    "secret.set",
+    "secret.unset",
+    "domain.add",
+    "domain.remove",
+    "domain.switch",
+];
+
+/// D-028: every input action is followed, later in the same plan, by a
+/// `deploy` or `restart` of each service it affects. An environment-wide
+/// secret affects every service of the scope whose spec (this plan's, else
+/// the last admitted one) binds the name as `{kind: secret, ref: name}`; if none does,
+/// it is stored and applies at the first deploy that binds it.
+fn check_input_composition(ctx: &TxContext<'_>, verified: &VerifiedPlan) -> Result<(), PlanCode> {
+    let actions = verified.plan["actions"]
+        .as_array()
+        .map_or(&[][..], Vec::as_slice);
+    if !actions
+        .iter()
+        .any(|a| INPUT_KINDS.contains(&a["kind"].as_str().unwrap_or_default()))
+    {
+        return Ok(());
+    }
+    let (project, environment) = verified.scope();
+    // service_id -> spec, this plan's specs overriding the admitted ones.
+    let mut specs: std::collections::BTreeMap<String, Value> = std::collections::BTreeMap::new();
+    {
+        let mut statement = ctx
+            .tx
+            .prepare(
+                "SELECT c.service_id, s.spec_jcs FROM service_specs c \
+                 JOIN specs s ON s.spec_digest_hex = c.spec_digest_hex \
+                 JOIN admissions a ON a.plan_id = c.plan_id \
+                 WHERE a.project_id = ?1 AND a.environment = ?2",
+            )
+            .map_err(internal)?;
+        let rows = statement
+            .query_map(params![project, environment], |r| {
+                Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))
+            })
+            .map_err(internal)?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(internal)?;
+        for (service, text) in rows {
+            let spec = parse_strict(text.as_bytes(), 16 * 1024).ok_or(PlanCode::Internal)?;
+            specs.insert(service, spec);
+        }
+    }
+    for (spec, _) in verified.specs.values() {
+        if let Some(service) = spec["service_id"].as_str() {
+            specs.insert(service.to_owned(), spec.clone());
+        }
+    }
+    for (index, action) in actions.iter().enumerate() {
+        let kind = action["kind"].as_str().unwrap_or_default();
+        if !INPUT_KINDS.contains(&kind) {
+            continue;
+        }
+        let params = &action["params"];
+        let affected: Vec<String> = match params["service_id"].as_str() {
+            Some(service) => vec![service.to_owned()],
+            None => {
+                let name = params["name"].as_str().unwrap_or_default();
+                specs
+                    .iter()
+                    .filter(|(_, spec)| {
+                        spec["env"].as_object().is_some_and(|env| {
+                            env.values()
+                                .any(|b| b["kind"] == "secret" && b["ref"] == name)
+                        })
+                    })
+                    .map(|(service, _)| service.clone())
+                    .collect()
+            }
+        };
+        for service in affected {
+            let composed = actions[index + 1..].iter().any(|later| {
+                matches!(later["kind"].as_str(), Some("deploy" | "restart"))
+                    && later["params"]["service_id"] == service.as_str()
+            });
+            if !composed {
+                return Err(PlanCode::ExecPrecondition);
+            }
+        }
+    }
+    Ok(())
+}
+
+/// The ciphertext digest an action signs (section 3.2, "Sealed secrets").
+fn sealed_digest(action: &Value) -> Option<&str> {
+    match action["kind"].as_str() {
+        Some("secret.set") => action["params"]["ciphertext_digest_hex"].as_str(),
+        Some("alert.channel.create" | "alert.channel.update") => {
+            action["params"]["credential_ciphertext_digest_hex"].as_str()
+        }
+        _ => None,
+    }
+}
+
+/// `operation.cancel`: the named admission exists with that digest. The ci
+/// rule (a ci key cancels only plans it signed) is step 11 (D-033).
+fn check_cancel(ctx: &TxContext<'_>, params: &Value) -> Result<(), PlanCode> {
+    let digest: Option<String> = ctx
         .tx
         .query_row(
-            "SELECT plan_digest_hex, signer_key_ids FROM admissions WHERE plan_id = ?1",
-            params![plan_id],
-            |r| Ok((r.get(0)?, r.get(1)?)),
+            "SELECT plan_digest_hex FROM admissions WHERE plan_id = ?1",
+            params![params["plan_id"].as_str().unwrap_or_default()],
+            |r| r.get(0),
         )
         .optional()
         .map_err(internal)?;
-    let Some((digest, signer_ids)) = row else {
-        return Err(PlanCode::ExecPrecondition);
-    };
-    if params["plan_digest_hex"] != digest.as_str() {
-        return Err(PlanCode::ExecPrecondition);
-    }
-    let cancelled_signers: Vec<String> = serde_json::from_str(&signer_ids).unwrap_or_default();
-    let authorized = verified.signers.iter().any(|signer| {
-        signer["role"] != "ci"
-            || signer["key_id"]
-                .as_str()
-                .is_some_and(|id| cancelled_signers.iter().any(|s| s == id))
-    });
-    if authorized {
-        Ok(())
-    } else {
-        Err(PlanCode::KindForbidden)
+    match digest {
+        Some(digest) if params["plan_digest_hex"] == digest.as_str() => Ok(()),
+        _ => Err(PlanCode::ExecPrecondition),
     }
 }
 
@@ -495,9 +589,9 @@ fn write_admission(
         "INSERT INTO admissions (plan_id, plan_digest_hex, signed_plan_json, submitter, \
          operation_id, admitted_at, finished_at, outcome, admission_seq, nonce, author_kind, \
          signer_key_ids, action_kinds, project_id, environment, head_before_hex, \
-         head_after_hex, rule_id, delivery_id, expires_at) \
+         head_after_hex, rule_id, delivery_id, expires_at, environment_id) \
          VALUES (?1, ?2, ?3, ?4, ?5, ?6, NULL, '', ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, \
-         ?16, ?17, ?18)",
+         ?16, ?17, ?18, ?19)",
         params![
             plan_id,
             verified.digest_hex,
@@ -517,6 +611,7 @@ fn write_admission(
             rule_id,
             delivery_id,
             expires_at,
+            plan["environment_id"].as_str().unwrap_or_default(),
         ],
     )
     .map_err(|_| PlanCode::Replay)?;
@@ -656,11 +751,44 @@ fn write_admission(
         .map_err(|_| PlanCode::RuleEvidence)?;
     }
 
+    // v1.0.2 (D-027): stored with the signing action and its scope; only
+    // the runner decrypts.
     for (digest, ciphertext) in sealed {
+        let (index, action) = plan["actions"]
+            .as_array()
+            .and_then(|actions| {
+                actions
+                    .iter()
+                    .enumerate()
+                    .find(|(_, a)| sealed_digest(a) == Some(digest.as_str()))
+            })
+            .ok_or(PlanCode::ExecPrecondition)?;
+        let secret = action["kind"] == "secret.set";
+        let text = |value: &Value| value.as_str().unwrap_or_default().to_owned();
+        let (scope_project, scope_environment, service_id, name) = if secret {
+            (
+                project.clone(),
+                environment.clone(),
+                text(&action["params"]["service_id"]),
+                text(&action["params"]["name"]),
+            )
+        } else {
+            Default::default()
+        };
         tx.execute(
-            "INSERT OR IGNORE INTO sealed_secrets (ciphertext_digest_hex, plan_id, ciphertext) \
-             VALUES (?1, ?2, ?3)",
-            params![digest, plan_id, ciphertext],
+            "INSERT OR IGNORE INTO sealed_secrets (ciphertext_digest_hex, plan_id, ciphertext, \
+             action_index, project_id, environment, service_id, name) \
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+            params![
+                digest,
+                plan_id,
+                ciphertext,
+                index as i64,
+                scope_project,
+                scope_environment,
+                service_id,
+                name
+            ],
         )
         .map_err(internal)?;
     }
