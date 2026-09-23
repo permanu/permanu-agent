@@ -1216,30 +1216,7 @@ fn apply_verify_result(
             if let Some(id) = answer["backup_id"].as_str() {
                 verification.artifact_id = id.chars().take(64).collect();
             }
-            verification.checks = answer["checks"]
-                .as_array()
-                .map(|checks| {
-                    checks
-                        .iter()
-                        .take(32)
-                        .map(|check| VerificationCheck {
-                            name: check["name"]
-                                .as_str()
-                                .unwrap_or_default()
-                                .chars()
-                                .take(128)
-                                .collect(),
-                            passed: check["passed"] == true,
-                            detail: check["detail"]
-                                .as_str()
-                                .unwrap_or_default()
-                                .chars()
-                                .take(256)
-                                .collect(),
-                        })
-                        .collect()
-                })
-                .unwrap_or_default();
+            verification.checks = verify_checks(&answer["checks"]);
             let passed = answer["outcome"].as_str().unwrap_or("succeeded") == "succeeded"
                 && verification.checks.iter().all(|c| c.passed);
             verification.status = if passed {
@@ -1265,6 +1242,40 @@ fn apply_verify_result(
             verification.error = format!("{}: {}", failure.code, failure.message);
         }
     }
+}
+
+/// `backup_verify` checks: the runner's object of booleans
+/// (`{"plaintext_digest": true, …}`, jobs::backup) or a list of
+/// `{name, passed, detail}`; at most 32.
+fn verify_checks(checks: &Value) -> Vec<VerificationCheck> {
+    let check = |name: &str, passed: bool, detail: &str| VerificationCheck {
+        name: name.chars().take(128).collect(),
+        passed,
+        detail: detail.chars().take(256).collect(),
+    };
+    if let Some(map) = checks.as_object() {
+        return map
+            .iter()
+            .take(32)
+            .map(|(name, passed)| check(name, *passed == true, ""))
+            .collect();
+    }
+    checks
+        .as_array()
+        .map(|checks| {
+            checks
+                .iter()
+                .take(32)
+                .map(|c| {
+                    check(
+                        c["name"].as_str().unwrap_or_default(),
+                        c["passed"] == true,
+                        c["detail"].as_str().unwrap_or_default(),
+                    )
+                })
+                .collect()
+        })
+        .unwrap_or_default()
 }
 
 #[cfg(test)]

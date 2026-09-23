@@ -219,7 +219,25 @@ pub async fn run_scheduled(
     binding["scheduled_for"] = json!(schedule.scheduled_for);
     binding["attempt"] = json!(schedule.attempt);
     let request = json!({"op": op, "schedule": binding, "payload": {}});
-    ok_or_failure(runner.exchange(request, timeout).await?)
+    scheduled_answer(runner.exchange(request, timeout).await?)
+}
+
+/// A schedule-bound op's `result` line. The runner answers a run it started
+/// and finished with `run_outcome` (`ok` is only whether it succeeded, and
+/// `outcome` is null without a plan-bound action), so that answer is the
+/// run's result even when `ok` is false: its `outcome` becomes `run_outcome`
+/// and an `error` object becomes `"<code>: <message>"`. Anything else (a
+/// refused binding, a transport failure) stays a [`RunnerFailure`].
+fn scheduled_answer(mut result: Value) -> Result<Value, RunnerFailure> {
+    let Some(run_outcome) = result["run_outcome"].as_str().map(bounded) else {
+        return ok_or_failure(result);
+    };
+    result["outcome"] = json!(run_outcome);
+    if result["error"].is_object() {
+        let failure = failure_of(&result);
+        result["error"] = json!(format!("{}: {}", failure.code, failure.message));
+    }
+    Ok(result)
 }
 
 /// One `notify_channel` call (section 14.3, fixed-purpose op): the runner
@@ -718,6 +736,69 @@ mod tests {
                    "scheduled_for": "2026-09-23T10:15:00Z", "attempt": 2},
                    "payload": {}})
         );
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    fn schedule_ref() -> ScheduleRef {
+        ScheduleRef {
+            plan: plan(),
+            scheduled_for: "2026-09-23T10:15:00Z".to_owned(),
+            attempt: 1,
+        }
+    }
+
+    /// The runner's answer for a finished schedule-bound run (permanu-runner
+    /// jobs::bound::finish): `ok` is whether the run succeeded, `outcome` is
+    /// null (no plan-bound action), `run_outcome` is what happened.
+    #[tokio::test]
+    async fn a_scheduled_run_that_ended_badly_is_an_answer_with_its_run_outcome() {
+        let (runner, _server, dir) = scripted(
+            "rn-sched-timeout",
+            "{\"type\":\"result\",\"op\":\"run_cron\",\"ok\":false,\"plan_id\":\"p\",\
+             \"outcome\":null,\"run_outcome\":\"timeout\",\"scheduled_for\":\"2026-09-23T10:15:00Z\",\
+             \"attempt\":1,\"error\":{\"code\":\"deadline_exceeded\",\
+             \"message\":\"the cron run passed its timeout\"}}\n",
+        )
+        .await;
+        let done = run_scheduled(&runner, "run_cron", &schedule_ref(), Duration::from_secs(5))
+            .await
+            .unwrap();
+        assert_eq!(done["outcome"], "timeout");
+        assert_eq!(
+            done["error"],
+            "deadline_exceeded: the cron run passed its timeout"
+        );
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[tokio::test]
+    async fn a_succeeded_scheduled_run_reads_its_run_outcome() {
+        let (runner, _server, dir) = scripted(
+            "rn-sched-ok",
+            "{\"type\":\"result\",\"op\":\"run_cron\",\"ok\":true,\"outcome\":null,\
+             \"run_outcome\":\"succeeded\",\"exit_code\":0}\n",
+        )
+        .await;
+        let done = run_scheduled(&runner, "run_cron", &schedule_ref(), Duration::from_secs(5))
+            .await
+            .unwrap();
+        assert_eq!(done["outcome"], "succeeded");
+        assert_eq!(done["exit_code"], 0);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[tokio::test]
+    async fn a_refused_schedule_binding_stays_a_failure() {
+        let (runner, _server, dir) = scripted(
+            "rn-sched-refused",
+            "{\"type\":\"result\",\"op\":\"run_cron\",\"ok\":false,\
+             \"error\":{\"code\":\"E_SCHEDULE_SUPERSEDED\",\"message\":\"m\"}}\n",
+        )
+        .await;
+        let failure = run_scheduled(&runner, "run_cron", &schedule_ref(), Duration::from_secs(5))
+            .await
+            .unwrap_err();
+        assert_eq!(failure.code, "E_SCHEDULE_SUPERSEDED");
         std::fs::remove_dir_all(dir).unwrap();
     }
 

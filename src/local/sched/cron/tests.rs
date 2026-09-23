@@ -194,6 +194,39 @@ async fn failed_attempts_retry_with_backoff_then_raise_the_heartbeat() {
     assert_eq!(events.len(), 3, "CRON_FAILED and CRON_MISSED resolve");
 }
 
+/// The real runner answers a failed schedule-bound run with `ok: false`,
+/// `outcome: null` and the run's own `run_outcome` (jobs::bound::finish).
+#[tokio::test]
+async fn a_runner_shaped_failed_run_retries_and_keeps_its_exit_code() {
+    let f = Fixture::new("cron-runner-shape", "2026-09-23T10:00:00Z");
+    f.record(
+        1,
+        &[cron("cron.create", "0 * * * *", "skip", 1)],
+        "succeeded",
+    );
+    let s = scheduler(&f);
+    tick_at(&f, &s, "2026-09-23T10:59:55Z").await;
+    f.runner.answer(
+        "run_cron",
+        json!({"ok": false, "outcome": null, "run_outcome": "failed", "exit_code": 3,
+               "error": {"code": "runtime_failed", "message": "the cron command failed"}}),
+    );
+    f.runner.answer(
+        "run_cron",
+        json!({"ok": false, "outcome": null, "run_outcome": "timeout",
+               "error": {"code": "deadline_exceeded", "message": "the cron run passed its timeout"}}),
+    );
+    tick_at(&f, &s, "2026-09-23T11:00:05Z").await;
+    tick_at(&f, &s, "2026-09-23T11:00:15Z").await;
+    let sent = f.runner.ops("run_cron");
+    assert_eq!(sent.len(), 2, "a failed run is retried");
+    assert_eq!(sent[1]["schedule"]["attempt"], 2);
+    let all = runs(&f);
+    assert_eq!(all[0].status, CronRunStatus::Failed as i32);
+    assert_eq!(all[0].exit_code, 3);
+    assert_eq!(all[1].status, CronRunStatus::TimedOut as i32);
+}
+
 #[tokio::test]
 async fn a_refused_run_is_not_retried() {
     let f = Fixture::new("cron-refused", "2026-09-23T10:00:00Z");

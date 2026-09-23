@@ -132,6 +132,89 @@ async fn a_scheduled_backup_records_its_artifact_then_prunes_under_the_same_bind
     );
 }
 
+/// The real runner's answers (jobs::bound::finish): a failed run is
+/// `ok: false` with `run_outcome`, and verify `checks` is an object of
+/// booleans.
+#[tokio::test]
+async fn runner_shaped_answers_retry_a_failed_backup_and_read_verify_checks() {
+    let f = Fixture::new("backup-runner-shape", "2026-09-23T02:00:00Z");
+    f.record(
+        1,
+        &[policy(PG, "0 3 * * *", json!("0 4 * * *"))],
+        "succeeded",
+    );
+    let s = scheduler(&f);
+    tick_at(&f, &s, "2026-09-23T02:59:55Z").await;
+    f.runner.answer(
+        "backup_run",
+        json!({"ok": false, "outcome": null, "run_outcome": "failed",
+               "error": {"code": "runtime_failed", "message": "pg_dump failed"}}),
+    );
+    f.runner.answer(
+        "backup_run",
+        json!({"ok": true, "outcome": null, "run_outcome": "succeeded", "backup_id": BACKUP_B,
+               "backup_digest_hex": "ab".repeat(32), "size_bytes": 1234}),
+    );
+    f.runner.answer(
+        "backup_prune",
+        json!({"outcome": null, "run_outcome": "succeeded", "deleted": []}),
+    );
+    tick_at(&f, &s, "2026-09-23T03:00:05Z").await;
+    tick_at(&f, &s, "2026-09-23T03:00:15Z").await;
+    let runs = backup_runs(&f);
+    assert_eq!(
+        f.runner.ops("backup_run").len(),
+        2,
+        "a failed backup is retried"
+    );
+    assert_eq!(runs[0].status, BackupRunStatus::Failed as i32);
+    assert_eq!(runs[0].error, "runtime_failed: pg_dump failed");
+    assert_eq!(runs[1].status, BackupRunStatus::Succeeded as i32);
+
+    f.runner.answer(
+        "backup_verify",
+        json!({"ok": true, "outcome": null, "run_outcome": "succeeded", "backup_id": BACKUP_B,
+               "checks": {"archive_readable": true, "plaintext_digest": true,
+                          "restore_completed": true, "tables_present": true}}),
+    );
+    tick_at(&f, &s, "2026-09-23T03:59:55Z").await;
+    tick_at(&f, &s, "2026-09-23T04:00:05Z").await;
+    assert_eq!(f.runner.ops("backup_verify").len(), 1);
+    let verifications: Vec<RestoreVerification> = f
+        .deps
+        .ops
+        .list(
+            RecordKind::Verification,
+            &Listing {
+                limit: 10,
+                ..Default::default()
+            },
+        )
+        .iter()
+        .filter_map(|row| row.decode())
+        .collect();
+    assert_eq!(verifications.len(), 1);
+    assert_eq!(
+        verifications[0].status,
+        RestoreVerificationStatus::Passed as i32
+    );
+    let names: Vec<&str> = verifications[0]
+        .checks
+        .iter()
+        .map(|c| c.name.as_str())
+        .collect();
+    assert_eq!(
+        names,
+        [
+            "archive_readable",
+            "plaintext_digest",
+            "restore_completed",
+            "tables_present"
+        ]
+    );
+    assert!(verifications[0].checks.iter().all(|c| c.passed));
+}
+
 #[tokio::test]
 async fn failed_backups_get_three_attempts_then_report() {
     let f = Fixture::new("backup-retry", "2026-09-23T02:00:00Z");
