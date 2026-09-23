@@ -132,3 +132,44 @@ fn admissions_schema_is_the_normative_ddl() {
         assert!(ours_indexes.contains(&index), "{index:?}");
     }
 }
+
+/// The vendored redaction-v1 vectors (agent-protocol.md 9.6) must be
+/// byte-identical to `contracts-v1.1.1` `contracts/vectors/redaction`.
+#[test]
+fn vendored_redaction_vectors_match_the_contract_tag_checksums() {
+    const REDACTION: &str = include_str!("vectors/redaction.sha256");
+    let directory = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/vectors/redaction");
+    let mut header = None;
+    let mut listed = BTreeSet::new();
+    for line in REDACTION.lines() {
+        if let Some(comment) = line.strip_prefix("# ") {
+            header = Some(comment.to_owned());
+            continue;
+        }
+        let (expected, name) = line.split_once("  ").expect("sha256sum line");
+        let bytes = std::fs::read(directory.join(name)).expect("vendored vector");
+        assert_eq!(
+            hex::encode(Sha256::digest(&bytes)),
+            expected,
+            "{name} differs from contracts-v1.1.1"
+        );
+        listed.insert(name.to_owned());
+    }
+    assert_eq!(
+        header.as_deref(),
+        Some(
+            "contracts-v1.1.1 ccba5b6746511abe475e46e24c914a031e3d7893 contracts/vectors/redaction"
+        )
+    );
+    let present: BTreeSet<String> = std::fs::read_dir(&directory)
+        .expect("vector directory")
+        .map(|entry| {
+            entry
+                .expect("entry")
+                .file_name()
+                .into_string()
+                .expect("name")
+        })
+        .collect();
+    assert_eq!(present, listed, "every vendored file is pinned");
+}

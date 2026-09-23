@@ -1,0 +1,640 @@
+{
+ "version": "redaction-v1",
+ "description": "Normative vectors for redaction-v1 (agent-protocol.md section 9.6). Every secret here is FAKE (the word FAKE is part of each value) and none is valid anywhere. kind: string (rules 1-7 on one string), fields (rule 8 on a map; other values get rules 1-7), stream (rule 1 across the lines of one container stream). redacted is true exactly when the output differs from the input. Checker: contracts/tools/redaction_vectors.py.",
+ "replacement": "[REDACTED]",
+ "cases": [
+  {
+   "name": "pem_block_in_one_string",
+   "rules": [
+    "1"
+   ],
+   "kind": "string",
+   "input": "loaded key: -----BEGIN PRIVATE KEY-----\nMIIEFAKEFAKEFAKE\nFAKEFAKE==\n-----END PRIVATE KEY----- ok",
+   "expected": "loaded key: [REDACTED] ok",
+   "redacted": true
+  },
+  {
+   "name": "pem_rsa_block",
+   "rules": [
+    "1"
+   ],
+   "kind": "string",
+   "input": "-----BEGIN RSA PRIVATE KEY-----\nMIIBFAKE\n-----END RSA PRIVATE KEY-----",
+   "expected": "[REDACTED]",
+   "redacted": true
+  },
+  {
+   "name": "pem_block_across_stream_lines",
+   "rules": [
+    "1"
+   ],
+   "kind": "stream",
+   "input": [
+    "starting worker",
+    "-----BEGIN OPENSSH PRIVATE KEY-----",
+    "b3BlbnNzaC1rZXktdjEAAAAAFAKEFAKE",
+    "FAKEFAKEFAKEFAKE",
+    "-----END OPENSSH PRIVATE KEY-----",
+    "worker ready"
+   ],
+   "expected": [
+    "starting worker",
+    "[REDACTED]",
+    "[REDACTED]",
+    "[REDACTED]",
+    "[REDACTED]",
+    "worker ready"
+   ],
+   "redacted": true
+  },
+  {
+   "name": "aws_access_key_id",
+   "rules": [
+    "2.aws"
+   ],
+   "kind": "string",
+   "input": "using credentials AKIAFAKEFAKEFAKE0000 for s3",
+   "expected": "using credentials [REDACTED] for s3",
+   "redacted": true
+  },
+  {
+   "name": "aws_session_key_id",
+   "rules": [
+    "2.aws"
+   ],
+   "kind": "string",
+   "input": "sts returned ASIAFAKEFAKEFAKE0001",
+   "expected": "sts returned [REDACTED]",
+   "redacted": true
+  },
+  {
+   "name": "github_classic_token",
+   "rules": [
+    "2.github"
+   ],
+   "kind": "string",
+   "input": "git push with ghp_FAKE00000000000000000000000000000000 failed",
+   "expected": "git push with [REDACTED] failed",
+   "redacted": true
+  },
+  {
+   "name": "github_oauth_token",
+   "rules": [
+    "2.github"
+   ],
+   "kind": "string",
+   "input": "oauth gho_FAKE11111111111111111111111111111111",
+   "expected": "oauth [REDACTED]",
+   "redacted": true
+  },
+  {
+   "name": "github_fine_grained_pat",
+   "rules": [
+    "2.github_pat"
+   ],
+   "kind": "string",
+   "input": "clone via github_pat_FAKE_0000000000000000000000",
+   "expected": "clone via [REDACTED]",
+   "redacted": true
+  },
+  {
+   "name": "gitlab_pat",
+   "rules": [
+    "2.gitlab"
+   ],
+   "kind": "string",
+   "input": "runner auth glpat-FAKEFAKEFAKEFAKE0000 expired",
+   "expected": "runner auth [REDACTED] expired",
+   "redacted": true
+  },
+  {
+   "name": "slack_bot_token",
+   "rules": [
+    "2.slack_token"
+   ],
+   "kind": "string",
+   "input": "bot xoxb-0000000000-FAKEFAKEFAKE connected",
+   "expected": "bot [REDACTED] connected",
+   "redacted": true
+  },
+  {
+   "name": "slack_webhook_url",
+   "rules": [
+    "2.slack_webhook"
+   ],
+   "kind": "string",
+   "input": "posting to https://hooks.slack.com/services/T00000000/B00000000/FAKEFAKEFAKEFAKEFAKEFAKE now",
+   "expected": "posting to [REDACTED] now",
+   "redacted": true
+  },
+  {
+   "name": "discord_webhook_url",
+   "rules": [
+    "2.discord_webhook"
+   ],
+   "kind": "string",
+   "input": "notify https://discord.com/api/webhooks/000000000000000000/FAKE-fake_FAKE-fake",
+   "expected": "notify [REDACTED]",
+   "redacted": true
+  },
+  {
+   "name": "stripe_live_secret_key",
+   "rules": [
+    "2.stripe"
+   ],
+   "kind": "string",
+   "input": "charge via sk_live_FAKEFAKEFAKEFAKE0000 ok",
+   "expected": "charge via [REDACTED] ok",
+   "redacted": true
+  },
+  {
+   "name": "stripe_restricted_test_key",
+   "rules": [
+    "2.stripe"
+   ],
+   "kind": "string",
+   "input": "report rk_test_FAKEFAKEFAKEFAKE0000",
+   "expected": "report [REDACTED]",
+   "redacted": true
+  },
+  {
+   "name": "stripe_webhook_secret",
+   "rules": [
+    "2.stripe_whsec"
+   ],
+   "kind": "string",
+   "input": "verify with whsec_FAKEFAKEFAKEFAKE0000",
+   "expected": "verify with [REDACTED]",
+   "redacted": true
+  },
+  {
+   "name": "openai_project_key",
+   "rules": [
+    "2.sk"
+   ],
+   "kind": "string",
+   "input": "model call sk-proj-FAKEFAKEFAKEFAKEFAKE0000 401",
+   "expected": "model call [REDACTED] 401",
+   "redacted": true
+  },
+  {
+   "name": "anthropic_key",
+   "rules": [
+    "2.sk"
+   ],
+   "kind": "string",
+   "input": "llm sk-ant-FAKE-fake-FAKE-fake-0000",
+   "expected": "llm [REDACTED]",
+   "redacted": true
+  },
+  {
+   "name": "google_api_key",
+   "rules": [
+    "2.google"
+   ],
+   "kind": "string",
+   "input": "maps AIzaFAKE0000000000000000000000000000000",
+   "expected": "maps [REDACTED]",
+   "redacted": true
+  },
+  {
+   "name": "jwt",
+   "rules": [
+    "2.jwt"
+   ],
+   "kind": "string",
+   "input": "session eyJGQUtFIjoiRkFLRSJ9.eyJGQUtFIjoiRkFLRSJ9.RkFLRUZBS0VGQUtFRkFLRQ refreshed",
+   "expected": "session [REDACTED] refreshed",
+   "redacted": true
+  },
+  {
+   "name": "age_secret_key",
+   "rules": [
+    "2.age"
+   ],
+   "kind": "string",
+   "input": "identity AGE-SECRET-KEY-1FAKEFAKEFAKEFAKEFAKEFAKEFAKEFAKEFAKEFAKEFAKEFAKEFAKEFAKEQQ",
+   "expected": "identity [REDACTED]",
+   "redacted": true
+  },
+  {
+   "name": "npm_token",
+   "rules": [
+    "2.npm"
+   ],
+   "kind": "string",
+   "input": "publish npm_FAKEFAKEFAKEFAKEFAKEFAKEFAKEFAKEFAKE",
+   "expected": "publish [REDACTED]",
+   "redacted": true
+  },
+  {
+   "name": "sendgrid_key",
+   "rules": [
+    "2.sendgrid"
+   ],
+   "kind": "string",
+   "input": "mail SG.FAKEFAKEFAKEFAKEFAKE00.FAKEFAKEFAKEFAKEFAKEFAKEFAKEFAKEFAKEFAKE000 sent",
+   "expected": "mail [REDACTED] sent",
+   "redacted": true
+  },
+  {
+   "name": "url_user_and_password",
+   "rules": [
+    "3"
+   ],
+   "kind": "string",
+   "input": "clone https://deploy:FAKEpass@github.com/acme/web.git",
+   "expected": "clone https://[REDACTED]@github.com/acme/web.git",
+   "redacted": true
+  },
+  {
+   "name": "url_password_only",
+   "rules": [
+    "3"
+   ],
+   "kind": "string",
+   "input": "connecting to redis://:FAKEpass@cache:6379/0",
+   "expected": "connecting to redis://[REDACTED]@cache:6379/0",
+   "redacted": true
+  },
+  {
+   "name": "bearer_opaque",
+   "rules": [
+    "4"
+   ],
+   "kind": "string",
+   "input": "curl -H 'X-Upstream: Bearer FAKEtokenFAKEtoken'",
+   "expected": "curl -H 'X-Upstream: Bearer [REDACTED]'",
+   "redacted": true
+  },
+  {
+   "name": "basic_credentials",
+   "rules": [
+    "4"
+   ],
+   "kind": "string",
+   "input": "auth header was Basic dXNlcjpGQUtFcGFzcw==",
+   "expected": "auth header was Basic [REDACTED]",
+   "redacted": true
+  },
+  {
+   "name": "digest_scheme",
+   "rules": [
+    "4"
+   ],
+   "kind": "string",
+   "input": "scheme Digest abcdef0123456789",
+   "expected": "scheme Digest [REDACTED]",
+   "redacted": true
+  },
+  {
+   "name": "json_string_member",
+   "rules": [
+    "5"
+   ],
+   "kind": "string",
+   "input": "{\"password\":\"hunter2\",\"user\":\"alice\"}",
+   "expected": "{\"password\":\"[REDACTED]\",\"user\":\"alice\"}",
+   "redacted": true
+  },
+  {
+   "name": "json_number_member",
+   "rules": [
+    "5"
+   ],
+   "kind": "string",
+   "input": "{\"api_key\": 12345, \"retries\": 3}",
+   "expected": "{\"api_key\": \"[REDACTED]\", \"retries\": 3}",
+   "redacted": true
+  },
+  {
+   "name": "json_bool_and_escape",
+   "rules": [
+    "5"
+   ],
+   "kind": "string",
+   "input": "{\"client_secret\": true, \"db.password\": \"a\\\"b\"}",
+   "expected": "{\"client_secret\": \"[REDACTED]\", \"db.password\": \"[REDACTED]\"}",
+   "redacted": true
+  },
+  {
+   "name": "env_assignment",
+   "rules": [
+    "6"
+   ],
+   "kind": "string",
+   "input": "DB_PASSWORD=hunter2",
+   "expected": "DB_PASSWORD=[REDACTED]",
+   "redacted": true
+  },
+  {
+   "name": "env_export_aws_secret",
+   "rules": [
+    "6"
+   ],
+   "kind": "string",
+   "input": "export AWS_SECRET_ACCESS_KEY=FAKEfakeFAKEfakeFAKEfakeFAKEfakeFAKEfake",
+   "expected": "export AWS_SECRET_ACCESS_KEY=[REDACTED]",
+   "redacted": true
+  },
+  {
+   "name": "env_secret_key_base",
+   "rules": [
+    "6"
+   ],
+   "kind": "string",
+   "input": "SECRET_KEY_BASE=FAKEc0ffee0123456789",
+   "expected": "SECRET_KEY_BASE=[REDACTED]",
+   "redacted": true
+  },
+  {
+   "name": "header_api_key",
+   "rules": [
+    "6"
+   ],
+   "kind": "string",
+   "input": "X-Api-Key: FAKEabc123def",
+   "expected": "X-Api-Key: [REDACTED]",
+   "redacted": true
+  },
+  {
+   "name": "header_cookie",
+   "rules": [
+    "6"
+   ],
+   "kind": "string",
+   "input": "Cookie: sid=FAKEsid; theme=dark",
+   "expected": "Cookie: [REDACTED]; theme=dark",
+   "redacted": true
+  },
+  {
+   "name": "header_set_cookie",
+   "rules": [
+    "6"
+   ],
+   "kind": "string",
+   "input": "Set-Cookie: session_id=FAKExyz; Path=/; HttpOnly",
+   "expected": "Set-Cookie: [REDACTED]; Path=/; HttpOnly",
+   "redacted": true
+  },
+  {
+   "name": "query_parameter",
+   "rules": [
+    "6"
+   ],
+   "kind": "string",
+   "input": "GET /cb?code=ok&access_token=FAKEabc&state=x",
+   "expected": "GET /cb?code=ok&access_token=[REDACTED]&state=x",
+   "redacted": true
+  },
+  {
+   "name": "quoted_values",
+   "rules": [
+    "6"
+   ],
+   "kind": "string",
+   "input": "password = 'hunter 2' secret: \"a b c\"",
+   "expected": "password = [REDACTED] secret: [REDACTED]",
+   "redacted": true
+  },
+  {
+   "name": "yaml_dsn_with_url",
+   "rules": [
+    "3",
+    "6"
+   ],
+   "kind": "string",
+   "input": "  dsn: postgres://app:FAKEpw@db:5432/app",
+   "expected": "  dsn: [REDACTED]",
+   "redacted": true
+  },
+  {
+   "name": "database_url_env",
+   "rules": [
+    "3",
+    "6"
+   ],
+   "kind": "string",
+   "input": "DATABASE_URL=postgres://app:FAKEpw@db/app sslmode=off",
+   "expected": "DATABASE_URL=[REDACTED] sslmode=off",
+   "redacted": true
+  },
+  {
+   "name": "authorization_bearer_jwt",
+   "rules": [
+    "2.jwt",
+    "6"
+   ],
+   "kind": "string",
+   "input": "Authorization: Bearer eyJGQUtFIjoiRkFLRSJ9.eyJGQUtFIjoiRkFLRSJ9.RkFLRUZBS0VGQUtFRkFLRQ",
+   "expected": "Authorization: [REDACTED] [REDACTED]",
+   "redacted": true
+  },
+  {
+   "name": "authorization_basic",
+   "rules": [
+    "4",
+    "6"
+   ],
+   "kind": "string",
+   "input": "Authorization: Basic dXNlcjpGQUtFcGFzcw==",
+   "expected": "Authorization: [REDACTED] [REDACTED]",
+   "redacted": true
+  },
+  {
+   "name": "cli_flag_space",
+   "rules": [
+    "7"
+   ],
+   "kind": "string",
+   "input": "mysql --password hunter2 --host db",
+   "expected": "mysql --password [REDACTED] --host db",
+   "redacted": true
+  },
+  {
+   "name": "cli_flag_single_dash",
+   "rules": [
+    "7"
+   ],
+   "kind": "string",
+   "input": "tool -token FAKEtok run",
+   "expected": "tool -token [REDACTED] run",
+   "redacted": true
+  },
+  {
+   "name": "cli_flag_client_secret",
+   "rules": [
+    "7"
+   ],
+   "kind": "string",
+   "input": "oauth --client-secret FAKEs3cr3t",
+   "expected": "oauth --client-secret [REDACTED]",
+   "redacted": true
+  },
+  {
+   "name": "cli_flag_equals",
+   "rules": [
+    "6",
+    "7"
+   ],
+   "kind": "string",
+   "input": "deploy --token=FAKEtok",
+   "expected": "deploy --token=[REDACTED]",
+   "redacted": true
+  },
+  {
+   "name": "structured_keys",
+   "rules": [
+    "8"
+   ],
+   "kind": "fields",
+   "input": {
+    "password": "hunter2",
+    "http.request.header.authorization": "Bearer x",
+    "http.request.header.cookie": "a=b",
+    "http.request.header.proxy-authorization": "Basic x",
+    "http.request.header.x-api-key": "k",
+    "http.response.header.set-cookie": "sid=1",
+    "db.connection_string": "Server=db;Password=x",
+    "url.userinfo": "u:p",
+    "user": "alice",
+    "http.request.method": "GET",
+    "msg": "DB_PASSWORD=hunter2"
+   },
+   "expected": {
+    "password": "[REDACTED]",
+    "http.request.header.authorization": "[REDACTED]",
+    "http.request.header.cookie": "[REDACTED]",
+    "http.request.header.proxy-authorization": "[REDACTED]",
+    "http.request.header.x-api-key": "[REDACTED]",
+    "http.response.header.set-cookie": "[REDACTED]",
+    "db.connection_string": "[REDACTED]",
+    "url.userinfo": "[REDACTED]",
+    "user": "alice",
+    "http.request.method": "GET",
+    "msg": "DB_PASSWORD=[REDACTED]"
+   },
+   "redacted": true
+  },
+  {
+   "name": "structured_values_get_rules_1_to_7",
+   "rules": [
+    "8",
+    "2.github",
+    "3"
+   ],
+   "kind": "fields",
+   "input": {
+    "event": "pushed with ghp_FAKE00000000000000000000000000000000",
+    "remote": "https://ci:FAKEpw@git.example.com/r.git"
+   },
+   "expected": {
+    "event": "pushed with [REDACTED]",
+    "remote": "https://[REDACTED]@git.example.com/r.git"
+   },
+   "redacted": true
+  },
+  {
+   "name": "lookalike_words",
+   "rules": [
+    "lookalike"
+   ],
+   "kind": "string",
+   "input": "passenger_count=3 tokenizer=bpe secretary=alice keyboard=us cookies=3 author=bob",
+   "expected": "passenger_count=3 tokenizer=bpe secretary=alice keyboard=us cookies=3 author=bob",
+   "redacted": false
+  },
+  {
+   "name": "lookalike_env_names",
+   "rules": [
+    "lookalike"
+   ],
+   "kind": "string",
+   "input": "NODE_ENV=production MAX_TOKENS=4096 SESSION_COUNT=2",
+   "expected": "NODE_ENV=production MAX_TOKENS=4096 SESSION_COUNT=2",
+   "redacted": false
+  },
+  {
+   "name": "lookalike_url_without_password",
+   "rules": [
+    "lookalike"
+   ],
+   "kind": "string",
+   "input": "fetch https://user@example.com/path and https://example.com:8443/x",
+   "expected": "fetch https://user@example.com/path and https://example.com:8443/x",
+   "redacted": false
+  },
+  {
+   "name": "lookalike_public_key_block",
+   "rules": [
+    "lookalike"
+   ],
+   "kind": "string",
+   "input": "-----BEGIN PUBLIC KEY-----\nMFkwFAKE\n-----END PUBLIC KEY-----",
+   "expected": "-----BEGIN PUBLIC KEY-----\nMFkwFAKE\n-----END PUBLIC KEY-----",
+   "redacted": false
+  },
+  {
+   "name": "lookalike_short_prefixes",
+   "rules": [
+    "lookalike"
+   ],
+   "kind": "string",
+   "input": "AKIAFAKE ghp_short sk-short xoxb-1 eyJhbGciOi Bearer abc",
+   "expected": "AKIAFAKE ghp_short sk-short xoxb-1 eyJhbGciOi Bearer abc",
+   "redacted": false
+  },
+  {
+   "name": "lookalike_image_digest",
+   "rules": [
+    "lookalike"
+   ],
+   "kind": "string",
+   "input": "pulled registry.permanu.internal/acme/web@sha256:20c40e231982e19a4b9138d298861d23925519b97333562870a3b9f238b279f5 digest sha256:20c40e23",
+   "expected": "pulled registry.permanu.internal/acme/web@sha256:20c40e231982e19a4b9138d298861d23925519b97333562870a3b9f238b279f5 digest sha256:20c40e23",
+   "redacted": false
+  },
+  {
+   "name": "high_entropy_bare_passes",
+   "rules": [
+    "high_entropy"
+   ],
+   "kind": "string",
+   "input": "commit 4f2a9c1e8b7d6a5f4e3d2c1b0a9f8e7d6c5b4a39 value FAKEfakeFAKEfakeFAKEfakeFAKEfakeFAKEfake id 01a0cdb5-3500-7001-8000-000000000001",
+   "expected": "commit 4f2a9c1e8b7d6a5f4e3d2c1b0a9f8e7d6c5b4a39 value FAKEfakeFAKEfakeFAKEfakeFAKEfakeFAKEfake id 01a0cdb5-3500-7001-8000-000000000001",
+   "redacted": false
+  },
+  {
+   "name": "high_entropy_behind_key",
+   "rules": [
+    "high_entropy",
+    "6"
+   ],
+   "kind": "string",
+   "input": "aws_secret_access_key: FAKEfakeFAKEfakeFAKEfakeFAKEfakeFAKEfake",
+   "expected": "aws_secret_access_key: [REDACTED]",
+   "redacted": true
+  },
+  {
+   "name": "high_entropy_json_behind_key",
+   "rules": [
+    "high_entropy",
+    "5"
+   ],
+   "kind": "string",
+   "input": "{\"privateKey\":\"FAKEfakeFAKEfakeFAKEfakeFAKEfakeFAKEfake\"}",
+   "expected": "{\"privateKey\":\"[REDACTED]\"}",
+   "redacted": true
+  },
+  {
+   "name": "idempotent_on_redacted_text",
+   "rules": [
+    "6"
+   ],
+   "kind": "string",
+   "input": "password=[REDACTED]",
+   "expected": "password=[REDACTED]",
+   "redacted": false
+  }
+ ]
+}

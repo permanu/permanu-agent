@@ -8,6 +8,8 @@ pub mod agent {
     /// Generated only; no service is implemented or served yet.
     pub mod v2 {
         #![allow(dead_code)]
+        // Generated from the proto comments, which are prose, not markdown.
+        #![allow(clippy::doc_lazy_continuation, clippy::doc_overindented_list_items)]
         tonic::include_proto!("permanu.agent.v2");
     }
 }

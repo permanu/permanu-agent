@@ -652,6 +652,8 @@ pub struct Options {
     /// vectors' own (`policy-cases.json` `bootstrap_cases[].age_recipient`,
     /// D-045).
     pub age_recipient: Option<String>,
+    /// Open a telemetry store under the test dir (`telemetry.v1`).
+    pub telemetry: bool,
 }
 
 impl Default for Options {
@@ -662,6 +664,7 @@ impl Default for Options {
             store_lost: false,
             start_timeout: Duration::from_secs(300),
             age_recipient: None,
+            telemetry: false,
         }
     }
 }
@@ -674,6 +677,7 @@ pub struct Harness {
     pub clock: Arc<FixedClock>,
     pub trust_file: PathBuf,
     pub age_recipient: String,
+    pub telemetry: Option<Arc<crate::local::telemetry::Telemetry>>,
     shutdown: Option<tokio::sync::oneshot::Sender<()>>,
     task: tokio::task::JoinHandle<()>,
     runner_task: tokio::task::JoinHandle<()>,
@@ -795,6 +799,9 @@ impl Harness {
                 op_timeout: Duration::from_secs(30),
             },
         });
+        let telemetry = options
+            .telemetry
+            .then(|| crate::local::telemetry::test_support::open(dir.join("telemetry")));
         let socket_path = dir.join("run").join("agent.sock");
         let listener = socket::bind(&socket_path, None).unwrap();
         let (tx, rx) = tokio::sync::oneshot::channel::<()>();
@@ -809,6 +816,7 @@ impl Harness {
             trust,
             age_recipient: age_recipient.clone(),
             core: core.clone(),
+            telemetry: telemetry.clone(),
         };
         let task = tokio::spawn(async move {
             server
@@ -827,6 +835,7 @@ impl Harness {
             clock,
             trust_file,
             age_recipient,
+            telemetry,
             shutdown: Some(tx),
             task,
             runner_task,
