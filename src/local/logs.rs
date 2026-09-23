@@ -14,9 +14,14 @@
 //! - Cursors are `v1.<unix nanos>.<container id>.<ordinal>`; a resumed query
 //!   returns only records after (FORWARD) or before (BACKWARD) the cursor.
 //!
+//! - `APP` is the `web`, `worker`, `static` and `cron` containers and
+//!   `SERVICE` the `database` and `bucket` ones, by the runner's
+//!   `service_kind` (D-045); a container started before v1.0.5 has no kind
+//!   and is served as `APP`. A scope's environment matches by name (the
+//!   `permanu.environment` label, matched here) or id (a runner filter).
+//!
 //! M1 limits: records carry no level or trace id, so a query that filters on
-//! either matches nothing; `APP` and `SERVICE` are served from the same
-//! Permanu containers (records are tagged `APP`); every other source is
+//! either matches nothing; every source other than `APP` and `SERVICE` is
 //! `CAPABILITY_MISSING` until the M2 telemetry store.
 
 use std::collections::{BTreeMap, HashMap};
@@ -123,6 +128,11 @@ impl Key {
 /// A validated `LogQuery`.
 struct Plan {
     filter: ContainerFilter,
+    /// Environment name (`permanu.environment`); empty matches all.
+    environment: String,
+    /// Which of `APP` and `SERVICE` the query wants.
+    app: bool,
+    service: bool,
     deployment_id: String,
     container: Option<String>,
     contains: Option<String>,
@@ -157,9 +167,6 @@ fn plan_of(query: &LogQuery) -> Result<Plan, Status> {
         return Err(invalid(
             "QueryLogs scopes by project, environment and service",
         ));
-    }
-    if !scope.environment.is_empty() && scope.environment_id.is_empty() {
-        return Err(invalid("scope an environment by environment_id"));
     }
     let backward = query.direction == QueryDirection::Backward as i32;
     if query.follow && backward {
@@ -201,6 +208,9 @@ fn plan_of(query: &LogQuery) -> Result<Plan, Status> {
             environment_id: scope.environment_id,
             service_id: scope.service_id,
         },
+        environment: scope.environment,
+        app: query.source_types.is_empty() || query.source_types.contains(&served[0]),
+        service: query.source_types.is_empty() || query.source_types.contains(&served[1]),
         deployment_id: scope.deployment_id,
         container: (!query.container.is_empty()).then(|| query.container.clone()),
         contains: (!query.contains.is_empty()).then(|| {
@@ -310,7 +320,13 @@ impl Plan {
     }
 
     fn wanted(&self, container: &RunnerContainer) -> bool {
-        self.deployment_id.is_empty() || container.deployment_id == self.deployment_id
+        let source_wanted = match source_type_of(container) {
+            LogSourceType::Service => self.service,
+            _ => self.app,
+        };
+        source_wanted
+            && (self.deployment_id.is_empty() || container.deployment_id == self.deployment_id)
+            && (self.environment.is_empty() || container.environment == self.environment)
     }
 }
 
@@ -345,6 +361,15 @@ fn records_of(
     out
 }
 
+/// D-045: managed services (`database`, `bucket`) are `SERVICE`; every
+/// other kind, and a container with no kind (before v1.0.5), is `APP`.
+fn source_type_of(container: &RunnerContainer) -> LogSourceType {
+    match container.service_kind.as_str() {
+        "database" | "bucket" => LogSourceType::Service,
+        _ => LogSourceType::App,
+    }
+}
+
 fn record(container: &RunnerContainer, key: &Key, stream: &str, message: &str) -> LogRecord {
     let mut end = message.len().min(MAX_MESSAGE_BYTES);
     while !message.is_char_boundary(end) {
@@ -354,12 +379,16 @@ fn record(container: &RunnerContainer, key: &Key, stream: &str, message: &str) -
     let redacted = redact_log_message(message);
     let seconds = i64::try_from(key.nanos.div_euclid(1_000_000_000)).unwrap_or(0);
     let nanos = i32::try_from(key.nanos.rem_euclid(1_000_000_000)).unwrap_or(0);
+    let source_type = source_type_of(container);
     let mut fields = HashMap::new();
-    if !container.environment_id.is_empty() {
-        fields.insert(
-            "environment_id".to_owned(),
-            container.environment_id.clone(),
-        );
+    for (name, value) in [
+        ("environment", &container.environment),
+        ("environment_id", &container.environment_id),
+        ("service_kind", &container.service_kind),
+    ] {
+        if !value.is_empty() {
+            fields.insert(name.to_owned(), value.clone());
+        }
     }
     if !container.spec_digest_hex.is_empty() {
         fields.insert(
@@ -375,8 +404,11 @@ fn record(container: &RunnerContainer, key: &Key, stream: &str, message: &str) -
         } else {
             message.to_owned()
         },
-        source_type: LogSourceType::App as i32,
-        source: format!("app:{}", container.name),
+        source_type: source_type as i32,
+        source: match source_type {
+            LogSourceType::Service => format!("service:{}", container.name),
+            _ => format!("app:{}", container.name),
+        },
         container_id: container.id.clone(),
         container_name: container.name.clone(),
         image: container.image.clone(),
@@ -822,9 +854,15 @@ mod tests {
     const S2: &str = "01a0cdb5-3500-70c1-8000-000000000002";
 
     fn container(id: &str, name: &str, service: &str, state: &str) -> serde_json::Value {
+        let kind = if name.starts_with("db") {
+            "database"
+        } else {
+            "web"
+        };
         json!({"id": id, "name": name, "image": "ghcr.io/acme/web@sha256:ab",
                "state": state, "status": "Up", "created_at": "2026-09-23T09:00:00Z",
-               "project_id": "p1", "environment_id": "e1", "service_id": service,
+               "project_id": "p1", "environment": "production", "environment_id": "e1",
+               "service_id": service, "service_kind": kind,
                "deployment_id": format!("d-{id}"), "spec_digest_hex": "cd"})
     }
 
@@ -993,6 +1031,118 @@ mod tests {
             statuses.last().unwrap().kind,
             stream_status::Kind::End as i32
         );
+        h.stop().await;
+    }
+
+    fn sources(source_types: &[LogSourceType]) -> LogQuery {
+        LogQuery {
+            source_types: source_types.iter().map(|t| *t as i32).collect(),
+            ..Default::default()
+        }
+    }
+
+    /// D-045: `APP` is web, worker, static and cron containers, `SERVICE` is
+    /// database and bucket, from the runner's `service_kind`; a container
+    /// started before v1.0.5 (no kind) stays `APP`.
+    #[tokio::test]
+    async fn source_types_split_app_and_service_by_service_kind() {
+        let h = harness("logs-kinds").await;
+        let mut legacy = container("c4", "legacy-1", S1, "running");
+        legacy["service_kind"] = serde_json::Value::Null;
+        legacy["environment"] = serde_json::Value::Null;
+        h.runner.containers.lock().unwrap().push(legacy);
+        h.runner.logs.lock().unwrap().insert(
+            "c4".to_owned(),
+            (vec!["2026-09-23T10:00:05Z legacy".to_owned()], Vec::new()),
+        );
+
+        let (records, _) = run(&h, sources(&[LogSourceType::Service])).await.unwrap();
+        assert_eq!(messages(&records), vec!["db up"]);
+        assert_eq!(records[0].source_type, LogSourceType::Service as i32);
+        assert_eq!(records[0].source, "service:db-1");
+        assert_eq!(records[0].fields["service_kind"], "database");
+        assert_eq!(records[0].fields["environment"], "production");
+
+        let (records, _) = run(&h, sources(&[LogSourceType::App])).await.unwrap();
+        assert_eq!(
+            messages(&records),
+            vec!["started token=[REDACTED]", "warn", "ready", "legacy"]
+        );
+        assert!(records
+            .iter()
+            .all(|r| r.source_type == LogSourceType::App as i32 && r.source.starts_with("app:")));
+
+        let both = [LogSourceType::App, LogSourceType::Service];
+        for query in [sources(&both), LogQuery::default()] {
+            let (records, _) = run(&h, query).await.unwrap();
+            assert_eq!(records.len(), 5);
+            assert_eq!(records[0].message, "db up");
+            assert_eq!(records[0].source_type, LogSourceType::Service as i32);
+        }
+        h.stop().await;
+    }
+
+    /// D-045: a scope names its environment by name (the
+    /// `permanu.environment` label), by id (a runner label filter) or both.
+    #[tokio::test]
+    async fn an_environment_scope_matches_by_name_or_id() {
+        let h = harness("logs-env").await;
+        let mut staging = container("c5", "web-staging", S1, "running");
+        staging["environment"] = json!("staging");
+        staging["environment_id"] = json!("e2");
+        h.runner.containers.lock().unwrap().push(staging);
+        h.runner.logs.lock().unwrap().insert(
+            "c5".to_owned(),
+            (
+                vec!["2026-09-23T10:00:06Z staging up".to_owned()],
+                Vec::new(),
+            ),
+        );
+        let scoped = |environment: &str, environment_id: &str| LogQuery {
+            scope: Some(Scope {
+                environment: environment.to_owned(),
+                environment_id: environment_id.to_owned(),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+
+        let by_name = run(&h, scoped("staging", "")).await.unwrap().0;
+        assert_eq!(messages(&by_name), vec!["staging up"]);
+        // The runner filters labels by id only; a name is matched here.
+        assert_eq!(
+            h.runner.requests.lock().unwrap().last().cloned(),
+            Some(json!({"op": "container_logs", "payload": {"container_id": "c5", "tail": 1000}}))
+        );
+        assert!(h
+            .runner
+            .requests
+            .lock()
+            .unwrap()
+            .contains(&json!({"op": "list_containers", "payload": {}})));
+
+        let by_id = run(&h, scoped("", "e2")).await.unwrap().0;
+        assert_eq!(messages(&by_id), vec!["staging up"]);
+        assert!(h
+            .runner
+            .requests
+            .lock()
+            .unwrap()
+            .contains(&json!({"op": "list_containers", "payload": {"environment_id": "e2"}})));
+
+        let production = run(&h, scoped("production", "")).await.unwrap().0;
+        assert_eq!(production.len(), 4);
+        assert!(production
+            .iter()
+            .all(|r| r.fields["environment"] == "production"));
+
+        assert!(run(&h, scoped("staging", "e2")).await.unwrap().0.len() == 1);
+        assert!(run(&h, scoped("production", "e2"))
+            .await
+            .unwrap()
+            .0
+            .is_empty());
+        assert!(run(&h, scoped("preview", "")).await.unwrap().0.is_empty());
         h.stop().await;
     }
 
@@ -1194,6 +1344,10 @@ mod tests {
         assert_eq!(ids, vec!["c1", "c2"]);
         assert_eq!(probe.containers(true).await.unwrap().len(), 3);
         assert_eq!(running[0].server_id, "srv");
+        // D-045: environment and service_kind come from the runner's labels.
+        assert_eq!(running[0].environment, "production");
+        assert_eq!(running[0].service_kind, "web");
+        assert_eq!(running[1].service_kind, "database");
         h.stop().await;
     }
 

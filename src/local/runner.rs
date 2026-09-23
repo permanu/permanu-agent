@@ -214,8 +214,14 @@ pub struct RunnerContainer {
     pub status: String,
     pub created_at: String,
     pub project_id: String,
+    /// v1.0.5 (D-045): the `permanu.environment` label (the signed
+    /// environment name); empty for a container started before v1.0.5.
+    pub environment: String,
     pub environment_id: String,
     pub service_id: String,
+    /// v1.0.5 (D-045): the `permanu.service_kind` label (the signed
+    /// `ServiceSpec.service_kind`); empty before v1.0.5.
+    pub service_kind: String,
     pub deployment_id: String,
     pub spec_digest_hex: String,
 }
@@ -264,8 +270,10 @@ pub async fn list_containers(
             status: text(item, "status"),
             created_at: text(item, "created_at"),
             project_id: text(item, "project_id"),
+            environment: text(item, "environment"),
             environment_id: text(item, "environment_id"),
             service_id: text(item, "service_id"),
+            service_kind: text(item, "service_kind"),
             deployment_id: text(item, "deployment_id"),
             spec_digest_hex: text(item, "spec_digest_hex"),
         })
