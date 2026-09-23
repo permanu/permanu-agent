@@ -147,11 +147,13 @@ message Operation {
 //   restart_release, cleanup_candidate, cancel_execution, install_artifact,
 //   update_agent (v2.0.4, D-040), update_trusted_keys
 //                                                - the runner op being run
-//   v2.1.0 (agent-protocol.md 10, 11, 13): run_cron, backup_run,
-//   backup_verify, backup_prune, backup_delete, restore_backup, build_image,
-//   update_release_keys; install_artifact and update_agent run for real
-//   (D-051). stage_artifact_verify, notify_channel, webhook_verify and
-//   backup_fetch are unbound and never appear as steps.
+//   v2.1.0 (agent-protocol.md 10, 11, 13, 14; signed-plan.md 14.6):
+//   stage_artifact_verify, run_cron, backup_run, backup_verify,
+//   backup_delete, restore_backup, shell_open; update_trusted_keys also for
+//   release_key.*; install_artifact and update_agent run for real (D-051).
+//   Scheduled runs (run_cron, backup_run, backup_verify, backup_prune) and
+//   build_image are not plan steps; notify_channel, webhook_verify and
+//   logs_follow_stream are unbound and never appear as steps.
 //   succeeded, failed, rolled_back, cancelled, expired
 //                                                - final step of one action
 // Clients show an unknown name as a generic step.
@@ -374,17 +376,21 @@ message GetTrustedKeysRequest {
 // ArtifactService stages release artifacts on the server for an admitted (or
 // about to be submitted) agent.update or component.update plan (v2.1.0,
 // capability "artifacts.v1", D-051, agent-protocol.md 13). Staging is not a
-// server change: the files land in /var/lib/permanu/staging/<stage_id>/, are
-// never executed from there, and install only when the runner's
-// install_artifact or update_agent, bound to an owner-signed plan pinning
-// bundle_manifest_digest_hex, copies them out and verifies them against a
-// manifest signed by a pinned release key.
+// server change: the files land in
+// /var/lib/permanu/staging/<bundle_manifest_digest_hex>/, are never executed
+// from there, and install only after the runner's stage_artifact_verify,
+// bound to an owner-signed plan pinning bundle_manifest_digest_hex, copied
+// them to a root-only directory and verified them against a manifest.json
+// whose manifest.sig.json verifies under a pinned release key
+// (signed-plan.md 3.9).
 service ArtifactService {
   // StageArtifact uploads one staged set: a StageHeader frame, then for each
   // file a StageFile frame followed by its StageChunk frames, then StageCommit.
-  // On commit the agent calls the runner's read-only stage_artifact_verify and
-  // returns its verdict; a rejected set is deleted (FAILED_PRECONDITION +
-  // ARTIFACT_REJECTED, runner code in the status message).
+  // On commit the agent checks the set itself (release-keys.json, the
+  // manifest signature and digest, arch and file digests) and returns its
+  // verdict; a rejected set is deleted (FAILED_PRECONDITION +
+  // ARTIFACT_REJECTED or EXEC_PRECONDITION, the equivalent runner code in the
+  // status message). The runner checks again, on its own copy, at execution.
   rpc StageArtifact(stream StageArtifactRequest) returns (StageArtifactResponse);
   rpc ListStagedArtifacts(ListStagedArtifactsRequest) returns (ListStagedArtifactsResponse);
   // GetReleaseKeys returns /etc/permanu/release-keys.json as stored.
@@ -401,8 +407,9 @@ message StageArtifactRequest {
 }
 
 message StageHeader {
-  // Client-minted UUIDv7; re-staging the same id replaces an uncommitted set
-  // and is ALREADY_EXISTS for a committed one.
+  // Client-minted UUIDv7 naming this upload; re-staging the same id replaces
+  // an uncommitted upload and is ALREADY_EXISTS for a committed one. A commit
+  // replaces an earlier committed set of the same bundle_manifest_digest_hex.
   string stage_id = 1;
   // Hex SHA-256 of the manifest.json bytes this set carries; it must equal
   // the plan's bundle_manifest_digest_hex for the set to be installable.
@@ -412,9 +419,9 @@ message StageHeader {
 }
 
 message StageFile {
-  // "manifest.json", "manifest.json.sig" (the detached Ed25519 signature by
-  // a release key, signed-plan.md 3.2 "Bundle manifest"), or a manifest
-  // entry's file name (e.g. "permanu-agent-linux-arm64").
+  // "manifest.json", "manifest.sig.json" (the Ed25519 release signature,
+  // signed-plan.md 3.9), or a manifest entry's path "<arch>/<name>"
+  // (e.g. "arm64/permanu-agent").
   string name = 1;
   uint64 size_bytes = 2;
   // Hex SHA-256 of the file.
@@ -440,8 +447,8 @@ message StagedArtifactSet {
   google.protobuf.Timestamp staged_at = 5;
   // staged_at + 24 h, or earlier once an install consumed it.
   google.protobuf.Timestamp expires_at = 6;
-  // stage_artifact_verify passed at commit (the runner checks again, on its
-  // own copy, when it installs).
+  // The agent's commit-time check passed (the runner's stage_artifact_verify
+  // checks again, on its own copy, when it installs).
   bool verified = 7;
   // key_id of the release key whose signature verified.
   string release_key_id = 8;
@@ -465,8 +472,9 @@ message GetReleaseKeysRequest {}
 message ReleaseKey {
   string key_id = 1;
   string alg = 2; // "Ed25519"
-  // 32-byte raw Ed25519 public key.
-  bytes public_key = 3;
+  // The 44-byte Ed25519 SubjectPublicKeyInfo DER (release-keys.json "spki",
+  // base64-decoded; key_id is derived from it, signed-plan.md 3.9).
+  bytes spki = 3;
   string label = 4;
   google.protobuf.Timestamp added_at = 5;
   bool revoked = 6;

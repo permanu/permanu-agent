@@ -70,7 +70,7 @@ message HelloResponse {
   //                           from the permanu.environment and
   //                           permanu.service_kind labels. An engine requires
   //                           it before it submits a plan that names a spec.
-  // v2.1.0 adds (contracts v1.1.0, agent-protocol.md 2 and 9-13; Hello
+  // v2.1.0 adds (contracts v1.0.7, agent-protocol.md 2 and 9-13; Hello
   // negotiates "2.1"). The illustrative ids above ("telemetry.logs",
   // "schedules.cron", "backups", "alerts", "webhooks", "builds.server") are
   // never advertised; these are the gates:

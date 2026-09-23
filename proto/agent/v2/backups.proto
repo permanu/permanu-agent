@@ -21,7 +21,8 @@ import "agent/v2/common.proto";
 // recipient ("recovery_recipient.set", D-049), and a scheduled verify-restore
 // runs weekly by default. The agent never sees destination credentials: the
 // runner decrypts them inside backup_run, backup_verify, backup_prune,
-// backup_delete, restore_backup and backup_fetch.
+// backup_delete and restore_backup. Object layout, manifest and digests are
+// signed-plan.md 3.8's.
 service BackupService {
   rpc ListBackupPolicies(ListBackupPoliciesRequest) returns (ListBackupPoliciesResponse);
   rpc GetBackupPolicy(GetBackupPolicyRequest) returns (BackupPolicy);
@@ -31,10 +32,12 @@ service BackupService {
   rpc ListBackupArtifacts(ListBackupArtifactsRequest) returns (ListBackupArtifactsResponse);
   // v2.1.0. Signed backup destinations (credentials never returned).
   rpc ListBackupDestinations(ListBackupDestinationsRequest) returns (ListBackupDestinationsResponse);
-  // v2.1.0. Streams one artifact's age ciphertext, exactly as stored, for
-  // Engine API backups.download; the Mac decrypts it with the owner recovery
-  // identity (D-049). The agent reads a LOCAL artifact itself and a remote
-  // one through the runner's read-only backup_fetch; it never decrypts.
+  // v2.1.0. Streams one server_local (KIND_LOCAL) artifact's age ciphertext,
+  // exactly as stored under /var/lib/permanu/backups, for Engine API
+  // backups.download; the Mac decrypts it with the owner recovery identity
+  // (D-049). The agent never decrypts. Artifacts at remote destinations are
+  // fetched by the engine itself (signed-plan.md 3.8); asking for one is
+  // FAILED_PRECONDITION + EXEC_PRECONDITION.
   // Read-only; one concurrent download per agent (RESOURCE_EXHAUSTED /
   // RATE_LIMITED otherwise).
   rpc ReadBackupArtifact(ReadBackupArtifactRequest) returns (stream BackupArtifactChunk);
@@ -70,12 +73,13 @@ message BackupDestination {
   string region = 5;
   // Name of the server-side credential; the value is never returned.
   string credential_ref = 6;
-  // v2.1.0. destination_id of the backup.destination.set action (UUIDv7);
-  // "" for the built-in LOCAL destination.
+  // v2.1.0. The signed destination_ref of backup.destination.set, which is
+  // the Engine API BackupDestination.id (a UUIDv7). KIND_LOCAL is the
+  // server_local kind (root /var/lib/permanu/backups), also set by a plan.
   string id = 7;
   string name = 8;
   // v2.1.0. SHA-256 of the sealed credential ciphertext the plan signed
-  // ("" for LOCAL). The value is decrypted only by the runner.
+  // ("" for KIND_LOCAL). The value is decrypted only by the runner.
   string credential_ciphertext_digest_hex = 9;
   string plan_digest_hex = 10;
 }
@@ -116,8 +120,7 @@ message BackupPolicy {
   string plan_digest_hex = 17;
   // Per-run timeout (agent default 6 h; not a plan field in v2.0).
   uint32 timeout_seconds = 18;
-  // v2.1.0. The plan's destination_ref: a BackupDestination.id, or "" for the
-  // built-in LOCAL destination.
+  // v2.1.0. The plan's destination_ref (a BackupDestination.id).
   string destination_id = 19;
 }
 
@@ -140,7 +143,7 @@ message BackupRun {
     TRIGGER_UNSPECIFIED = 0;
     TRIGGER_SCHEDULE = 1;
     TRIGGER_MANUAL = 2;
-    TRIGGER_PRE_CHANGE = 3; // taken automatically before a migration/restore/upgrade
+    TRIGGER_PRE_CHANGE = 3; // taken automatically before a migration/restore/upgrade (v2.1.0: restore_backup's pre_restore backup)
   }
   Trigger trigger = 4;
   google.protobuf.Timestamp started_at = 5;
@@ -150,7 +153,8 @@ message BackupRun {
   string error = 9;
   string operation_id = 10;
   // v2.1.0. Hex SHA-256 of the encrypted artifact (BackupArtifact
-  // content_digest_hex); "" until SUCCEEDED.
+  // content_digest_hex = the manifest's backup_digest_hex, signed-plan.md
+  // 3.8); "" until SUCCEEDED.
   string content_digest_hex = 11;
 }
 
