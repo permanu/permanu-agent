@@ -1868,6 +1868,12 @@ fn ci_job_downloads_available_artifact_from_control_plane_url() {
     );
 
     let result = job_deployment::handle_ci_job("cmd-1", payload.as_bytes());
+    // A job that failed before it downloaded (for example without curl)
+    // never connects; connect once so the server thread ends and the
+    // assertions below report the job's error instead of hanging.
+    if !server.is_finished() {
+        let _ = std::net::TcpStream::connect(addr);
+    }
     server.join().expect("artifact server joins");
     let output: Value = serde_json::from_slice(&result.output).expect("json output");
 
