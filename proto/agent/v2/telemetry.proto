@@ -22,6 +22,8 @@ service TelemetryService {
   // v2.0.3 (D-036): with capability "logs.containers.v1" the agent serves
   // APP and SERVICE sources from the runner's read-only container ops
   // (signed-plan.md 14.3) until the M2 telemetry store takes over.
+  // v2.1.0: with capability "telemetry.v1" every source is served from the
+  // telemetry store (agent-protocol.md 9), history and follow alike.
   rpc QueryLogs(LogQuery) returns (stream LogQueryResponse);
   // SearchTraces streams trace summaries matching the search.
   rpc SearchTraces(TraceSearch) returns (stream TraceSearchResponse);
@@ -109,6 +111,9 @@ message LogQuery {
   repeated LogLevel levels = 14;
   // FORWARD (default) or BACKWARD. follow=true requires FORWARD.
   QueryDirection direction = 15;
+  // v2.1.0. Match LogRecord.run_id exactly (a cron run, backup run,
+  // verify-restore or server build id). Requires "telemetry.v1".
+  string run_id = 16;
 }
 
 message LogRecord {
@@ -136,6 +141,18 @@ message LogRecord {
   map<string, string> fields = 19;
   // True when redaction altered this record.
   bool redacted = 20;
+  // v2.1.0 ("telemetry.v1"), from the permanu.* labels or the OTLP resource
+  // attributes (agent-protocol.md 9.4).
+  string environment_id = 21;
+  string environment = 22;
+  string service_kind = 23;
+  // Cron run, backup run, verify-restore or server build id; "" otherwise.
+  string run_id = 24;
+  // How the record reached the store: "runner_follow" (container stdout and
+  // stderr, D-054), "journal" (allowlisted units through the same stream),
+  // "otlp" (OTLP logs, D-053) or "agent" (the agent's own and its step,
+  // cron, backup and build output).
+  string ingest = 25;
 }
 
 message LogBatch {
@@ -210,6 +227,11 @@ message TraceSummary {
   int32 http_status = 9;
   string deployment_id = 10;
   string cursor = 11;
+  // v2.1.0. permanu.* resource attributes of the root span (agent-protocol.md
+  // 9.5), "" when absent.
+  string project_id = 12;
+  string environment_id = 13;
+  string service_id = 14;
 }
 
 message TraceSummaryBatch {
@@ -453,7 +475,9 @@ enum TelemetryKind {
 
 // RetentionPolicy is enforced per kind; whichever limit hits first evicts
 // the oldest data. Changed only by a signed "telemetry.retention.set" plan
-// with the same field names (max_age_days, max_bytes).
+// with the same field names (max_age_days, max_bytes). v2.1.0 defaults
+// (D-054, agent-protocol.md 9.2): LOGS 7 d / 1 GiB, TRACES 3 d / 512 MiB,
+// METRICS 15 d / 256 MiB, ANALYTICS 30 d / 256 MiB, HTTP 7 d / 256 MiB.
 message RetentionPolicy {
   reserved 1;
   reserved "max_age";
@@ -475,6 +499,12 @@ message TelemetryUsage {
   // Records evicted by retention since agent start.
   uint64 evicted_total = 8;
   double ingest_per_second = 9;
+  // v2.1.0. Bytes evicted by retention since agent start.
+  uint64 evicted_bytes_total = 10;
+  // v2.1.0. Records that redaction altered since agent start.
+  uint64 redacted_total = 11;
+  // v2.1.0. True when the retention in force is the D-054 default.
+  bool retention_is_default = 12;
 }
 
 message GetTelemetryUsageResponse {
@@ -482,4 +512,10 @@ message GetTelemetryUsageResponse {
   uint64 disk_free_bytes = 2;
   // Hex plan digest of the last applied retention change ("" = defaults).
   string retention_plan_digest_hex = 3;
+  // v2.1.0. True while ingest is paused by the disk guard (agent-protocol.md
+  // 9.3); records are dropped and counted in dropped_total.
+  bool ingest_paused = 4;
+  // v2.1.0. Version of the normative redaction rule set in force
+  // (agent-protocol.md 9.6), "redaction-v1" in v2.1.0.
+  string redaction_rules_version = 5;
 }

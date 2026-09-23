@@ -15,6 +15,13 @@ import "agent/v2/common.proto";
 // "backup.run", "backup.verify", "backup.policy.delete" (owner only),
 // "backup.delete" and "restore" (both owner only, always-fresh Touch ID,
 // never a standing rule).
+// v2.1.0 (capability "backups.v1", agent-protocol.md 10.2): destinations are
+// signed too ("backup.destination.set", "backup.destination.delete"), every
+// artifact is age-encrypted to the server recipient AND the owner recovery
+// recipient ("recovery_recipient.set", D-049), and a scheduled verify-restore
+// runs weekly by default. The agent never sees destination credentials: the
+// runner decrypts them inside backup_run, backup_verify, backup_prune,
+// backup_delete, restore_backup and backup_fetch.
 service BackupService {
   rpc ListBackupPolicies(ListBackupPoliciesRequest) returns (ListBackupPoliciesResponse);
   rpc GetBackupPolicy(GetBackupPolicyRequest) returns (BackupPolicy);
@@ -22,6 +29,15 @@ service BackupService {
   rpc GetBackupRun(GetBackupRunRequest) returns (BackupRun);
   rpc ListRestoreVerifications(ListRestoreVerificationsRequest) returns (ListRestoreVerificationsResponse);
   rpc ListBackupArtifacts(ListBackupArtifactsRequest) returns (ListBackupArtifactsResponse);
+  // v2.1.0. Signed backup destinations (credentials never returned).
+  rpc ListBackupDestinations(ListBackupDestinationsRequest) returns (ListBackupDestinationsResponse);
+  // v2.1.0. Streams one artifact's age ciphertext, exactly as stored, for
+  // Engine API backups.download; the Mac decrypts it with the owner recovery
+  // identity (D-049). The agent reads a LOCAL artifact itself and a remote
+  // one through the runner's read-only backup_fetch; it never decrypts.
+  // Read-only; one concurrent download per agent (RESOURCE_EXHAUSTED /
+  // RATE_LIMITED otherwise).
+  rpc ReadBackupArtifact(ReadBackupArtifactRequest) returns (stream BackupArtifactChunk);
 }
 
 message BackupSource {
@@ -54,6 +70,14 @@ message BackupDestination {
   string region = 5;
   // Name of the server-side credential; the value is never returned.
   string credential_ref = 6;
+  // v2.1.0. destination_id of the backup.destination.set action (UUIDv7);
+  // "" for the built-in LOCAL destination.
+  string id = 7;
+  string name = 8;
+  // v2.1.0. SHA-256 of the sealed credential ciphertext the plan signed
+  // ("" for LOCAL). The value is decrypted only by the runner.
+  string credential_ciphertext_digest_hex = 9;
+  string plan_digest_hex = 10;
 }
 
 message BackupRetention {
@@ -73,7 +97,10 @@ message BackupPolicy {
   string schedule = 6; // cron expression
   string timezone = 7;
   BackupRetention retention = 8;
-  // age recipient fingerprints the artifact is encrypted to.
+  // age recipient fingerprints the artifact is encrypted to. v2.1.0 (D-049):
+  // exactly two, in this order: hex SHA-256 of the server recipient
+  // (AgentInfo.age_recipient) and of the owner recovery recipient
+  // (AgentInfo.recovery_recipient_fingerprint).
   repeated string age_recipients = 9;
   // Verify-restore schedule, 5-field cron (the app defaults to weekly,
   // "0 4 * * 0"). "" = disabled (plan verify_schedule null).
@@ -89,6 +116,9 @@ message BackupPolicy {
   string plan_digest_hex = 17;
   // Per-run timeout (agent default 6 h; not a plan field in v2.0).
   uint32 timeout_seconds = 18;
+  // v2.1.0. The plan's destination_ref: a BackupDestination.id, or "" for the
+  // built-in LOCAL destination.
+  string destination_id = 19;
 }
 
 enum BackupRunStatus {
@@ -119,6 +149,9 @@ message BackupRun {
   string artifact_id = 8;
   string error = 9;
   string operation_id = 10;
+  // v2.1.0. Hex SHA-256 of the encrypted artifact (BackupArtifact
+  // content_digest_hex); "" until SUCCEEDED.
+  string content_digest_hex = 11;
 }
 
 enum RestoreVerificationStatus {
@@ -139,6 +172,10 @@ message RestoreVerification {
   google.protobuf.Timestamp finished_at = 6;
   repeated VerificationCheck checks = 7;
   string error = 8;
+  // v2.1.0. SCHEDULE (verify_schedule) or MANUAL (a backup.verify plan).
+  BackupRun.Trigger trigger = 9;
+  // v2.1.0. Set for a backup.verify plan.
+  string operation_id = 10;
 }
 
 message VerificationCheck {
@@ -214,4 +251,31 @@ message ListBackupArtifactsRequest {
 message ListBackupArtifactsResponse {
   repeated BackupArtifact artifacts = 1;
   PageInfo page = 2;
+}
+
+// v2.1.0.
+message ListBackupDestinationsRequest {
+  PageRequest page = 1;
+}
+
+message ListBackupDestinationsResponse {
+  repeated BackupDestination destinations = 1;
+  PageInfo page = 2;
+}
+
+message ReadBackupArtifactRequest {
+  string artifact_id = 1;
+  // Resume offset in bytes (0 = from the start).
+  uint64 offset = 2;
+}
+
+// BackupArtifactChunk frames are <= 1 MiB of ciphertext in order. The last
+// frame has last = true and repeats the artifact's content_digest_hex, which
+// the engine checks over the whole ciphertext before it decrypts.
+message BackupArtifactChunk {
+  uint64 offset = 1;
+  bytes data = 2;
+  uint64 total_bytes = 3;
+  bool last = 4;
+  string content_digest_hex = 5;
 }

@@ -27,6 +27,11 @@ message HelloRequest {
   // highest common one or fails with FAILED_PRECONDITION/PROTOCOL_VERSION.
   repeated string protocol_versions = 3;
   google.protobuf.Timestamp client_time = 4;
+  // v2.1.0. The Mac engine's install id (UUIDv7, stable per engine data
+  // directory). Only a connection whose client_name is "permanu-engine" and
+  // whose engine_id is set counts toward engine presence ("Mac online",
+  // agent-protocol.md 12). "" for other clients (tests, CLI probes).
+  string engine_id = 5;
 }
 
 message HelloResponse {
@@ -65,12 +70,35 @@ message HelloResponse {
   //                           from the permanu.environment and
   //                           permanu.service_kind labels. An engine requires
   //                           it before it submits a plan that names a spec.
+  // v2.1.0 adds (contracts v1.1.0, agent-protocol.md 2 and 9-13; Hello
+  // negotiates "2.1"). The illustrative ids above ("telemetry.logs",
+  // "schedules.cron", "backups", "alerts", "webhooks", "builds.server") are
+  // never advertised; these are the gates:
+  //   "telemetry.v1" - the telemetry store (retention, caps, redaction before
+  //                    write), log ingestion from the runner's
+  //                    logs_follow_stream, the OTLP listener (D-053, D-054)
+  //                    and every TelemetryService RPC served from the store.
+  //   "cron.v1"      - ScheduleService, the cron.* kinds and run_cron.
+  //   "backups.v1"   - BackupService, the backup.* kinds, restore,
+  //                    backup.destination.*, recovery_recipient.set (D-049).
+  //   "alerts.v1"    - AlertService, the alert.* kinds and the evaluator.
+  //   "webhooks.v1"  - webhook intake, WebhookService, rule.create /
+  //                    rule.revoke and rule-backed deploys built on the
+  //                    server by BuildKit (D-050).
+  //   "artifacts.v1" - ArtifactService.StageArtifact, release keys
+  //                    (release_key.*), and agent.update / component.update
+  //                    for runner and permanu-env are admitted (D-051; lifts
+  //                    the v2.0.6 NOT_SUPPORTED_YET refusal).
   repeated string capabilities = 3;
   ServerFacts server = 4;
   TrustedKeysSummary trusted_keys = 5;
   ClockInfo clock = 6;
   // Per-connection id for audit correlation.
   string session_id = 7;
+  // v2.1.0. Agent health, engine presence and the "while you were away"
+  // counters (agent-protocol.md 12). The same message is pushed as
+  // EventService EVENT_KIND_AGENT_STATUS.
+  AgentStatus status = 8;
 }
 
 message AgentInfo {
@@ -111,6 +139,97 @@ message AgentInfo {
   // age_recipient_fingerprint = hex SHA-256 of this string, else
   // BOOTSTRAP_REJECTED.
   string age_recipient = 10;
+  // v2.1.0 (D-051). /etc/permanu/release-keys.json, the pinned Ed25519
+  // release keys that must sign every bundle manifest the runner installs.
+  ReleaseKeysSummary release_keys = 11;
+  // v2.1.0 (D-049). Hex SHA-256 of the owner recovery age recipient string
+  // of the last admitted recovery_recipient.set; "" when none was admitted
+  // (then backup.policy.set and backup runs fail EXEC_PRECONDITION).
+  string recovery_recipient_fingerprint = 12;
+  // v2.1.0. Hex SHA-256 of /usr/lib/permanu/manifest.json, the installed
+  // server bundle (signed-plan.md 3.2 "Bundle manifest").
+  string bundle_manifest_digest_hex = 13;
+}
+
+// ReleaseKeysSummary describes /etc/permanu/release-keys.json (v2.1.0,
+// D-051, agent-protocol.md 10.4). The agent only reads it; the runner writes it
+// at server.add (from the signed bundle) and for release_key.add/revoke.
+message ReleaseKeysSummary {
+  // Hex SHA-256 of JCS(parsed file); "" when absent or unparseable.
+  string fingerprint_digest_hex = 1;
+  // Active (not revoked) key ids, sorted.
+  repeated string key_ids = 2;
+  TrustedKeysSummary.TrustState state = 3;
+  string invalid_reason = 4;
+  // True only on a dev/QA agent build that trusts the TEST release key. A
+  // production agent never does, and the runner refuses a manifest signed
+  // only by it.
+  bool test_key_trusted = 5;
+}
+
+// AgentStatus is the agent-side source of the Engine API servers.agent_status
+// fields (agent-protocol.md 12.3).
+message AgentStatus {
+  enum Health {
+    HEALTH_UNSPECIFIED = 0;
+    HEALTH_OK = 1;
+    // Serving, with at least one degraded_reasons entry.
+    HEALTH_DEGRADED = 2;
+    // AgentInfo.quarantined or StateHead.quarantined; mutations fail.
+    HEALTH_QUARANTINED = 3;
+  }
+  Health health = 1;
+  // Stable lowercase ids, sorted: "runner_unreachable", "telemetry_dropping",
+  // "telemetry_ingest_paused", "otlp_unbound", "buildkit_unavailable",
+  // "disk_pressure", "clock_unsynced", "trust_store_invalid",
+  // "release_keys_invalid", "recovery_recipient_missing",
+  // "scheduler_behind". Clients show an unknown id verbatim.
+  repeated string degraded_reasons = 2;
+  // True while at least one engine session is live (agent-protocol.md 12.1).
+  bool engine_online = 3;
+  // Last time any engine session was live; unset if none ever connected.
+  google.protobuf.Timestamp engine_last_seen_at = 4;
+  // engine_id of the most recent engine session.
+  string engine_id = 5;
+  // The "while you were away" counters (agent-protocol.md 12.2).
+  AwaySummary away = 6;
+  uint32 alerts_firing = 7;
+  uint32 webhook_pending = 8;
+  uint32 cron_jobs = 9;
+  google.protobuf.Timestamp next_cron_run_at = 10;
+  google.protobuf.Timestamp next_backup_at = 11;
+  // Last scheduled verify-restore that passed, over every policy.
+  google.protobuf.Timestamp last_verify_passed_at = 12;
+  bool server_builds_enabled = 13;
+  // "<gateway ipv4>:4317" / "<gateway ipv4>:4318" while bound; "" otherwise.
+  string otlp_grpc_listen = 14;
+  string otlp_http_listen = 15;
+  // Sum of TelemetryUsage.bytes_used over every kind.
+  uint64 telemetry_bytes_used = 16;
+  google.protobuf.Timestamp computed_at = 17;
+}
+
+// AwaySummary counts what the server did during the most recent period with
+// no engine session (agent-protocol.md 12.2). While offline the counters grow
+// and until is unset; when a session starts, until is set and the summary is
+// frozen, so every connection of that engine sees the same values until the
+// next offline period begins. All zero and unset before the first session.
+message AwaySummary {
+  // When the previous engine session ended.
+  google.protobuf.Timestamp since = 1;
+  uint32 operations = 2;
+  uint32 operations_failed = 3;
+  // Rule-backed deploys admitted from webhooks.
+  uint32 rule_deploys = 4;
+  uint32 server_builds_failed = 5;
+  uint32 webhook_deliveries = 6;
+  uint32 alerts_fired = 7;
+  uint32 cron_runs_failed = 8;
+  uint32 cron_runs_missed = 9;
+  uint32 backups_failed = 10;
+  uint32 verifications_failed = 11;
+  // When the current engine session started; unset while still offline.
+  google.protobuf.Timestamp until = 12;
 }
 
 message TrustedKeysSummary {

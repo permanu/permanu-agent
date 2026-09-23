@@ -21,6 +21,13 @@ import "agent/v2/common.proto";
 // body_digest_hex is unique (duplicates are DUPLICATE); a delivery older than
 // 15 minutes (received_at) never backs a plan (STALE); a commit that is not
 // newer than the branch's deployed commit is IGNORED.
+//
+// v2.1.0 (capability "webhooks.v1", agent-protocol.md 11): Dwaar forwards
+// POST /hooks/<project_id> to the agent's listener on 127.0.0.1:7461; the
+// runner verifies the provider HMAC (webhook_verify, the secret is sealed);
+// rule-backed deploys are always built on the server by rootless BuildKit as
+// user permanu-build (runner op build_image, D-050). Unmatched deliveries wait
+// PENDING for the engine until they expire (7 days).
 service WebhookService {
   rpc ListWebhookDeliveries(ListWebhookDeliveriesRequest) returns (ListWebhookDeliveriesResponse);
   rpc GetWebhookDelivery(GetWebhookDeliveryRequest) returns (WebhookDelivery);
@@ -32,7 +39,10 @@ service WebhookService {
 enum WebhookDeliveryStatus {
   WEBHOOK_DELIVERY_STATUS_UNSPECIFIED = 0;
   WEBHOOK_DELIVERY_STATUS_PENDING = 1;          // queued, waiting for engine or rule
-  WEBHOOK_DELIVERY_STATUS_CLAIMED_BY_ENGINE = 2; // a Mac engine took it
+  // Never set from v2.1.0: the engine tracks what it has seen with
+  // ListWebhookDeliveriesRequest.after_delivery_id, and nothing claims a
+  // delivery (a claim would be an unsigned server change).
+  WEBHOOK_DELIVERY_STATUS_CLAIMED_BY_ENGINE = 2;
   WEBHOOK_DELIVERY_STATUS_BUILDING = 3;         // on-server build in progress
   WEBHOOK_DELIVERY_STATUS_DEPLOYED = 4;
   WEBHOOK_DELIVERY_STATUS_IGNORED = 5;          // no matching project/branch/rule
@@ -77,6 +87,8 @@ message WebhookDelivery {
   repeated string consumed_by_rule_ids = 23;
   // Commit timestamp from the push payload (RuleInvocation.evidence.commit_time).
   google.protobuf.Timestamp commit_time = 24;
+  // v2.1.0. When a PENDING delivery becomes EXPIRED (received_at + 7 days).
+  google.protobuf.Timestamp expires_at = 25;
 }
 
 message ListWebhookDeliveriesRequest {
@@ -84,6 +96,9 @@ message ListWebhookDeliveriesRequest {
   string project_id = 2;
   TimeRange range = 3;
   PageRequest page = 4; // newest first
+  // v2.1.0. When set, deliveries with an id greater than this one (UUIDv7
+  // order) in ascending order, for the engine's offline reconcile.
+  string after_delivery_id = 5;
 }
 
 message ListWebhookDeliveriesResponse {
@@ -108,6 +123,13 @@ message WebhookQueueStatus {
   google.protobuf.Timestamp engine_last_seen_at = 7;
   // Whether on-server builds are possible (BuildKit present, capability on).
   bool server_builds_enabled = 8;
+  // v2.1.0. engine_id of the connected (or last) engine session.
+  string engine_id = 9;
+  uint32 duplicates_24h = 10;
+  // Deliveries that failed the HMAC or token check in the last 24 h.
+  uint32 rejected_24h = 11;
+  // Builds waiting for the single build slot.
+  uint32 builds_queued = 12;
 }
 
 enum ServerBuildStatus {
@@ -139,6 +161,13 @@ message ServerBuild {
   string operation_id = 12;
   string standing_rule_id = 13;
   string error = 14;
+  // v2.1.0. OCI platform built, e.g. "linux/amd64" (the server's arch).
+  string platform = 15;
+  string environment_id = 16;
+  // v2.1.0. Engine API DeployFailureCode "build" sub-reason when FAILED:
+  // "source_fetch", "recipe_missing", "build", "timeout", "cache_full",
+  // "buildkit_unavailable". Empty otherwise.
+  string failure_reason = 17;
 }
 
 message ListServerBuildsRequest {

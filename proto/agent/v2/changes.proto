@@ -147,6 +147,11 @@ message Operation {
 //   restart_release, cleanup_candidate, cancel_execution, install_artifact,
 //   update_agent (v2.0.4, D-040), update_trusted_keys
 //                                                - the runner op being run
+//   v2.1.0 (agent-protocol.md 10, 11, 13): run_cron, backup_run,
+//   backup_verify, backup_prune, backup_delete, restore_backup, build_image,
+//   update_release_keys; install_artifact and update_agent run for real
+//   (D-051). stage_artifact_verify, notify_channel, webhook_verify and
+//   backup_fetch are unbound and never appear as steps.
 //   succeeded, failed, rolled_back, cancelled, expired
 //                                                - final step of one action
 // Clients show an unknown name as a generic step.
@@ -364,4 +369,116 @@ message TrustedKeySet {
 
 message GetTrustedKeysRequest {
   bool include_revoked = 1;
+}
+
+// ArtifactService stages release artifacts on the server for an admitted (or
+// about to be submitted) agent.update or component.update plan (v2.1.0,
+// capability "artifacts.v1", D-051, agent-protocol.md 13). Staging is not a
+// server change: the files land in /var/lib/permanu/staging/<stage_id>/, are
+// never executed from there, and install only when the runner's
+// install_artifact or update_agent, bound to an owner-signed plan pinning
+// bundle_manifest_digest_hex, copies them out and verifies them against a
+// manifest signed by a pinned release key.
+service ArtifactService {
+  // StageArtifact uploads one staged set: a StageHeader frame, then for each
+  // file a StageFile frame followed by its StageChunk frames, then StageCommit.
+  // On commit the agent calls the runner's read-only stage_artifact_verify and
+  // returns its verdict; a rejected set is deleted (FAILED_PRECONDITION +
+  // ARTIFACT_REJECTED, runner code in the status message).
+  rpc StageArtifact(stream StageArtifactRequest) returns (StageArtifactResponse);
+  rpc ListStagedArtifacts(ListStagedArtifactsRequest) returns (ListStagedArtifactsResponse);
+  // GetReleaseKeys returns /etc/permanu/release-keys.json as stored.
+  rpc GetReleaseKeys(GetReleaseKeysRequest) returns (ReleaseKeySet);
+}
+
+message StageArtifactRequest {
+  oneof frame {
+    StageHeader header = 1;
+    StageFile file = 2;
+    StageChunk chunk = 3;
+    StageCommit commit = 4;
+  }
+}
+
+message StageHeader {
+  // Client-minted UUIDv7; re-staging the same id replaces an uncommitted set
+  // and is ALREADY_EXISTS for a committed one.
+  string stage_id = 1;
+  // Hex SHA-256 of the manifest.json bytes this set carries; it must equal
+  // the plan's bundle_manifest_digest_hex for the set to be installable.
+  string bundle_manifest_digest_hex = 2;
+  // Target arch, "amd64" | "arm64"; must equal ServerFacts.arch.
+  string arch = 3;
+}
+
+message StageFile {
+  // "manifest.json", "manifest.json.sig" (the detached Ed25519 signature by
+  // a release key, signed-plan.md 3.2 "Bundle manifest"), or a manifest
+  // entry's file name (e.g. "permanu-agent-linux-arm64").
+  string name = 1;
+  uint64 size_bytes = 2;
+  // Hex SHA-256 of the file.
+  string digest_hex = 3;
+}
+
+message StageChunk {
+  // <= 1 MiB, in order; the agent rejects a gap or overrun.
+  bytes data = 1;
+}
+
+message StageCommit {}
+
+message StageArtifactResponse {
+  StagedArtifactSet set = 1;
+}
+
+message StagedArtifactSet {
+  string stage_id = 1;
+  string bundle_manifest_digest_hex = 2;
+  string arch = 3;
+  repeated StageFile files = 4;
+  google.protobuf.Timestamp staged_at = 5;
+  // staged_at + 24 h, or earlier once an install consumed it.
+  google.protobuf.Timestamp expires_at = 6;
+  // stage_artifact_verify passed at commit (the runner checks again, on its
+  // own copy, when it installs).
+  bool verified = 7;
+  // key_id of the release key whose signature verified.
+  string release_key_id = 8;
+  // Component entries of the verified manifest for this arch, e.g.
+  // "permanu-agent 2.1.0".
+  repeated string components = 9;
+}
+
+message ListStagedArtifactsRequest {
+  PageRequest page = 1;
+}
+
+message ListStagedArtifactsResponse {
+  repeated StagedArtifactSet sets = 1;
+  PageInfo page = 2;
+}
+
+message GetReleaseKeysRequest {}
+
+// ReleaseKey mirrors one entry of /etc/permanu/release-keys.json (D-051).
+message ReleaseKey {
+  string key_id = 1;
+  string alg = 2; // "Ed25519"
+  // 32-byte raw Ed25519 public key.
+  bytes public_key = 3;
+  string label = 4;
+  google.protobuf.Timestamp added_at = 5;
+  bool revoked = 6;
+  google.protobuf.Timestamp revoked_at = 7;
+  // True for the public TEST release key (dev/QA only; refused in
+  // production mode).
+  bool test = 8;
+}
+
+message ReleaseKeySet {
+  repeated ReleaseKey keys = 1;
+  string fingerprint_digest_hex = 2;
+  // The file bytes as stored.
+  bytes release_keys_json = 3;
 }
