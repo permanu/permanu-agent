@@ -1,4 +1,4 @@
-//! Contract vectors (contracts-v1.0.2): JCS, digests, signatures, the trust
+//! Contract vectors (contracts-v1.0.4): JCS, digests, signatures, the trust
 //! store, every policy case through the full ordered verifier (steps 1–12)
 //! and the bootstrap cases.
 
@@ -50,11 +50,11 @@ fn plan_vectors_match_jcs_digest_specs_and_signatures() {
 #[test]
 fn state_head_chain_matches_the_worked_vector() {
     let before = "4a98af3eeae054bf7585746ce20fa5907ec9c079ee1b049a7d01146d1c92ebfb";
-    let digest = "2f95d6f908b7513e1f599cfc7cd2475e9e631bfcc6afe973248e5364acdb0962";
+    let digest = "4764d0506dfacf4f8c036562fac7184e6a7a1faae7a45916772be562310a2d76";
     let after = next_head(before, digest);
     assert_eq!(
         after,
-        "42a7cd654847d00d1de9ad06f62d672f7fad05a37d898281a12e2c3879c26262"
+        "2667f951c69c97b62787014df252d190d4216b33547776aee4c049bc54bede9c"
     );
     assert_eq!(
         vector("plans")["extras"]["state_head_after_user_deploy_hex"],
@@ -112,7 +112,7 @@ fn expected(expect: &str) -> Result<&'static str, PlanCode> {
 fn every_policy_case_returns_the_contract_code() {
     let cases = vector("policy-cases");
     let cases = cases["cases"].as_array().expect("cases");
-    assert_eq!(cases.len(), 72);
+    assert_eq!(cases.len(), 78);
     for case in cases {
         let name = case["name"].as_str().unwrap();
         let context = VectorContext::new(case["mode"] == "production");

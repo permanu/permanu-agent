@@ -19,6 +19,9 @@ service TelemetryService {
   // QueryLogs streams matching log records in the query's direction
   // (ascending by default, descending for BACKWARD), then (follow=true,
   // FORWARD only) continues with live records until the client cancels.
+  // v2.0.3 (D-036): with capability "logs.containers.v1" the agent serves
+  // APP and SERVICE sources from the runner's read-only container ops
+  // (signed-plan.md 14.3) until the M2 telemetry store takes over.
   rpc QueryLogs(LogQuery) returns (stream LogQueryResponse);
   // SearchTraces streams trace summaries matching the search.
   rpc SearchTraces(TraceSearch) returns (stream TraceSearchResponse);

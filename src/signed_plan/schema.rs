@@ -279,7 +279,7 @@ pub(crate) fn spec_elevated(spec: &Value) -> bool {
 }
 
 mod actions;
-pub(crate) use actions::{validate_plan, SPEC_KINDS};
+pub(crate) use actions::{rollback_target, validate_plan, SPEC_KINDS};
 
 const EVIDENCE: Shape = Shape::Object(&[
     (

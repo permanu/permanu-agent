@@ -1,11 +1,13 @@
 //! Local mode: agent protocol v2 served on a unix socket (agent-protocol.md).
 //!
 //! Served: `InfoService` (Hello with trust state and age recipient,
-//! GetServerFacts, Ping), `StateService.ListContainers`, `ChangeService`
-//! (signed-plan admission, operations, heads, admissions, rules, trusted
-//! keys) and `EventService.Subscribe`. Every other v2 RPC answers
-//! `UNIMPLEMENTED` with the `ERROR_REASON_CAPABILITY_MISSING` trailer. The
-//! only path that changes the host is an admitted signed plan.
+//! GetServerFacts, Ping), `StateService.ListContainers` and
+//! `TelemetryService.QueryLogs` (both through the runner's read-only
+//! container ops, D-036), `ChangeService` (signed-plan admission,
+//! operations, heads, admissions, rules, trusted keys) and
+//! `EventService.Subscribe`. Every other v2 RPC answers `UNIMPLEMENTED` with
+//! the `ERROR_REASON_CAPABILITY_MISSING` trailer. The only path that changes
+//! the host is an admitted signed plan.
 
 pub mod age_recipient;
 pub mod change;
@@ -13,6 +15,7 @@ pub mod errors;
 pub mod events;
 pub mod execution;
 pub mod facts;
+pub mod logs;
 pub mod runner;
 pub mod socket;
 
@@ -41,6 +44,7 @@ use crate::{
         event_service_server::EventServiceServer,
         info_service_server::{InfoService, InfoServiceServer},
         state_service_server::{StateService, StateServiceServer},
+        telemetry_service_server::TelemetryServiceServer,
         trusted_keys_summary::TrustState as TrustStateProto,
         AgentInfo, ClockInfo, Container, ErrorReason, GetServerFactsRequest,
         GetStateSnapshotRequest, HelloRequest, HelloResponse, ListContainersRequest,
@@ -59,6 +63,11 @@ pub const PROTOCOL_VERSION: &str = "2.0";
 pub const CAPABILITY_SIGNED_PLANS: &str = "signed_plans.v1";
 pub const CAPABILITY_ADMISSIONS: &str = "admissions.v1";
 pub const CAPABILITY_AGE: &str = "age.v1";
+/// v2.0.3 (D-035): the agent copies signed deployment ids and never mints.
+pub const CAPABILITY_DEPLOYMENT_IDS: &str = "deployment_ids.v1";
+/// v2.0.3 (D-036): QueryLogs serves APP and SERVICE from the runner's
+/// read-only container ops.
+pub const CAPABILITY_LOGS_CONTAINERS: &str = "logs.containers.v1";
 pub const ERROR_REASON_HEADER: &str = "permanu-error-reason";
 /// agent-protocol.md section 7.
 pub const MAX_MESSAGE_BYTES: usize = 4 * 1024 * 1024;
@@ -242,6 +251,8 @@ fn capabilities(age_recipient: &str) -> Vec<String> {
     let mut ids = vec![
         CAPABILITY_SIGNED_PLANS.to_string(),
         CAPABILITY_ADMISSIONS.to_string(),
+        CAPABILITY_DEPLOYMENT_IDS.to_string(),
+        CAPABILITY_LOGS_CONTAINERS.to_string(),
     ];
     if !age_recipient.is_empty() {
         ids.push(CAPABILITY_AGE.to_string());
@@ -325,7 +336,7 @@ fn matches_field(filter: &str, value: &str) -> bool {
     filter.is_empty() || filter == value
 }
 
-fn capability_missing() -> Status {
+pub(crate) fn capability_missing() -> Status {
     status_with_reason(
         Code::Unimplemented,
         "not available on this agent",
@@ -398,10 +409,14 @@ impl LocalServer {
             // End open Subscribe/WatchOperation streams so the server drains.
             bus.close();
         };
+        let runner = self.core.runner.clone();
         let change_svc = ChangeServiceServer::new(change::ChangeSvc { core: self.core })
             .max_decoding_message_size(MAX_MESSAGE_BYTES)
             .max_encoding_message_size(MAX_MESSAGE_BYTES);
         let event_svc = EventServiceServer::new(events::EventSvc { bus: events })
+            .max_decoding_message_size(MAX_MESSAGE_BYTES)
+            .max_encoding_message_size(MAX_MESSAGE_BYTES);
+        let telemetry_svc = TelemetryServiceServer::new(logs::TelemetrySvc::new(runner))
             .max_decoding_message_size(MAX_MESSAGE_BYTES)
             .max_encoding_message_size(MAX_MESSAGE_BYTES);
 
@@ -414,6 +429,7 @@ impl LocalServer {
             .add_service(state_svc)
             .add_service(change_svc)
             .add_service(event_svc)
+            .add_service(telemetry_svc)
             .serve_with_incoming_shutdown(logged_incoming(listener), shutdown)
             .await
     }
@@ -436,28 +452,39 @@ fn logged_incoming(
     })
 }
 
-/// `permanu-agent:permanu-runner` when the agent runs as root and both
-/// exist (D-022); otherwise the store keeps the process's own ids.
+/// `permanu-agent:permanu-runner` for the store files (D-022, section 6.3).
 fn store_owner(cfg: &LocalConfig) -> Option<StoreOwner> {
     // SAFETY: geteuid has no preconditions.
-    if unsafe { libc::geteuid() } != 0 {
-        return None;
+    let euid = unsafe { libc::geteuid() };
+    let owner = store_owner_from(
+        euid,
+        socket::resolve_user(&cfg.store_user),
+        socket::resolve_group(&cfg.store_group),
+    );
+    if owner.is_none() {
+        warn!(
+            user = %cfg.store_user,
+            group = %cfg.store_group,
+            "store group missing; admissions.db keeps the agent's own group"
+        );
     }
-    let uid = socket::resolve_user(&cfg.store_user);
-    let gid = socket::resolve_group(&cfg.store_group);
-    match (uid, gid) {
-        (Ok(uid), Ok(gid)) => Some(StoreOwner { uid, gid }),
-        (uid, gid) => {
-            warn!(
-                user = %cfg.store_user,
-                group = %cfg.store_group,
-                user_found = uid.is_ok(),
-                group_found = gid.is_ok(),
-                "store owner or group missing; admissions.db stays root-owned (the runner, as root, can still read it)"
-            );
-            gid.ok().map(|gid| StoreOwner { uid: 0, gid })
-        }
-    }
+    owner
+}
+
+/// The store group is required: a non-root agent (the server layout, D-030)
+/// keeps its own uid and chowns only the group, which it may because it is
+/// a supplementary member (F-16); root also sets the `permanu-agent` uid.
+fn store_owner_from(
+    euid: u32,
+    user: std::io::Result<u32>,
+    group: std::io::Result<u32>,
+) -> Option<StoreOwner> {
+    let gid = group.ok()?;
+    let uid = match (euid, user) {
+        (0, Ok(uid)) => uid,
+        (euid, _) => euid,
+    };
+    Some(StoreOwner { uid, gid })
 }
 
 /// Binds the configured socket and serves v2 until `shutdown` resolves.
@@ -500,16 +527,18 @@ pub async fn run(
             }
         };
     let runner: Arc<dyn runner::Runner> = match &cfg.runner_path {
+        #[cfg(feature = "dev-paths")]
         Some(program) => Arc::new(runner::StdioRunner {
             program: program.clone(),
         }),
-        None => Arc::new(runner::SocketRunner {
+        _ => Arc::new(runner::SocketRunner {
             path: cfg.runner_socket.clone(),
         }),
     };
     let probe: Arc<dyn HostProbe> = Arc::new(facts::SystemProbe {
         server_id,
         ssh_host_key_dir: cfg.ssh_host_key_dir.clone(),
+        runner: runner.clone(),
     });
     let core = execution::ChangeCore::new(execution::ChangeCoreParts {
         store: Arc::new(store),
@@ -578,12 +607,52 @@ mod tests {
             .map(str::to_string)
     }
 
+    // Section 6.3 (F-16): the non-root agent still puts its store in group
+    // permanu-runner (it is a supplementary member); root chowns both.
+    #[test]
+    fn store_owner_uses_the_store_group_even_when_not_root() {
+        let missing = || Err(std::io::Error::other("missing"));
+        assert_eq!(
+            store_owner_from(1000, Ok(2000), Ok(3000)),
+            Some(StoreOwner {
+                uid: 1000,
+                gid: 3000
+            })
+        );
+        assert_eq!(
+            store_owner_from(0, Ok(2000), Ok(3000)),
+            Some(StoreOwner {
+                uid: 2000,
+                gid: 3000
+            })
+        );
+        assert_eq!(store_owner_from(1000, Ok(2000), missing()), None);
+        assert_eq!(
+            store_owner_from(0, missing(), Ok(3000)),
+            Some(StoreOwner { uid: 0, gid: 3000 })
+        );
+    }
+
     #[test]
     fn age_capability_needs_a_recipient() {
-        assert_eq!(capabilities(""), vec!["signed_plans.v1", "admissions.v1"]);
+        assert_eq!(
+            capabilities(""),
+            vec![
+                "signed_plans.v1",
+                "admissions.v1",
+                "deployment_ids.v1",
+                "logs.containers.v1"
+            ]
+        );
         assert_eq!(
             capabilities("age1xyz"),
-            vec!["signed_plans.v1", "admissions.v1", "age.v1"]
+            vec![
+                "signed_plans.v1",
+                "admissions.v1",
+                "deployment_ids.v1",
+                "logs.containers.v1",
+                "age.v1"
+            ]
         );
     }
 
@@ -630,7 +699,13 @@ mod tests {
         assert_eq!(hello.session_id.len(), 32);
         assert_eq!(
             hello.capabilities,
-            vec!["signed_plans.v1", "admissions.v1", "age.v1"]
+            vec![
+                "signed_plans.v1",
+                "admissions.v1",
+                "deployment_ids.v1",
+                "logs.containers.v1",
+                "age.v1"
+            ]
         );
 
         let facts = client

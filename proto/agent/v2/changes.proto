@@ -137,7 +137,8 @@ message Operation {
 //   admitted, queued, bound                      - lifecycle of the plan/action
 //   prepare_release, verify_health, activate_release, rollback_release,
 //   restart_release, cleanup_candidate, cancel_execution, install_artifact,
-//   update_trusted_keys                          - the runner op being run
+//   update_agent (v2.0.4, D-040), update_trusted_keys
+//                                                - the runner op being run
 //   succeeded, failed, rolled_back, cancelled, expired
 //                                                - final step of one action
 // Clients show an unknown name as a generic step.
@@ -152,8 +153,11 @@ message OperationStep {
   string error = 7;
   // Index into plan.actions.
   uint32 action_index = 8;
-  // v2.0.2. admission_actions.deployment_id of the action (UUIDv7 minted at
-  // admission for deploy/rollback/restart/scale); empty for other kinds.
+  // v2.0.2. admission_actions.deployment_id of the action. v2.0.3 (D-035):
+  // copied from the signed plan, never minted by the agent: a deploy's
+  // params.deployment_id (the release's id), a rollback's
+  // params.to_deployment_id (the release it returns to); empty for other
+  // kinds.
   string deployment_id = 9;
   // v2.0.2. Engine API DeployFailureCode when the step failed ("build",
   // "prepare", "start", "candidate_health", "activate", "public_health",

@@ -37,6 +37,12 @@ const ALERT_CHANNEL: &[(&str, Shape)] = &[
 ];
 const CRON_ID: &[(&str, Shape)] = &[("cron_id", UUID7)];
 const SIZE: Shape = Shape::Int(1 << 30, 1 << 46);
+/// `rollback` with the deprecated `to_release_id` alias (v1.0.3, D-035).
+const ROLLBACK_LEGACY: &[(&str, Shape)] = &[
+    ("service_id", UUID7),
+    ("to_release_id", UUID7),
+    ("spec_digest_hex", HEX64),
+];
 
 fn env_map(value: &Value) -> bool {
     value.as_object().is_some_and(|map| {
@@ -55,10 +61,14 @@ fn params_for(kind: &str) -> Option<&'static [(&'static str, Shape)]> {
             ("service_id", UUID7),
             ("commit_sha", Shape::Nullable(&Shape::Pattern(text::hex40))),
             ("spec_digest_hex", HEX64),
+            // v1.0.3 (D-035): minted by the plan's author, copied by the agent.
+            ("deployment_id", UUID7),
         ],
+        // v1.0.3 (D-035); `to_release_id` is the deprecated alias
+        // (`ROLLBACK_LEGACY`), exactly one of the two.
         "rollback" => &[
             ("service_id", UUID7),
-            ("to_release_id", UUID7),
+            ("to_deployment_id", UUID7),
             ("spec_digest_hex", HEX64),
         ],
         "restart" | "service.elevate" => &[("service_id", UUID7), ("spec_digest_hex", HEX64)],
@@ -163,14 +173,16 @@ fn params_for(kind: &str) -> Option<&'static [(&'static str, Shape)]> {
             ("bundle_manifest_digest_hex", HEX64),
         ],
         "server.remove" => &[("server_id", UUID7), ("wipe", Shape::Bool)],
+        // v1.0.4 (D-040): the bundle manifest is signed too.
         "agent.update" => &[
             ("version", Shape::Pattern(text::semver)),
             ("artifact_digest_hex", HEX64),
+            ("bundle_manifest_digest_hex", HEX64),
         ],
         "component.update" => &[
             (
                 "component",
-                Shape::Enum(&["dwaar", "runner", "os_packages"]),
+                Shape::Enum(&["dwaar", "runner", "permanu-env", "os_packages"]),
             ),
             ("version", Shape::Text(1, 64)),
             ("artifact_digest_hex", Shape::Nullable(&HEX64)),
@@ -186,6 +198,24 @@ fn params_for(kind: &str) -> Option<&'static [(&'static str, Shape)]> {
         "key.revoke" => &[("revocation", REVOCATION)],
         _ => return None,
     })
+}
+
+/// The params shape of one action: a `rollback` carrying the deprecated
+/// `to_release_id` is checked against the alias shape, so an action with
+/// both names (or neither) fails `E_PARSE` (v1.0.3, D-035).
+fn params_of(kind: &str, params: Option<&Value>) -> Option<&'static [(&'static str, Shape)]> {
+    if kind == "rollback" && params.is_some_and(|p| p.get("to_release_id").is_some()) {
+        return Some(ROLLBACK_LEGACY);
+    }
+    params_for(kind)
+}
+
+/// The deployment id a rollback returns to: `to_deployment_id`, or its
+/// deprecated alias `to_release_id` (v1.0.3, D-035).
+pub(crate) fn rollback_target(params: &Value) -> Option<&str> {
+    params["to_deployment_id"]
+        .as_str()
+        .or_else(|| params["to_release_id"].as_str())
 }
 
 /// Kinds whose action pins a `ServiceSpec` by digest (section 3.7).
@@ -225,7 +255,7 @@ fn actions(value: &Value) -> bool {
                         && map
                             .get("kind")
                             .and_then(Value::as_str)
-                            .and_then(params_for)
+                            .and_then(|kind| params_of(kind, map.get("params")))
                             .is_some_and(|params| {
                                 map.get("params")
                                     .is_some_and(|value| check(&Shape::Object(params), value))
@@ -300,6 +330,16 @@ fn plan_rules_hold(plan: &Value) -> bool {
         .filter_map(|action| action["params"].get("service_id").and_then(Value::as_str))
         .collect();
     if used != super::string_set(&plan["service_ids"]) {
+        return false;
+    }
+    // v1.0.3 (D-035): deployment ids are distinct within one plan.
+    let deployment_ids: Vec<&str> = actions
+        .iter()
+        .filter(|action| action["kind"] == "deploy")
+        .filter_map(|action| action["params"]["deployment_id"].as_str())
+        .collect();
+    let distinct: std::collections::BTreeSet<&str> = deployment_ids.iter().copied().collect();
+    if distinct.len() != deployment_ids.len() {
         return false;
     }
     actions.iter().all(|action| action_rules_hold(plan, action))

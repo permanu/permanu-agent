@@ -474,6 +474,9 @@ fn fresh_deploy(signer: &TestSigner, id_tail: &str, nonce: &str, head: &str) -> 
     plan["id"] = Value::String(format!("01a0cdb5-3500-7001-8000-{id_tail}"));
     plan["nonce"] = Value::String(nonce.to_owned());
     plan["base"]["heads"][SERVER_A] = Value::String(head.to_owned());
+    // D-035: every deploy carries its own engine-minted deployment id.
+    plan["actions"][0]["params"]["deployment_id"] =
+        Value::String(format!("01a0cdb5-3500-70c7-8000-{id_tail}"));
     let spec_digest = crate::signed_plan::crypto::hex(
         &crate::signed_plan::crypto::prefixed_digest(SPEC_PREFIX, &spec),
     );
@@ -758,6 +761,184 @@ async fn failed_health_rolls_back_to_the_previous_release() {
     let last = op.steps.last().unwrap();
     assert_eq!(last.state, OperationState::RolledBack as i32);
     assert_eq!(last.failure_code, "candidate_health");
+    h.stop().await;
+}
+
+/// A first successful deploy, so the service has an active release; returns
+/// the head the next plan builds on.
+async fn first_release(h: &Harness, owner: &TestSigner, tail: &str, nonce: &str) -> String {
+    let first = submit_ok(h, fresh_deploy(owner, tail, nonce, GENESIS_HEAD)).await;
+    wait_for_state(h, &first.operation_id, OperationState::Succeeded).await;
+    next_head(GENESIS_HEAD, &first.plan_digest_hex)
+}
+
+fn final_step(op: &Operation) -> (String, i32, String) {
+    let last = op.steps.last().unwrap();
+    (last.name.clone(), last.state, last.failure_code.clone())
+}
+
+// D-038 (signed-plan 14.6): a failed prepare_release cleans the candidate
+// up, even when the service has an earlier release to return to.
+#[tokio::test]
+async fn a_failed_prepare_cleans_up_the_candidate() {
+    let Some(owner) = TestSigner::load("owner") else {
+        eprintln!("skipped: docs keys.json not found");
+        return;
+    };
+    let h = Harness::start("prepfail", Some(&vector_trust())).await;
+    let head = first_release(&h, &owner, "0000000000a3", "GAAAAAAAAAAAAAAAAAAAAA").await;
+    h.runner
+        .behave("prepare_release", OpBehavior::Fail("pull_failed"));
+    let second = submit_ok(
+        &h,
+        fresh_deploy(&owner, "0000000000a4", "HAAAAAAAAAAAAAAAAAAAAA", &head),
+    )
+    .await;
+    wait_for_state(&h, &second.operation_id, OperationState::Failed).await;
+    assert_eq!(
+        h.runner.ops_for(&second.plan_id),
+        vec![
+            ("prepare_release".to_owned(), 0),
+            ("cleanup_candidate".to_owned(), 0),
+        ]
+    );
+    let op = operation(&h, &second.operation_id).await;
+    assert_eq!(
+        final_step(&op),
+        (
+            "failed".to_owned(),
+            OperationState::Failed as i32,
+            "prepare".to_owned()
+        )
+    );
+    h.stop().await;
+}
+
+// D-038: a failed activate_release rolls back when there is an earlier
+// release; the runner's error.failure_code (public_health) is kept.
+#[tokio::test]
+async fn a_failed_activate_rolls_back_to_the_previous_release() {
+    let Some(owner) = TestSigner::load("owner") else {
+        eprintln!("skipped: docs keys.json not found");
+        return;
+    };
+    let h = Harness::start("actfail", Some(&vector_trust())).await;
+    let head = first_release(&h, &owner, "0000000000a5", "IAAAAAAAAAAAAAAAAAAAAA").await;
+    h.runner.behave(
+        "activate_release",
+        OpBehavior::FailCode("health_failed", "public_health"),
+    );
+    let second = submit_ok(
+        &h,
+        fresh_deploy(&owner, "0000000000a6", "JAAAAAAAAAAAAAAAAAAAAA", &head),
+    )
+    .await;
+    wait_for_state(&h, &second.operation_id, OperationState::RolledBack).await;
+    assert_eq!(
+        h.runner.ops_for(&second.plan_id),
+        vec![
+            ("prepare_release".to_owned(), 0),
+            ("verify_health".to_owned(), 0),
+            ("activate_release".to_owned(), 0),
+            ("rollback_release".to_owned(), 0),
+        ]
+    );
+    let op = operation(&h, &second.operation_id).await;
+    let activate = op
+        .steps
+        .iter()
+        .find(|s| s.name == "activate_release")
+        .unwrap();
+    assert_eq!(activate.failure_code, "public_health");
+    assert_eq!(
+        final_step(&op),
+        (
+            "rolled_back".to_owned(),
+            OperationState::RolledBack as i32,
+            "public_health".to_owned()
+        )
+    );
+    h.stop().await;
+}
+
+// D-038: a failed activate_release with no earlier release cleans up.
+#[tokio::test]
+async fn a_failed_activate_without_a_previous_release_cleans_up() {
+    let Some(owner) = TestSigner::load("owner") else {
+        eprintln!("skipped: docs keys.json not found");
+        return;
+    };
+    let h = Harness::start("actclean", Some(&vector_trust())).await;
+    h.runner
+        .behave("activate_release", OpBehavior::Fail("activate_failed"));
+    let reference = submit_ok(
+        &h,
+        fresh_deploy(
+            &owner,
+            "0000000000a7",
+            "KAAAAAAAAAAAAAAAAAAAAA",
+            GENESIS_HEAD,
+        ),
+    )
+    .await;
+    wait_for_state(&h, &reference.operation_id, OperationState::Failed).await;
+    assert_eq!(
+        h.runner.ops_for(&reference.plan_id),
+        vec![
+            ("prepare_release".to_owned(), 0),
+            ("verify_health".to_owned(), 0),
+            ("activate_release".to_owned(), 0),
+            ("cleanup_candidate".to_owned(), 0),
+        ]
+    );
+    let op = operation(&h, &reference.operation_id).await;
+    assert_eq!(
+        final_step(&op),
+        (
+            "failed".to_owned(),
+            OperationState::Failed as i32,
+            "activate".to_owned()
+        )
+    );
+    h.stop().await;
+}
+
+// D-038: a failed recovery op (here cleanup_candidate) ends the action
+// failed with failure code recovery.
+#[tokio::test]
+async fn a_failed_recovery_op_fails_with_recovery() {
+    let Some(owner) = TestSigner::load("owner") else {
+        eprintln!("skipped: docs keys.json not found");
+        return;
+    };
+    let h = Harness::start("recovery", Some(&vector_trust())).await;
+    h.runner
+        .behave("verify_health", OpBehavior::Fail("health_failed"));
+    h.runner
+        .behave("cleanup_candidate", OpBehavior::Fail("runtime_failed"));
+    h.runner
+        .write_results
+        .store(false, std::sync::atomic::Ordering::SeqCst);
+    let reference = submit_ok(
+        &h,
+        fresh_deploy(
+            &owner,
+            "0000000000a8",
+            "LAAAAAAAAAAAAAAAAAAAAA",
+            GENESIS_HEAD,
+        ),
+    )
+    .await;
+    wait_for_state(&h, &reference.operation_id, OperationState::Failed).await;
+    let op = operation(&h, &reference.operation_id).await;
+    assert_eq!(
+        final_step(&op),
+        (
+            "failed".to_owned(),
+            OperationState::Failed as i32,
+            "recovery".to_owned()
+        )
+    );
     h.stop().await;
 }
 

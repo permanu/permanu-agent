@@ -22,7 +22,8 @@
             "params": {
               "service_id": "01a0cdb5-3500-70c1-8000-000000000001",
               "commit_sha": "4f2a9c1e8b7d6a5f4e3d2c1b0a9f8e7d6c5b4a39",
-              "spec_digest_hex": "8ab54d633eff45b8a42f096f2f42f9837fba778f2cf8a884d73d34b70619f607"
+              "spec_digest_hex": "8ab54d633eff45b8a42f096f2f42f9837fba778f2cf8a884d73d34b70619f607",
+              "deployment_id": "01a0cdb5-3500-70c7-8000-002328bc6a29"
             }
           }
         ],
@@ -41,10 +42,10 @@
         },
         "invocation": null
       },
-      "jcs": "{\"actions\":[{\"kind\":\"deploy\",\"params\":{\"commit_sha\":\"4f2a9c1e8b7d6a5f4e3d2c1b0a9f8e7d6c5b4a39\",\"service_id\":\"01a0cdb5-3500-70c1-8000-000000000001\",\"spec_digest_hex\":\"8ab54d633eff45b8a42f096f2f42f9837fba778f2cf8a884d73d34b70619f607\"}}],\"author\":{\"agent_session_id\":null,\"kind\":\"user\"},\"base\":{\"force\":false,\"heads\":{\"01a0cdb5-3500-70a1-8000-000000000001\":\"4a98af3eeae054bf7585746ce20fa5907ec9c079ee1b049a7d01146d1c92ebfb\"}},\"created_at\":\"2026-09-23T10:00:00Z\",\"environment\":\"production\",\"environment_id\":\"01a0cdb5-3500-70b2-8000-000000000001\",\"expires_at\":\"2026-09-23T10:10:00Z\",\"id\":\"01a0cdb5-3500-7001-8000-000000000001\",\"invocation\":null,\"nonce\":\"SG86F2cYlLnxQtwmsiISuA\",\"project_id\":\"01a0cdb5-3500-70b1-8000-000000000001\",\"service_ids\":[\"01a0cdb5-3500-70c1-8000-000000000001\"],\"targets\":[\"01a0cdb5-3500-70a1-8000-000000000001\"],\"version\":1}",
+      "jcs": "{\"actions\":[{\"kind\":\"deploy\",\"params\":{\"commit_sha\":\"4f2a9c1e8b7d6a5f4e3d2c1b0a9f8e7d6c5b4a39\",\"deployment_id\":\"01a0cdb5-3500-70c7-8000-002328bc6a29\",\"service_id\":\"01a0cdb5-3500-70c1-8000-000000000001\",\"spec_digest_hex\":\"8ab54d633eff45b8a42f096f2f42f9837fba778f2cf8a884d73d34b70619f607\"}}],\"author\":{\"agent_session_id\":null,\"kind\":\"user\"},\"base\":{\"force\":false,\"heads\":{\"01a0cdb5-3500-70a1-8000-000000000001\":\"4a98af3eeae054bf7585746ce20fa5907ec9c079ee1b049a7d01146d1c92ebfb\"}},\"created_at\":\"2026-09-23T10:00:00Z\",\"environment\":\"production\",\"environment_id\":\"01a0cdb5-3500-70b2-8000-000000000001\",\"expires_at\":\"2026-09-23T10:10:00Z\",\"id\":\"01a0cdb5-3500-7001-8000-000000000001\",\"invocation\":null,\"nonce\":\"SG86F2cYlLnxQtwmsiISuA\",\"project_id\":\"01a0cdb5-3500-70b1-8000-000000000001\",\"service_ids\":[\"01a0cdb5-3500-70c1-8000-000000000001\"],\"targets\":[\"01a0cdb5-3500-70a1-8000-000000000001\"],\"version\":1}",
       "digest_input_prefix": "permanu-plan-v1\n",
-      "digest_hex": "2f95d6f908b7513e1f599cfc7cd2475e9e631bfcc6afe973248e5364acdb0962",
-      "signature_rfc6979": "cCSyy1SP3EOWo0b3L1qDQRfrvitwtwMAyf79nQiKmZKfuPCONm-FBlLAbkY2xi8o_3S5SydqutqvCP66xJDoKg",
+      "digest_hex": "4764d0506dfacf4f8c036562fac7184e6a7a1faae7a45916772be562310a2d76",
+      "signature_rfc6979": "OgGOQtX9mn4W-Cse2TqU0ZbWz0Ts2PXpkednzdxpLuWi5P9c9gqcEiRbkwHE1Bfumos78v-Y6TVge4i3nzMRIg",
       "signed_plan": {
         "plan": {
           "version": 1,
@@ -64,7 +65,8 @@
               "params": {
                 "service_id": "01a0cdb5-3500-70c1-8000-000000000001",
                 "commit_sha": "4f2a9c1e8b7d6a5f4e3d2c1b0a9f8e7d6c5b4a39",
-                "spec_digest_hex": "8ab54d633eff45b8a42f096f2f42f9837fba778f2cf8a884d73d34b70619f607"
+                "spec_digest_hex": "8ab54d633eff45b8a42f096f2f42f9837fba778f2cf8a884d73d34b70619f607",
+                "deployment_id": "01a0cdb5-3500-70c7-8000-002328bc6a29"
               }
             }
           ],
@@ -87,7 +89,7 @@
           {
             "key_id": "dYLNItf797wK7n5moGt2cw",
             "alg": "ES256-raw",
-            "sig": "cCSyy1SP3EOWo0b3L1qDQRfrvitwtwMAyf79nQiKmZKfuPCONm-FBlLAbkY2xi8o_3S5SydqutqvCP66xJDoKg",
+            "sig": "OgGOQtX9mn4W-Cse2TqU0ZbWz0Ts2PXpkednzdxpLuWi5P9c9gqcEiRbkwHE1Bfumos78v-Y6TVge4i3nzMRIg",
             "signed_at": "2026-09-23T10:00:05Z"
           }
         ]
@@ -803,6 +805,169 @@
           "spec_digest_hex": "1b2c4b415d6576942d6b2de9d089ae2de7389d81c88c18d864f2f9dc984951fc"
         }
       ]
+    },
+    {
+      "name": "user-rollback",
+      "description": "Owner rolls web back to the prior deployment DEPLOYMENT_BASE (to_deployment_id, v1.0.3).",
+      "signer": "owner",
+      "plan": {
+        "version": 1,
+        "id": "01a0cdb5-3500-7001-8000-000000000007",
+        "project_id": "01a0cdb5-3500-70b1-8000-000000000001",
+        "environment": "production",
+        "environment_id": "01a0cdb5-3500-70b2-8000-000000000001",
+        "service_ids": [
+          "01a0cdb5-3500-70c1-8000-000000000001"
+        ],
+        "targets": [
+          "01a0cdb5-3500-70a1-8000-000000000001"
+        ],
+        "actions": [
+          {
+            "kind": "rollback",
+            "params": {
+              "service_id": "01a0cdb5-3500-70c1-8000-000000000001",
+              "to_deployment_id": "01a0cdb5-3500-70c7-8000-000000000001",
+              "spec_digest_hex": "1b2c4b415d6576942d6b2de9d089ae2de7389d81c88c18d864f2f9dc984951fc"
+            }
+          }
+        ],
+        "base": {
+          "force": false,
+          "heads": {
+            "01a0cdb5-3500-70a1-8000-000000000001": "4a98af3eeae054bf7585746ce20fa5907ec9c079ee1b049a7d01146d1c92ebfb"
+          }
+        },
+        "created_at": "2026-09-23T10:00:00Z",
+        "expires_at": "2026-09-23T10:10:00Z",
+        "nonce": "ThCCpX4sHAfX6N4-mzG96A",
+        "author": {
+          "kind": "user",
+          "agent_session_id": null
+        },
+        "invocation": null
+      },
+      "jcs": "{\"actions\":[{\"kind\":\"rollback\",\"params\":{\"service_id\":\"01a0cdb5-3500-70c1-8000-000000000001\",\"spec_digest_hex\":\"1b2c4b415d6576942d6b2de9d089ae2de7389d81c88c18d864f2f9dc984951fc\",\"to_deployment_id\":\"01a0cdb5-3500-70c7-8000-000000000001\"}}],\"author\":{\"agent_session_id\":null,\"kind\":\"user\"},\"base\":{\"force\":false,\"heads\":{\"01a0cdb5-3500-70a1-8000-000000000001\":\"4a98af3eeae054bf7585746ce20fa5907ec9c079ee1b049a7d01146d1c92ebfb\"}},\"created_at\":\"2026-09-23T10:00:00Z\",\"environment\":\"production\",\"environment_id\":\"01a0cdb5-3500-70b2-8000-000000000001\",\"expires_at\":\"2026-09-23T10:10:00Z\",\"id\":\"01a0cdb5-3500-7001-8000-000000000007\",\"invocation\":null,\"nonce\":\"ThCCpX4sHAfX6N4-mzG96A\",\"project_id\":\"01a0cdb5-3500-70b1-8000-000000000001\",\"service_ids\":[\"01a0cdb5-3500-70c1-8000-000000000001\"],\"targets\":[\"01a0cdb5-3500-70a1-8000-000000000001\"],\"version\":1}",
+      "digest_input_prefix": "permanu-plan-v1\n",
+      "digest_hex": "8c02fd8ebf70508cc01578489f4ceb19cccd84b636b74077b1030e38c5a26031",
+      "signature_rfc6979": "SRP8ir-KBIUSk_jhf0iIbq14BOxkE4jV059u1Kc0myfiA7FUd8PrI1oWQ2MSYEuJnmFUqIJpBDvC3Pg6MiDIxw",
+      "signed_plan": {
+        "plan": {
+          "version": 1,
+          "id": "01a0cdb5-3500-7001-8000-000000000007",
+          "project_id": "01a0cdb5-3500-70b1-8000-000000000001",
+          "environment": "production",
+          "environment_id": "01a0cdb5-3500-70b2-8000-000000000001",
+          "service_ids": [
+            "01a0cdb5-3500-70c1-8000-000000000001"
+          ],
+          "targets": [
+            "01a0cdb5-3500-70a1-8000-000000000001"
+          ],
+          "actions": [
+            {
+              "kind": "rollback",
+              "params": {
+                "service_id": "01a0cdb5-3500-70c1-8000-000000000001",
+                "to_deployment_id": "01a0cdb5-3500-70c7-8000-000000000001",
+                "spec_digest_hex": "1b2c4b415d6576942d6b2de9d089ae2de7389d81c88c18d864f2f9dc984951fc"
+              }
+            }
+          ],
+          "base": {
+            "force": false,
+            "heads": {
+              "01a0cdb5-3500-70a1-8000-000000000001": "4a98af3eeae054bf7585746ce20fa5907ec9c079ee1b049a7d01146d1c92ebfb"
+            }
+          },
+          "created_at": "2026-09-23T10:00:00Z",
+          "expires_at": "2026-09-23T10:10:00Z",
+          "nonce": "ThCCpX4sHAfX6N4-mzG96A",
+          "author": {
+            "kind": "user",
+            "agent_session_id": null
+          },
+          "invocation": null
+        },
+        "signatures": [
+          {
+            "key_id": "dYLNItf797wK7n5moGt2cw",
+            "alg": "ES256-raw",
+            "sig": "SRP8ir-KBIUSk_jhf0iIbq14BOxkE4jV059u1Kc0myfiA7FUd8PrI1oWQ2MSYEuJnmFUqIJpBDvC3Pg6MiDIxw",
+            "signed_at": "2026-09-23T10:00:05Z"
+          }
+        ]
+      },
+      "specs": [
+        {
+          "spec": {
+            "version": 1,
+            "service_id": "01a0cdb5-3500-70c1-8000-000000000001",
+            "image_repository": "registry.permanu.internal/acme/web",
+            "image_digest_hex": "97db6c9091eee82a42e8b2bea76caa45687c1fb40a760a84c71500d520c07987",
+            "entrypoint": null,
+            "command": [
+              "node",
+              "server.js"
+            ],
+            "working_dir": "/app",
+            "user": "1000:1000",
+            "env": {
+              "DATABASE_URL": {
+                "kind": "secret",
+                "ref": "DATABASE_URL"
+              },
+              "NODE_ENV": {
+                "kind": "plain",
+                "ref": null
+              },
+              "REDIS_URL": {
+                "kind": "reference",
+                "ref": "01a0cdb5-3500-70d1-8000-000000000001.REDIS_URL"
+              }
+            },
+            "ports": [
+              {
+                "container_port": 3000,
+                "protocol": "tcp",
+                "public": true
+              }
+            ],
+            "mounts": [],
+            "resources": {
+              "cpu_millis": 1000,
+              "memory_bytes": 536870912,
+              "pids_limit": 512
+            },
+            "privileged": false,
+            "cap_add": [],
+            "network": {
+              "mode": "project",
+              "aliases": []
+            },
+            "healthcheck": {
+              "kind": "http",
+              "path": "/healthz",
+              "port": 3000,
+              "command": null,
+              "interval_seconds": 10,
+              "timeout_seconds": 3,
+              "retries": 3,
+              "start_period_seconds": 5
+            },
+            "replicas": 2,
+            "placement": {
+              "server_ids": [
+                "01a0cdb5-3500-70a1-8000-000000000001"
+              ]
+            },
+            "secrets_as_files_only": false
+          },
+          "jcs": "{\"cap_add\":[],\"command\":[\"node\",\"server.js\"],\"entrypoint\":null,\"env\":{\"DATABASE_URL\":{\"kind\":\"secret\",\"ref\":\"DATABASE_URL\"},\"NODE_ENV\":{\"kind\":\"plain\",\"ref\":null},\"REDIS_URL\":{\"kind\":\"reference\",\"ref\":\"01a0cdb5-3500-70d1-8000-000000000001.REDIS_URL\"}},\"healthcheck\":{\"command\":null,\"interval_seconds\":10,\"kind\":\"http\",\"path\":\"/healthz\",\"port\":3000,\"retries\":3,\"start_period_seconds\":5,\"timeout_seconds\":3},\"image_digest_hex\":\"97db6c9091eee82a42e8b2bea76caa45687c1fb40a760a84c71500d520c07987\",\"image_repository\":\"registry.permanu.internal/acme/web\",\"mounts\":[],\"network\":{\"aliases\":[],\"mode\":\"project\"},\"placement\":{\"server_ids\":[\"01a0cdb5-3500-70a1-8000-000000000001\"]},\"ports\":[{\"container_port\":3000,\"protocol\":\"tcp\",\"public\":true}],\"privileged\":false,\"replicas\":2,\"resources\":{\"cpu_millis\":1000,\"memory_bytes\":536870912,\"pids_limit\":512},\"secrets_as_files_only\":false,\"service_id\":\"01a0cdb5-3500-70c1-8000-000000000001\",\"user\":\"1000:1000\",\"version\":1,\"working_dir\":\"/app\"}",
+          "digest_input_prefix": "permanu-spec-v1\n",
+          "spec_digest_hex": "1b2c4b415d6576942d6b2de9d089ae2de7389d81c88c18d864f2f9dc984951fc"
+        }
+      ]
     }
   ],
   "extras": {
@@ -838,7 +1003,7 @@
     "rule_jcs": "{\"allowed_kinds\":[\"deploy\"],\"expires_at\":\"2027-09-01T00:00:00Z\",\"id\":\"01a0cdb5-3500-70f1-8000-000000000001\",\"label\":\"Auto-deploy main to production\",\"limits\":{\"max_invocations_per_hour\":30,\"max_replicas\":4},\"not_before\":\"2026-09-01T00:00:00Z\",\"scope\":{\"branch_patterns\":[\"refs/heads/main\"],\"environment\":\"production\",\"project_id\":\"01a0cdb5-3500-70b1-8000-000000000001\",\"repo\":\"github.com/acme/web\",\"server_ids\":[\"01a0cdb5-3500-70a1-8000-000000000001\"],\"service_ids\":[\"01a0cdb5-3500-70c1-8000-000000000001\"]},\"trigger\":\"git.push\",\"version\":1}",
     "rule_digest_hex": "42931b7b326d2bf54bf2e038076808f13fda19a46e9da1af363536a59ff00e90",
     "state_head_before_hex": "4a98af3eeae054bf7585746ce20fa5907ec9c079ee1b049a7d01146d1c92ebfb",
-    "state_head_after_user_deploy_hex": "42a7cd654847d00d1de9ad06f62d672f7fad05a37d898281a12e2c3879c26262",
+    "state_head_after_user_deploy_hex": "2667f951c69c97b62787014df252d190d4216b33547776aee4c049bc54bede9c",
     "store_quarantine_seconds": 1200,
     "test_key_ids": [
       "AqhPUHwy5byXy_JwVWyl7w",

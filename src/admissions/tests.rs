@@ -14,7 +14,7 @@ const NOW: &str = "2026-09-23T10:05:00Z";
 const USER_DEPLOY_HEAD_BEFORE: &str =
     "4a98af3eeae054bf7585746ce20fa5907ec9c079ee1b049a7d01146d1c92ebfb";
 const USER_DEPLOY_HEAD_AFTER: &str =
-    "42a7cd654847d00d1de9ad06f62d672f7fad05a37d898281a12e2c3879c26262";
+    "2667f951c69c97b62787014df252d190d4216b33547776aee4c049bc54bede9c";
 const PROJECT: &str = "01a0cdb5-3500-70b1-8000-000000000001";
 
 fn now() -> i64 {
@@ -232,7 +232,7 @@ fn admits_the_user_deploy_vector_advances_the_head_and_dedupes() {
     assert!(!admission.deduplicated);
     assert_eq!(
         admission.plan_digest_hex,
-        "2f95d6f908b7513e1f599cfc7cd2475e9e631bfcc6afe973248e5364acdb0962"
+        "4764d0506dfacf4f8c036562fac7184e6a7a1faae7a45916772be562310a2d76"
     );
     assert_eq!(admission.admitted_at, NOW);
     assert_eq!(admission.deployment_ids.len(), 1);
@@ -752,6 +752,237 @@ fn sealed_secret_rows_carry_their_action_and_scope() {
             WEB.to_owned(),
             "API_KEY".to_owned()
         )
+    );
+    fs::remove_dir_all(dir).unwrap();
+}
+
+fn vector_admission(name: &str) -> (String, Vec<String>) {
+    let case = plan_vector(name);
+    let envelope = serde_json::to_string(&case["signed_plan"]).unwrap();
+    let specs = case["specs"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|s| s["jcs"].as_str().unwrap().to_owned())
+        .collect();
+    (envelope, specs)
+}
+
+fn stored_deployment_ids(store: &AdmissionStore, plan_id: &str) -> Vec<Option<String>> {
+    store
+        .lock()
+        .prepare(
+            "SELECT deployment_id FROM admission_actions WHERE plan_id = ?1 \
+             ORDER BY action_index",
+        )
+        .unwrap()
+        .query_map(params![plan_id], |r| r.get(0))
+        .unwrap()
+        .collect::<Result<_, _>>()
+        .unwrap()
+}
+
+// D-035 (contracts v1.0.3): the agent copies the signed deploy.deployment_id
+// into admission_actions.deployment_id and never mints one.
+#[test]
+fn a_deploy_admission_copies_the_signed_deployment_id() {
+    let dir = temp_dir("store-depid");
+    let (store, _) = AdmissionStore::open(&config(&dir), false, now()).unwrap();
+    seed_head(&store, USER_DEPLOY_HEAD_BEFORE);
+    let (envelope, specs) = user_deploy();
+    let signed = plan_vector("user-deploy")["plan"]["actions"][0]["params"]["deployment_id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let admission = store
+        .admit(&test_trust(), &input(&envelope, &specs, now()))
+        .unwrap();
+    assert_eq!(admission.deployment_ids, vec![Some(signed.clone())]);
+    assert_eq!(
+        stored_deployment_ids(&store, &admission.plan_id),
+        vec![Some(signed)]
+    );
+    fs::remove_dir_all(dir).unwrap();
+}
+
+// D-035: a rollback's row names the release it returns to.
+#[test]
+fn a_rollback_admission_records_its_target_deployment_id() {
+    let dir = temp_dir("store-rbid");
+    let (store, _) = AdmissionStore::open(&config(&dir), false, now()).unwrap();
+    seed_head(&store, USER_DEPLOY_HEAD_BEFORE);
+    let (envelope, specs) = vector_admission("user-rollback");
+    let admission = store
+        .admit(&test_trust(), &input(&envelope, &specs, now()))
+        .unwrap();
+    let target = "01a0cdb5-3500-70c7-8000-000000000001".to_owned();
+    assert_eq!(admission.deployment_ids, vec![Some(target.clone())]);
+    assert_eq!(
+        stored_deployment_ids(&store, &admission.plan_id),
+        vec![Some(target)]
+    );
+    fs::remove_dir_all(dir).unwrap();
+}
+
+// D-035: restart rows keep deployment_id NULL; the legacy alias
+// to_release_id names the rollback target the same way.
+#[test]
+fn restart_rows_have_no_deployment_id_and_the_legacy_alias_is_copied() {
+    let Some(owner) = TestSigner::load("owner") else {
+        eprintln!("skipped: docs keys.json not found");
+        return;
+    };
+    let dir = temp_dir("store-rstid");
+    let (store, _) = AdmissionStore::open(&config(&dir), false, now()).unwrap();
+    seed_head(&store, USER_DEPLOY_HEAD_BEFORE);
+    let (_, specs) = vector_admission("user-rollback");
+    let rollback = plan_vector("user-rollback")["plan"]["actions"][0].clone();
+    let mut legacy = rollback.clone();
+    let target = legacy["params"]
+        .as_object_mut()
+        .unwrap()
+        .remove("to_deployment_id")
+        .unwrap();
+    legacy["params"]["to_release_id"] = target.clone();
+    let mut restart = rollback;
+    restart["kind"] = Value::String("restart".to_owned());
+    restart["params"]
+        .as_object_mut()
+        .unwrap()
+        .remove("to_deployment_id");
+    let envelope = signed_with_actions(&owner, "0000000000d1", serde_json::json!([legacy]));
+    let admission = store
+        .admit(&test_trust(), &input(&envelope, &specs, now()))
+        .unwrap();
+    assert_eq!(
+        admission.deployment_ids,
+        vec![Some(target.as_str().unwrap().to_owned())]
+    );
+    // The rollback made SPEC_BASE the current spec, so a restart of it is
+    // admissible.
+    let mut plan = plan_vector("user-deploy")["plan"].clone();
+    plan["id"] = Value::String("01a0cdb5-3500-7001-8000-0000000000d2".to_owned());
+    plan["nonce"] = Value::String("0000000000d2AAAAAAAAAA".to_owned());
+    plan["actions"] = serde_json::json!([restart]);
+    plan["base"]["heads"][SERVER_A] =
+        Value::String(store.head(PROJECT, "production").unwrap().head_digest_hex);
+    let envelope = owner.envelope(&plan);
+    let admission = store
+        .admit(&test_trust(), &input(&envelope, &specs, now()))
+        .unwrap();
+    assert_eq!(admission.deployment_ids, vec![None]);
+    assert_eq!(
+        stored_deployment_ids(&store, &admission.plan_id),
+        vec![None]
+    );
+    fs::remove_dir_all(dir).unwrap();
+}
+
+// D-035: a deploy whose deployment_id already names an admitted action on
+// this server is refused after step 12 and writes nothing.
+#[test]
+fn a_deployment_id_already_admitted_is_refused() {
+    let Some(owner) = TestSigner::load("owner") else {
+        eprintln!("skipped: docs keys.json not found");
+        return;
+    };
+    let dir = temp_dir("store-depdup");
+    let (store, _) = AdmissionStore::open(&config(&dir), false, now()).unwrap();
+    seed_head(&store, USER_DEPLOY_HEAD_BEFORE);
+    let (envelope, specs) = user_deploy();
+    store
+        .admit(&test_trust(), &input(&envelope, &specs, now()))
+        .unwrap();
+    let mut plan = plan_vector("user-deploy")["plan"].clone();
+    plan["id"] = Value::String("01a0cdb5-3500-7001-8000-0000000000d3".to_owned());
+    plan["nonce"] = Value::String("0000000000d3AAAAAAAAAA".to_owned());
+    plan["base"]["heads"][SERVER_A] = Value::String(USER_DEPLOY_HEAD_AFTER.to_owned());
+    let envelope = owner.envelope(&plan);
+    let seen = store.count("seen");
+    assert_eq!(
+        store
+            .admit(&test_trust(), &input(&envelope, &specs, now()))
+            .unwrap_err(),
+        PlanCode::ExecPrecondition
+    );
+    assert_eq!(store.count("seen"), seen);
+    // A fresh id is admitted.
+    plan["actions"][0]["params"]["deployment_id"] =
+        Value::String("01a0cdb5-3500-70c7-8000-0000000000d3".to_owned());
+    let envelope = owner.envelope(&plan);
+    store
+        .admit(&test_trust(), &input(&envelope, &specs, now()))
+        .unwrap();
+    fs::remove_dir_all(dir).unwrap();
+}
+
+fn egid() -> u32 {
+    // SAFETY: getegid has no preconditions.
+    unsafe { libc::getegid() }
+}
+
+fn owned_config(dir: &Path) -> StoreConfig {
+    StoreConfig {
+        path: dir.join("agent/admissions.db"),
+        owner: Some(StoreOwner {
+            // SAFETY: geteuid has no preconditions.
+            uid: unsafe { libc::geteuid() },
+            gid: egid(),
+        }),
+    }
+}
+
+// Section 6.3 (v1.0.3, QA_M1 F-16): the store and its -wal/-shm are 0640 in
+// the store group, in a 2750 (setgid) directory of that group.
+#[test]
+fn an_owned_store_uses_the_store_group_and_a_setgid_directory() {
+    let dir = temp_dir("store-owned");
+    let (store, _) = AdmissionStore::open(&owned_config(&dir), false, now()).unwrap();
+    seed_head(&store, USER_DEPLOY_HEAD_BEFORE);
+    store.secure_files().unwrap();
+    for suffix in ["", "-wal", "-shm"] {
+        let path = format!("{}{suffix}", store.path().display());
+        let meta = fs::metadata(&path).unwrap();
+        assert_eq!(meta.mode() & 0o7777, 0o640, "{path}");
+        assert_eq!(meta.gid(), egid(), "{path}");
+    }
+    let meta = fs::metadata(dir.join("agent")).unwrap();
+    assert_eq!(meta.mode() & 0o7777, 0o2750);
+    assert_eq!(meta.gid(), egid());
+    fs::remove_dir_all(dir).unwrap();
+}
+
+// Section 6.3: at start the agent repairs a wrong mode before it serves.
+#[test]
+fn reopening_repairs_the_store_and_directory_modes() {
+    let dir = temp_dir("store-repair");
+    let (store, _) = AdmissionStore::open(&owned_config(&dir), false, now()).unwrap();
+    seed_head(&store, USER_DEPLOY_HEAD_BEFORE);
+    drop(store);
+    fs::set_permissions(
+        dir.join("agent/admissions.db"),
+        fs::Permissions::from_mode(0o644),
+    )
+    .unwrap();
+    fs::set_permissions(
+        dir.join("agent/admissions.db-wal"),
+        fs::Permissions::from_mode(0o666),
+    )
+    .unwrap();
+    fs::set_permissions(dir.join("agent"), fs::Permissions::from_mode(0o755)).unwrap();
+    let (_store, report) = AdmissionStore::open(&owned_config(&dir), true, now()).unwrap();
+    assert!(!report.recreated);
+    for suffix in ["", "-wal"] {
+        let path = format!("{}{suffix}", dir.join("agent/admissions.db").display());
+        assert_eq!(
+            fs::metadata(&path).unwrap().mode() & 0o7777,
+            0o640,
+            "{path}"
+        );
+    }
+    assert_eq!(
+        fs::metadata(dir.join("agent")).unwrap().mode() & 0o7777,
+        0o2750
     );
     fs::remove_dir_all(dir).unwrap();
 }

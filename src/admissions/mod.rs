@@ -8,8 +8,11 @@
 //!   columns with `ADD COLUMN` (user_version 2). `PRAGMA user_version` is the migration
 //!   cursor; a newer store than this binary knows is refused (fail closed).
 //! - Files: database, `-wal` and `-shm` are `0640` with the configured owner
-//!   and group, the directory `0750`; WAL files persist across restarts
-//!   (`SQLITE_FCNTL_PERSIST_WAL`) so the runner can always read.
+//!   and group (`permanu-agent:permanu-runner`), the directory `2750`
+//!   (setgid, so new files inherit the group; v1.0.3, QA_M1 F-16), repaired
+//!   at every open; WAL files persist across restarts
+//!   (`SQLITE_FCNTL_PERSIST_WAL`) so the runner can always read. Without a
+//!   configured owner (development, tests) the directory is `0750`.
 //! - Store loss: a missing or corrupt store while trusted-keys.json exists
 //!   is moved aside (`admissions.db.corrupt-<ts>`) and recreated with a
 //!   1200 s quarantine (section 6.3).
@@ -52,6 +55,8 @@ pub const SCHEMA_VERSION: i64 = MIGRATIONS.len() as i64;
 
 const FILE_MODE: u32 = 0o640;
 const DIR_MODE: u32 = 0o750;
+/// Section 6.3 (v1.0.3): `0750` plus setgid for the store group.
+const OWNED_DIR_MODE: u32 = 0o2750;
 
 /// Owner and group of the store files (`permanu-agent:permanu-runner`).
 /// `None` leaves the creating process's ids (tests, non-root runs).
@@ -229,9 +234,14 @@ fn ensure_dir(path: &Path, owner: Option<StoreOwner>) -> Result<(), StoreError> 
         }
         Err(err) => return Err(err.into()),
     }
-    fs::set_permissions(dir, fs::Permissions::from_mode(DIR_MODE))?;
-    if let Some(owner) = owner {
-        chown(dir, owner)?;
+    match owner {
+        Some(owner) => {
+            // Group first: setgid is kept only on a directory of a group the
+            // (non-root) agent belongs to.
+            chown(dir, owner)?;
+            fs::set_permissions(dir, fs::Permissions::from_mode(OWNED_DIR_MODE))?;
+        }
+        None => fs::set_permissions(dir, fs::Permissions::from_mode(DIR_MODE))?,
     }
     Ok(())
 }
@@ -241,10 +251,10 @@ fn chown(path: &Path, owner: StoreOwner) -> Result<(), StoreError> {
 }
 
 fn secure_file(path: &Path, owner: Option<StoreOwner>) -> Result<(), StoreError> {
-    fs::set_permissions(path, fs::Permissions::from_mode(FILE_MODE))?;
     if let Some(owner) = owner {
         chown(path, owner)?;
     }
+    fs::set_permissions(path, fs::Permissions::from_mode(FILE_MODE))?;
     Ok(())
 }
 

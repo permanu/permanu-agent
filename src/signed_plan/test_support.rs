@@ -1,5 +1,5 @@
 //! Test helpers: the vendored contract vectors (`tests/vectors/signed-plan`,
-//! docs tag contracts-v1.0.2), a `PolicyContext` over the vector context, and
+//! docs tag contracts-v1.0.4), a `PolicyContext` over the vector context, and
 //! a TEST signer that loads `keys.json` from the docs checkout. `keys.json`
 //! holds public TEST private keys and is never vendored (gitleaks); tests that
 //! need it skip when the docs checkout is absent.
