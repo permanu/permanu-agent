@@ -707,8 +707,12 @@ fn start_telemetry(
     tasks.push(tokio::spawn(
         telemetry::metrics::Sampler::new(store.clone(), runner).run(),
     ));
-    tasks.push(tokio::spawn(
-        telemetry::otlp_server::Listeners {
+    let listeners = match cfg.dev_otlp_loopback {
+        #[cfg(feature = "dev-paths")]
+        Some((grpc_port, http_port)) => {
+            telemetry::otlp_server::Listeners::dev_loopback(store.clone(), grpc_port, http_port)
+        }
+        _ => telemetry::otlp_server::Listeners {
             telemetry: store.clone(),
             net: Arc::new(telemetry::otlp_server::SystemNetwork {
                 proc_root: std::path::PathBuf::from("/proc"),
@@ -717,9 +721,9 @@ fn start_telemetry(
             gateway_iface: telemetry::otlp_server::GATEWAY_IFACE.to_owned(),
             grpc_port: telemetry::otlp_server::GRPC_PORT,
             http_port: telemetry::otlp_server::HTTP_PORT,
-        }
-        .run(),
-    ));
+        },
+    };
+    tasks.push(tokio::spawn(listeners.run()));
     tasks.push(spawn_status_events(
         store.clone(),
         core.events.clone(),

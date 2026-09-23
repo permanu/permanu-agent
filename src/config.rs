@@ -275,6 +275,11 @@ pub struct LocalConfig {
     pub file_owner_uid: u32,
     /// agent-protocol.md 9.1: the telemetry store.
     pub telemetry_root: PathBuf,
+    /// Development builds only (`dev-paths`): `(grpc, http)` ports for OTLP
+    /// listeners on 127.0.0.1 with loopback-only peers, so a smoke test can
+    /// send spans without `docker0` or the nftables table. `None` in
+    /// production, where OTLP binds only to the Docker bridge gateway (9.5).
+    pub dev_otlp_loopback: Option<(u16, u16)>,
 }
 
 pub const DEFAULT_LOCAL_SOCKET_PATH: &str = "/run/permanu/agent.sock";
@@ -306,6 +311,7 @@ impl LocalConfig {
             ssh_host_key_dir: PathBuf::from("/etc/ssh"),
             file_owner_uid: 0,
             telemetry_root: PathBuf::from(crate::local::telemetry::DEFAULT_ROOT),
+            dev_otlp_loopback: None,
         };
         #[cfg(feature = "dev-paths")]
         if let Some(root) = lookup("PERMANU_AGENT_DEV_ROOT").and_then(|v| dev_root(&v)) {
@@ -314,6 +320,8 @@ impl LocalConfig {
                 .map(PathBuf::from);
             return Self {
                 runner_path: runner,
+                dev_otlp_loopback: lookup("PERMANU_AGENT_DEV_OTLP_LOOPBACK")
+                    .and_then(|v| dev_ports(&v)),
                 ..cfg.under_dev_root(&root, lookup("PERMANU_AGENT_SOCKET").is_some())
             };
         }
@@ -345,6 +353,14 @@ impl LocalConfig {
             ..self
         }
     }
+}
+
+/// `"<grpc>,<http>"`: two non-zero ports.
+#[cfg(feature = "dev-paths")]
+fn dev_ports(value: &str) -> Option<(u16, u16)> {
+    let (grpc, http) = value.split_once(',')?;
+    let port = |p: &str| p.trim().parse::<u16>().ok().filter(|p| *p != 0);
+    Some((port(grpc)?, port(http)?))
 }
 
 #[cfg(feature = "dev-paths")]
@@ -436,6 +452,7 @@ mod mode_tests {
         match name {
             "PERMANU_AGENT_DEV_ROOT" => Some("/tmp/pmdev".to_string()),
             "PERMANU_RUNNER_PATH" => Some("/tmp/pmdev/fake-runner".to_string()),
+            "PERMANU_AGENT_DEV_OTLP_LOOPBACK" => Some("14317,14318".to_string()),
             _ => None,
         }
     }
@@ -453,6 +470,8 @@ mod mode_tests {
         assert_eq!(cfg.file_owner_uid, 0);
         // Production always reaches the runner through its socket.
         assert_eq!(cfg.runner_path, None);
+        // Production OTLP binds only to the Docker bridge gateway (9.5).
+        assert_eq!(cfg.dev_otlp_loopback, None);
     }
 
     #[cfg(feature = "dev-paths")]
@@ -471,8 +490,30 @@ mod mode_tests {
         assert_eq!(cfg.ssh_host_key_dir, root.join("etc/ssh"));
         assert_eq!(cfg.telemetry_root, root.join("telemetry"));
         assert_eq!(cfg.runner_path, Some(root.join("fake-runner")));
+        assert_eq!(cfg.dev_otlp_loopback, Some((14317, 14318)));
         // SAFETY: geteuid has no preconditions.
         assert_eq!(cfg.file_owner_uid, unsafe { libc::geteuid() });
+    }
+
+    #[cfg(feature = "dev-paths")]
+    #[test]
+    fn dev_otlp_loopback_needs_two_nonzero_ports() {
+        for bad in [
+            "",
+            "4317",
+            "0,4318",
+            "4317,0",
+            "a,b",
+            "4317,4318,1",
+            "70000,4318",
+        ] {
+            let cfg = LocalConfig::from_lookup(|name| match name {
+                "PERMANU_AGENT_DEV_ROOT" => Some("/tmp/pmdev".to_string()),
+                "PERMANU_AGENT_DEV_OTLP_LOOPBACK" => Some(bad.to_string()),
+                _ => None,
+            });
+            assert_eq!(cfg.dev_otlp_loopback, None, "{bad:?}");
+        }
     }
 
     #[cfg(feature = "dev-paths")]

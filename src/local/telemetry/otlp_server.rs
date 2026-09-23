@@ -104,6 +104,44 @@ impl FirewallCheck for UncontractedFirewall {
     }
 }
 
+/// Development builds only (`dev-paths`, never shipped): the loopback
+/// "bridge" a smoke test binds OTLP to, since a dev machine has neither
+/// `docker0` nor the `inet permanu_otlp` table.
+#[cfg(feature = "dev-paths")]
+pub const DEV_LOOPBACK_IFACE: &str = "dev-loopback";
+
+/// Development builds only: 127.0.0.0/8 is the one bridge, and only
+/// loopback peers route through it.
+#[cfg(feature = "dev-paths")]
+pub struct DevLoopback;
+
+#[cfg(feature = "dev-paths")]
+impl Network for DevLoopback {
+    fn bridges(&self) -> Vec<Bridge> {
+        vec![Bridge {
+            name: DEV_LOOPBACK_IFACE.to_owned(),
+            addr: Ipv4Addr::LOCALHOST,
+            prefix: 8,
+        }]
+    }
+
+    fn route_iface(&self, ip: Ipv4Addr) -> Option<String> {
+        ip.is_loopback().then(|| DEV_LOOPBACK_IFACE.to_owned())
+    }
+}
+
+/// Development builds only: loopback needs no nftables table.
+#[cfg(feature = "dev-paths")]
+struct DevLoopbackFirewall;
+
+#[cfg(feature = "dev-paths")]
+#[tonic::async_trait]
+impl FirewallCheck for DevLoopbackFirewall {
+    async fn table_present(&self) -> bool {
+        true
+    }
+}
+
 /// `getifaddrs` for the bridges and `/proc/net/route` for the route check.
 pub struct SystemNetwork {
     pub proc_root: PathBuf,
@@ -564,6 +602,30 @@ struct Bound {
 }
 
 impl Listeners {
+    /// Development builds only (`dev-paths`): listeners on 127.0.0.1 that
+    /// accept loopback peers only.
+    #[cfg(feature = "dev-paths")]
+    pub fn dev_loopback(telemetry: Arc<Telemetry>, grpc_port: u16, http_port: u16) -> Self {
+        Self {
+            telemetry,
+            net: Arc::new(DevLoopback),
+            firewall: Arc::new(DevLoopbackFirewall),
+            gateway_iface: DEV_LOOPBACK_IFACE.to_owned(),
+            grpc_port,
+            http_port,
+        }
+    }
+
+    /// Loopback is never a production gateway; tests and the dev-paths
+    /// loopback listeners are the only exceptions.
+    fn loopback_allowed(&self) -> bool {
+        #[cfg(feature = "dev-paths")]
+        if self.gateway_iface == DEV_LOOPBACK_IFACE {
+            return true;
+        }
+        cfg!(test)
+    }
+
     fn gateway(&self) -> Option<Ipv4Addr> {
         self.net
             .bridges()
@@ -571,7 +633,7 @@ impl Listeners {
             .find(|b| b.name == self.gateway_iface)
             .map(|b| b.addr)
             // Never a wildcard, loopback or public address (9.5).
-            .filter(|a| !a.is_unspecified() && (!a.is_loopback() || cfg!(test)))
+            .filter(|a| !a.is_unspecified() && (!a.is_loopback() || self.loopback_allowed()))
     }
 
     async fn bind(&self, addr: Ipv4Addr) -> std::io::Result<(Bound, OtlpListen)> {
@@ -728,6 +790,31 @@ mod tests {
             grpc_port: 0,
             http_port: 0,
         }
+    }
+
+    #[cfg(feature = "dev-paths")]
+    #[test]
+    fn dev_loopback_accepts_only_loopback_peers() {
+        let net = DevLoopback;
+        assert!(accept_peer(&net, IpAddr::V4(Ipv4Addr::LOCALHOST)));
+        assert!(accept_peer(&net, IpAddr::V4(Ipv4Addr::new(127, 1, 2, 3))));
+        assert!(!accept_peer(&net, IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1))));
+        assert!(!accept_peer(&net, IpAddr::V4(Ipv4Addr::new(172, 17, 0, 9))));
+        assert!(!accept_peer(&net, "::1".parse().unwrap()));
+    }
+
+    #[cfg(feature = "dev-paths")]
+    #[tokio::test]
+    async fn dev_loopback_listeners_bind_only_127_0_0_1() {
+        let dir = temp_dir("otlp-devlo");
+        let t = test_support::open(dir.join("telemetry"));
+        let l = Listeners::dev_loopback(t.clone(), 0, 0);
+        let bound = l.reconcile(None).await.expect("bound");
+        let listen = t.otlp();
+        assert!(listen.grpc_listen.starts_with("127.0.0.1:"), "{listen:?}");
+        assert!(listen.http_listen.starts_with("127.0.0.1:"), "{listen:?}");
+        bound.tasks.iter().for_each(JoinHandle::abort);
+        std::fs::remove_dir_all(dir).unwrap();
     }
 
     #[tokio::test]
