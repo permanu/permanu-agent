@@ -54,6 +54,8 @@ pub struct RuleInfo {
     pub created_plan_id: String,
     pub installed_at: String,
     pub revoked_at: Option<String>,
+    /// An admitted `rule.revoke` whose runner result is not recorded yet.
+    pub revoke_pending: bool,
     pub invocations_last_hour: u32,
     pub match_count: u64,
     pub last_matched_at: Option<String>,
@@ -221,6 +223,15 @@ impl AdmissionStore {
              WHERE plan_id = ?3 AND action_index = ?4 AND finished_at IS NULL",
             params![format_timestamp(now), outcome, plan_id, action_index],
         )?;
+        if changed == 1 {
+            super::reconcile::settle_rule_revoke(
+                &tx,
+                plan_id,
+                action_index,
+                outcome,
+                &format_timestamp(now),
+            )?;
+        }
         super::reconcile::finish_admission_if_done(&tx, plan_id)?;
         tx.commit()?;
         Ok(changed == 1)
@@ -310,7 +321,7 @@ impl AdmissionStore {
         let since = format_timestamp(now - 3_600);
         let mut statement = conn.prepare(
             "SELECT r.rule_id, r.rule, r.rule_digest_hex, r.created_by_key_id, \
-             r.created_plan_id, a.admitted_at, r.revoked_at, \
+             r.created_plan_id, a.admitted_at, r.revoked_at, r.revoked_plan_id, \
              (SELECT COUNT(*) FROM rule_invocations i WHERE i.rule_id = r.rule_id \
               AND i.admitted_at > ?1), \
              (SELECT COUNT(*) FROM admissions m WHERE m.rule_id = r.rule_id), \
@@ -328,15 +339,18 @@ impl AdmissionStore {
                     created_plan_id: r.get(4)?,
                     installed_at: r.get(5)?,
                     revoked_at: r.get(6)?,
-                    invocations_last_hour: r.get(7)?,
-                    match_count: r.get(8)?,
-                    last_matched_at: r.get(9)?,
+                    revoke_pending: r.get::<_, Option<String>>(7)?.is_some(),
+                    invocations_last_hour: r.get(8)?,
+                    match_count: r.get(9)?,
+                    last_matched_at: r.get(10)?,
                 })
             })?
             .collect::<Result<Vec<_>, _>>()?;
+        // v1.0.11 (D-061): a rule with an admitted revocation stops
+        // triggering before the runner's result records it.
         Ok(rows
             .into_iter()
-            .filter(|rule| include_revoked || rule.revoked_at.is_none())
+            .filter(|rule| include_revoked || (rule.revoked_at.is_none() && !rule.revoke_pending))
             .collect())
     }
 

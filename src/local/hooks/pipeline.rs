@@ -20,6 +20,7 @@ use super::{Hooks, MAX_QUEUED_BUILDS, STALE_SECONDS};
 use crate::admissions::webhooks::DeliveryRow;
 use crate::local::execution::Submission;
 use crate::local::presence::AwayEvent;
+use crate::local::sched::ops_store::{Listing, RecordKind};
 use crate::local::sched::{new_id, pts, BuiltinEvent, LogIdentity};
 use crate::proto::agent::v2::{
     event_condition, LogLevel, LogSourceType, Scope, ServerBuild, ServerBuildStatus,
@@ -61,6 +62,15 @@ fn ref_matches(r#ref: &str, pattern: &str) -> bool {
 fn contains(set: &Value, value: &str) -> bool {
     set.as_array()
         .is_some_and(|items| items.iter().any(|item| item == value))
+}
+
+/// signed-plan.md 6.1 step 12 (v1.0.11, D-061): a rule plan may be
+/// admitted within 900 s of the delivery, or when the runner's build of the
+/// commit started within 900 s of it and ended at most 900 s ago.
+fn still_fresh(received: i64, started: Option<i64>, built: Option<i64>, now: i64) -> bool {
+    now - received <= STALE_SECONDS
+        || matches!((started, built), (Some(started), Some(built))
+            if started - received <= STALE_SECONDS && now - built <= STALE_SECONDS)
 }
 
 /// How one rule ended for a delivery.
@@ -176,10 +186,18 @@ impl Hooks {
 
     /// Matches a verified delivery and runs its rules.
     pub async fn process(self: &Arc<Self>, delivery_id: &str) {
+        self.process_for(delivery_id, None).await;
+    }
+
+    /// Matches a verified delivery against every active rule, or (v1.1.4,
+    /// D-062 re-match) against `only_rule` alone.
+    async fn process_for(self: &Arc<Self>, delivery_id: &str, only_rule: Option<&str>) {
         let Ok(Some(delivery)) = self.deps.store.delivery_row(delivery_id) else {
             return;
         };
-        if delivery.status != "pending" {
+        if delivery.status != "pending"
+            || timestamp(&delivery.expires_at).is_some_and(|expires| expires <= self.now())
+        {
             return;
         }
         let Some(record) = self.delivery(delivery_id) else {
@@ -195,7 +213,10 @@ impl Hooks {
             );
             return;
         }
-        let (rules, protected) = self.matching_rules(&delivery, &record.project_id);
+        let (mut rules, protected) = self.matching_rules(&delivery, &record.project_id);
+        if let Some(only) = only_rule {
+            rules.retain(|rule| rule.rule["id"] == only);
+        }
         if rules.is_empty() {
             if protected {
                 self.set_status(
@@ -235,6 +256,51 @@ impl Hooks {
             (WebhookDeliveryStatus::Ignored, reason)
         };
         self.set_status(delivery_id, status, &reason, |_| {});
+    }
+
+    /// v1.1.4 (D-062, agent-protocol.md 11.1 step 9): once a `rule.create`
+    /// is admitted, every unexpired `PENDING` delivery of the rule's project
+    /// is re-matched against that rule, oldest `received_at` first; the
+    /// evidence window still applies (an old one becomes `STALE`).
+    pub fn rule_admitted(self: &Arc<Self>, rule_id: &str) {
+        let Ok(rules) = self.deps.store.rules(false, self.now()) else {
+            return;
+        };
+        let Some(project) = rules
+            .iter()
+            .find(|r| r.rule_id == rule_id)
+            .and_then(|r| parse_strict(r.rule_jcs.as_bytes(), 64 * 1024))
+            .and_then(|rule| rule["scope"]["project_id"].as_str().map(str::to_owned))
+        else {
+            return;
+        };
+        let mut pending: Vec<(i64, String)> = self
+            .deps
+            .ops
+            .list(
+                RecordKind::WebhookDelivery,
+                &Listing {
+                    subject: Some(&project),
+                    statuses: &[WebhookDeliveryStatus::Pending as i32],
+                    ascending: true,
+                    limit: 10_000,
+                    ..Default::default()
+                },
+            )
+            .into_iter()
+            .map(|row| (row.at, row.id))
+            .collect();
+        pending.sort();
+        if pending.is_empty() {
+            return;
+        }
+        let hooks = self.clone();
+        let rule_id = rule_id.to_owned();
+        self.spawn(async move {
+            for (_, delivery_id) in pending {
+                hooks.process_for(&delivery_id, Some(&rule_id)).await;
+            }
+        });
     }
 
     /// Builds and deploys one rule for a delivery.
@@ -487,13 +553,19 @@ impl Hooks {
         } else {
             build.id.clone()
         };
+        // v1.0.11 (D-061): the build's start and end are the runner's
+        // `build_started` and `build` lines, which anchor the evidence window.
+        let (started_at, built_at) = self.runner_build_times(&build_id).await;
+        if let Some(started) = started_at {
+            self.deps.store.note_build_started(&build_id, started);
+        }
         if let Err(err) = self.deps.store.record_build(
             &build_id,
             service_id,
             &delivery.commit_sha,
             &image,
             &delivery.delivery_id,
-            self.now(),
+            built_at.unwrap_or_else(|| self.now()),
         ) {
             return Err(BuildFailure {
                 reason: String::new(),
@@ -501,9 +573,34 @@ impl Hooks {
             });
         }
         build.image_digest_hex = image.clone();
+        build.runner_build_id = if build_id == build.id {
+            String::new()
+        } else {
+            build_id.clone()
+        };
         build.status = ServerBuildStatus::Deploying as i32;
         self.put_build(build);
         Ok(image)
+    }
+
+    /// The `at` of the runner's `build_started` and `build` lines of
+    /// `build_id` (Unix seconds), from its consumed log.
+    async fn runner_build_times(&self, build_id: &str) -> (Option<i64>, Option<i64>) {
+        let path = self.deps.core.consumed_log.clone();
+        let owner = self.deps.core.consumed_log_owner;
+        let wanted = build_id.to_owned();
+        tokio::task::spawn_blocking(move || {
+            let at = |event: &str| {
+                crate::admissions::event_lines(&path, owner, event)
+                    .iter()
+                    .rev()
+                    .find(|line| line["build_id"] == wanted.as_str())
+                    .and_then(|line| line["at"].as_str().and_then(timestamp))
+            };
+            (at("build_started"), at("build"))
+        })
+        .await
+        .unwrap_or((None, None))
     }
 
     /// Builds, admits and follows the rule plan.
@@ -525,7 +622,18 @@ impl Hooks {
                 this.put_build(build);
             }
         };
-        if now - received > STALE_SECONDS {
+        let windows: Vec<(Option<i64>, Option<i64>)> = built
+            .iter()
+            .map(|b| {
+                self.deps
+                    .store
+                    .build_window_of(&b.service_id, &delivery.commit_sha)
+            })
+            .collect();
+        if !windows
+            .iter()
+            .all(|(started, built_at)| still_fresh(received, *started, *built_at, now))
+        {
             fail(
                 self,
                 builds,
@@ -666,6 +774,41 @@ impl Hooks {
 #[cfg(test)]
 mod unit_tests {
     use super::ref_matches;
+
+    #[test]
+    fn a_long_build_stays_fresh_when_it_started_in_time() {
+        use super::still_fresh;
+        let received = 1_000;
+        assert!(still_fresh(received, None, None, received + 900));
+        assert!(!still_fresh(received, None, None, received + 901));
+        // A 25-minute build that started 60 s after the delivery.
+        let (started, built) = (received + 60, received + 60 + 1_500);
+        assert!(still_fresh(
+            received,
+            Some(started),
+            Some(built),
+            built + 10
+        ));
+        assert!(still_fresh(
+            received,
+            Some(started),
+            Some(built),
+            built + 900
+        ));
+        assert!(!still_fresh(
+            received,
+            Some(started),
+            Some(built),
+            built + 901
+        ));
+        // Started too late.
+        assert!(!still_fresh(
+            received,
+            Some(received + 901),
+            Some(received + 1_000),
+            received + 1_000
+        ));
+    }
 
     #[test]
     fn branch_patterns_are_exact_or_a_prefix_with_one_more_character() {

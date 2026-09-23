@@ -774,8 +774,19 @@ pub async fn run(
     }
     let background = core.spawn_background();
     let presence = presence::Presence::new(Arc::new(execution::SystemClock));
-    let (telemetry, mut telemetry_tasks) = start_telemetry(&cfg, &core);
     let ops = open_ops(&cfg, owner);
+    let cron_runs = ops
+        .clone()
+        .map(|ops| -> Arc<dyn telemetry::ingest::CronRuns> {
+            Arc::new(sched::CronRunIndex::from_parts(
+                ops,
+                sched::ConsumedLogRef {
+                    path: core.consumed_log.clone(),
+                    owner_uid: core.consumed_log_owner,
+                },
+            ))
+        });
+    let (telemetry, mut telemetry_tasks) = start_telemetry(&cfg, &core, cron_runs);
     let schedulers = start_schedulers(
         ops.clone(),
         &core,
@@ -813,6 +824,7 @@ pub async fn run(
             Err(err) => warn!(error = %err, "webhook listener not bound"),
         }
         scheduler_tasks.push(hooks.spawn_sweeper());
+        scheduler_tasks.push(hooks.spawn_rule_watch());
     }
     let artifacts = ops
         .clone()
@@ -937,6 +949,7 @@ fn start_schedulers(
 fn start_telemetry(
     cfg: &LocalConfig,
     core: &Arc<execution::ChangeCore>,
+    cron_runs: Option<Arc<dyn telemetry::ingest::CronRuns>>,
 ) -> (
     Option<Arc<telemetry::Telemetry>>,
     Vec<tokio::task::JoinHandle<()>>,
@@ -956,11 +969,13 @@ fn start_telemetry(
     let host = hostname();
     let runner = core.runner.clone();
     let mut tasks = vec![store.spawn_maintenance()];
+    let mut ingest = telemetry::ingest::LogIngest::new(store.clone(), runner.clone(), host);
+    if let Some(cron_runs) = cron_runs {
+        ingest = ingest.with_cron_runs(cron_runs);
+    }
+    tasks.push(tokio::spawn(ingest.run()));
     tasks.push(tokio::spawn(
-        telemetry::ingest::LogIngest::new(store.clone(), runner.clone(), host).run(),
-    ));
-    tasks.push(tokio::spawn(
-        telemetry::metrics::Sampler::new(store.clone(), runner).run(),
+        telemetry::metrics::Sampler::new(store.clone(), runner.clone()).run(),
     ));
     let listeners = match cfg.dev_otlp_loopback {
         #[cfg(feature = "dev-paths")]
@@ -972,7 +987,7 @@ fn start_telemetry(
             net: Arc::new(telemetry::otlp_server::SystemNetwork {
                 proc_root: std::path::PathBuf::from("/proc"),
             }),
-            firewall: Arc::new(telemetry::otlp_server::UncontractedFirewall),
+            firewall: Arc::new(telemetry::otlp_server::RunnerFirewall { runner }),
             gateway_iface: telemetry::otlp_server::GATEWAY_IFACE.to_owned(),
             grpc_port: telemetry::otlp_server::GRPC_PORT,
             http_port: telemetry::otlp_server::HTTP_PORT,

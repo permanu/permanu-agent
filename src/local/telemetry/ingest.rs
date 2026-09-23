@@ -11,11 +11,20 @@
 //! 5,000 per project and 20,000 per agent; excess is dropped, counted and
 //! reported by one `AGENT` record per container per 10 s.
 //!
-//! Resume: `checkpoint.json` keeps, per container, the last stored second
-//! and the `(stream, SHA-256 of line)` hashes stored in it; on reconnect
-//! the agent passes the earliest of those seconds as `since` and drops
-//! lines at or before a container's checkpoint that it already stored, so a
+//! Resume (contracts v1.1.2, D-060): `checkpoint.json` keeps, per
+//! container, the last stored second, the `(stream, SHA-256 of line)`
+//! hashes stored in it and the line's Docker cursor, and per allowlisted
+//! unit its journald cursor. On reconnect the agent sends each source its
+//! cursor (`resume`, at most 1,000) and the last second it saw as `since`
+//! (for sources without one), and drops container lines at or before a
+//! checkpoint that it already stored (Docker `--since` is inclusive), so a
 //! reconnect neither loses nor duplicates lines.
+//!
+//! Container lines carry their identity (`container_name`, `image`,
+//! `environment`, `service_kind`, v1.1.2); a cron run's lines carry
+//! `cron_id` and `cron_run_id` (v1.1.3, D-061) and are stored as `CRON`
+//! under the agent's `CronRun`. Host-unit lines (`source: "system"`) go to
+//! [`super::journal`].
 
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
@@ -25,6 +34,7 @@ use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 use tracing::{debug, warn};
 
+use super::journal::{self, Rollups, Unit};
 use super::records::{self, encode, TAG_LOG};
 use super::redaction::PemStream;
 use super::store::{valid_id, Kind, Producer};
@@ -43,6 +53,10 @@ const CHECKPOINT_EVERY: Duration = Duration::from_secs(5);
 const BACKOFF_MIN: Duration = Duration::from_secs(1);
 const BACKOFF_MAX: Duration = Duration::from_secs(30);
 const REFRESH_EVERY: Duration = Duration::from_secs(5);
+/// Resume entries sent on reconnect (signed-plan.md 14.3).
+const MAX_RESUME: usize = 1_000;
+/// `AnalyticsRow` records in the `analytics` store.
+pub const TAG_ANALYTICS_ROW: u8 = 1;
 /// Checkpoints older than the log retention are forgotten.
 const CHECKPOINT_MAX_AGE_SECS: i64 = 7 * 86_400;
 const NANOS: i64 = 1_000_000_000;
@@ -51,6 +65,18 @@ const NANOS: i64 = 1_000_000_000;
 struct Check {
     sec: i64,
     hashes: HashSet<String>,
+    /// The Docker cursor (RFC 3339, nanoseconds) of the last stored line.
+    cursor: Option<String>,
+}
+
+/// Maps a cron line's runner `run_id` (`cron_run_id`) to the agent's
+/// `CronRun.id` (agent-protocol.md 9.4, contracts v1.1.3).
+pub trait CronRuns: Send + Sync {
+    fn cron_run(&self, runner_run_id: &str, cron_id: &str) -> Option<String>;
+}
+
+fn docker_cursor_ok(cursor: &str) -> bool {
+    (1..=64).contains(&cursor.len()) && parse_nanos(cursor).is_some()
 }
 
 struct Drops {
@@ -71,6 +97,12 @@ pub struct LogIngest {
     agent: Bucket,
     drops: HashMap<String, Drops>,
     host: String,
+    /// Journald cursor per allowlisted unit.
+    units: HashMap<String, String>,
+    /// The latest second any line carried (`since` on reconnect).
+    last_sec: Option<i64>,
+    rollups: Rollups,
+    cron_runs: Option<Arc<dyn CronRuns>>,
 }
 
 fn valid_container_id(id: &str) -> bool {
@@ -125,9 +157,19 @@ impl LogIngest {
             agent: Bucket::new(AGENT_RATE, AGENT_RATE),
             drops: HashMap::new(),
             host,
+            units: HashMap::new(),
+            last_sec: None,
+            rollups: Rollups::new(),
+            cron_runs: None,
         };
         ingest.load_checkpoint();
         ingest
+    }
+
+    /// Files cron lines under their `CronRun` (v1.1.3, D-061).
+    pub fn with_cron_runs(mut self, cron_runs: Arc<dyn CronRuns>) -> Self {
+        self.cron_runs = Some(cron_runs);
+        self
     }
 
     fn load_checkpoint(&mut self) {
@@ -152,8 +194,31 @@ impl LogIngest {
                         .collect()
                 })
                 .unwrap_or_default();
-            self.checks.insert(id.clone(), Check { sec, hashes });
+            let cursor = entry["cursor"]
+                .as_str()
+                .filter(|c| docker_cursor_ok(c))
+                .map(str::to_owned);
+            self.checks.insert(
+                id.clone(),
+                Check {
+                    sec,
+                    hashes,
+                    cursor,
+                },
+            );
         }
+        if let Some(units) = value["units"].as_object() {
+            for (unit, cursor) in units.iter().take(MAX_RESUME) {
+                if let Some(cursor) = cursor.as_str().filter(|c| journal::cursor_ok(c)) {
+                    if journal::classify(unit).is_some() {
+                        self.units.insert(unit.clone(), cursor.to_owned());
+                    }
+                }
+            }
+        }
+        self.last_sec = value["since_sec"]
+            .as_i64()
+            .or_else(|| self.checks.values().map(|c| c.sec).max());
     }
 
     /// Writes `checkpoint.json` (every 5 s and on reconnect).
@@ -166,20 +231,50 @@ impl LogIngest {
             .map(|(id, c)| {
                 let mut hashes: Vec<&String> = c.hashes.iter().collect();
                 hashes.sort();
-                (id.clone(), json!({"sec": c.sec, "hashes": hashes}))
+                let mut entry = json!({"sec": c.sec, "hashes": hashes});
+                if let Some(cursor) = &c.cursor {
+                    entry["cursor"] = json!(cursor);
+                }
+                (id.clone(), entry)
             })
             .collect();
-        self.telemetry
-            .write_checkpoint(&json!({"version": 1, "logs": logs}));
+        let mut checkpoint = json!({"version": 1, "logs": logs, "units": self.units});
+        if let Some(sec) = self.last_sec {
+            checkpoint["since_sec"] = json!(sec);
+        }
+        self.telemetry.write_checkpoint(&checkpoint);
     }
 
-    /// The `since` of the next connection: the earliest checkpoint second.
+    /// The `since` of the next connection: the last second the stream
+    /// delivered, for sources that have no resume entry.
     pub fn since(&self) -> Option<String> {
-        self.checks
-            .values()
-            .map(|c| c.sec)
-            .min()
+        self.last_sec
             .map(crate::signed_plan::text::format_timestamp)
+    }
+
+    /// The `resume` entries of the next connection: the newest containers'
+    /// Docker cursors, then the units' journald cursors (at most 1,000).
+    fn resume(&self) -> Vec<Value> {
+        let mut containers: Vec<(&String, &Check)> = self
+            .checks
+            .iter()
+            .filter(|(_, c)| c.cursor.is_some())
+            .collect();
+        containers.sort_by(|a, b| b.1.sec.cmp(&a.1.sec).then(a.0.cmp(b.0)));
+        containers.truncate(MAX_RESUME);
+        containers.sort_by(|a, b| a.0.cmp(b.0));
+        let mut units: Vec<(&String, &String)> = self.units.iter().collect();
+        units.sort();
+        containers
+            .into_iter()
+            .map(|(id, c)| json!({"container_id": id, "cursor": c.cursor}))
+            .chain(
+                units
+                    .into_iter()
+                    .map(|(unit, cursor)| json!({"unit": unit, "cursor": cursor})),
+            )
+            .take(MAX_RESUME)
+            .collect()
     }
 
     async fn refresh(&mut self, force: bool) {
@@ -259,8 +354,110 @@ impl LogIngest {
         }
     }
 
+    fn saw(&mut self, ts: i64) {
+        let sec = ts.div_euclid(NANOS);
+        self.last_sec = Some(self.last_sec.map_or(sec, |last| last.max(sec)));
+    }
+
+    /// Writes the Dwaar rollups of every minute closed at `now_sec`.
+    pub fn flush_rollups(&mut self, now_sec: i64) {
+        for row in self.rollups.closed(now_sec) {
+            let ts = row.bucket_start.map_or(now_sec, |t| t.seconds) * NANOS;
+            self.telemetry.submit(
+                Kind::Analytics,
+                Producer::System,
+                ts,
+                TAG_ANALYTICS_ROW,
+                encode(&row),
+                false,
+            );
+        }
+    }
+
+    /// A host-unit line (contracts v1.1.2, D-060; agent-protocol.md 9.4):
+    /// `system` producer (a `permanu-buildkitd@<project>` line belongs to
+    /// that project), `ingest = "journal"`, level from the priority,
+    /// `source` = the unit; `dwaar.service` goes to the `http` store and
+    /// its access lines to the rollups. Any other unit is dropped.
+    fn handle_system(&mut self, line: &Value, now: Instant) {
+        let text = |name: &str| line[name].as_str().unwrap_or_default();
+        let unit_name = text("unit");
+        let (Some(unit), Some(message)) = (journal::classify(unit_name), line["line"].as_str())
+        else {
+            self.telemetry.count_dropped(Kind::Logs, 1);
+            return;
+        };
+        let cursor = text("cursor");
+        if journal::cursor_ok(cursor)
+            && (self.units.contains_key(unit_name) || self.units.len() < MAX_RESUME)
+        {
+            self.units.insert(unit_name.to_owned(), cursor.to_owned());
+        }
+        let ts = parse_nanos(text("at"))
+            .and_then(|n| i64::try_from(n).ok())
+            .unwrap_or_else(now_nanos);
+        self.saw(ts);
+        let kind = if unit == Unit::Dwaar {
+            Kind::Http
+        } else {
+            Kind::Logs
+        };
+        if !self.agent.take(now) {
+            self.telemetry.count_dropped(kind, 1);
+            return;
+        }
+        if unit == Unit::Dwaar {
+            if let Some(access) = journal::access_of(message) {
+                self.rollups.add(ts.div_euclid(NANOS), &access);
+            }
+        }
+        let level = journal::level_of(line["priority"].as_i64().unwrap_or(-1));
+        let key = (unit_name.to_owned(), "journal".to_owned());
+        let mut pem = self.pem.remove(&key).unwrap_or_default();
+        for piece in records::split_line(message) {
+            let (redacted_text, mut redacted) = pem.line(piece);
+            let mut parsed = records::parse_line(&redacted_text);
+            redacted |= parsed.redacted;
+            if unit == Unit::Dwaar {
+                journal::drop_header_fields(&mut parsed.fields);
+            }
+            let (source, project_id, producer) = match &unit {
+                Unit::Dwaar => ("dwaar".to_owned(), String::new(), Producer::System),
+                Unit::Host => (unit_name.to_owned(), String::new(), Producer::System),
+                Unit::Build { project_id } => (
+                    unit_name.to_owned(),
+                    project_id.clone(),
+                    Producer::Project(project_id.clone()),
+                ),
+            };
+            let record = LogRecord {
+                timestamp: Some(timestamp_of(ts)),
+                level: level as i32,
+                message: redacted_text,
+                source_type: journal::source_type_of(&unit) as i32,
+                source,
+                host: self.host.clone(),
+                project_id,
+                trace_id: parsed.trace_id,
+                span_id: parsed.span_id,
+                fields: parsed.fields,
+                redacted,
+                ingest: "journal".to_owned(),
+                ..Default::default()
+            };
+            self.telemetry
+                .submit(kind, producer, ts, TAG_LOG, encode(&record), redacted);
+        }
+        self.pem.insert(key, pem);
+        self.flush_rollups(ts.div_euclid(NANOS));
+    }
+
     /// Handles one `progress` line of `logs_follow_stream`.
     pub async fn handle(&mut self, line: &Value, now: Instant) {
+        if line["source"] == "system" {
+            self.handle_system(line, now);
+            return;
+        }
         if let Some(event) = line["event"].as_str() {
             let id = line["container_id"].as_str().unwrap_or_default();
             match event {
@@ -288,7 +485,11 @@ impl LogIngest {
             self.telemetry.count_dropped(Kind::Logs, 1);
             return;
         }
-        let ts = parse_nanos(text("at"))
+        // v1.1.2: the Docker cursor is the line's own time.
+        let cursor = line["cursor"].as_str().filter(|c| docker_cursor_ok(c));
+        let ts = cursor
+            .and_then(parse_nanos)
+            .or_else(|| parse_nanos(text("at")))
             .and_then(|n| i64::try_from(n).ok())
             .unwrap_or_else(now_nanos);
         let sec = ts.div_euclid(NANOS);
@@ -302,6 +503,10 @@ impl LogIngest {
             check.hashes.clear();
         }
         check.hashes.insert(hash);
+        if let Some(cursor) = cursor {
+            check.cursor = Some(cursor.to_owned());
+        }
+        self.saw(ts);
 
         let allowed = self.agent.take(now)
             && self.projects.take(project, PROJECT_RATE, PROJECT_RATE, now)
@@ -317,20 +522,62 @@ impl LogIngest {
         if self.identity(container).is_none() {
             self.refresh(false).await;
         }
-        let identity = self.identity(container).cloned().unwrap_or_default();
+        let mut identity = self.identity(container).cloned().unwrap_or_default();
+        // v1.1.2: the line's own identity fields win over the listing.
+        for (field, slot) in [
+            ("container_name", &mut identity.name),
+            ("image", &mut identity.image),
+            ("environment", &mut identity.environment),
+            ("service_kind", &mut identity.service_kind),
+        ] {
+            if let Some(value) = line[field]
+                .as_str()
+                .filter(|v| !v.is_empty() && v.len() <= 256)
+            {
+                *slot = value.to_owned();
+            }
+        }
+        // v1.1.3 (D-061): a cron run's container.
+        let cron = line["cron_run_id"]
+            .as_str()
+            .filter(|id| !id.is_empty() && id.len() <= 64)
+            .map(|runner_run| {
+                let cron_id = text("cron_id");
+                let run = self
+                    .cron_runs
+                    .as_ref()
+                    .and_then(|runs| runs.cron_run(runner_run, cron_id));
+                (runner_run.to_owned(), cron_id.to_owned(), run)
+            });
         let key = (container.to_owned(), stream.to_owned());
         let mut pem = self.pem.remove(&key).unwrap_or_default();
         for piece in records::split_line(message) {
             let (redacted_text, mut redacted) = pem.line(piece);
-            let parsed = records::parse_line(&redacted_text);
+            let mut parsed = records::parse_line(&redacted_text);
             redacted |= parsed.redacted;
             let kind = identity.service_kind.as_str();
-            let source_type = source_type_of(kind);
+            let source_type = if cron.is_some() {
+                LogSourceType::Cron
+            } else {
+                source_type_of(kind)
+            };
             let name = if identity.name.is_empty() {
                 container
             } else {
                 identity.name.as_str()
             };
+            let mut run_id = String::new();
+            if let Some((runner_run, cron_id, run)) = &cron {
+                parsed.fields.insert("cron_id".to_owned(), cron_id.clone());
+                match run {
+                    Some(run) => run_id = run.clone(),
+                    None => {
+                        parsed
+                            .fields
+                            .insert("cron_run_id".to_owned(), runner_run.clone());
+                    }
+                }
+            }
             let record = LogRecord {
                 timestamp: Some(timestamp_of(ts)),
                 level: parsed.level as i32,
@@ -338,6 +585,7 @@ impl LogIngest {
                 source_type: source_type as i32,
                 source: match source_type {
                     LogSourceType::Service => format!("service:{name}"),
+                    LogSourceType::Cron => format!("cron:{name}"),
                     _ => format!("app:{name}"),
                 },
                 container_id: container.to_owned(),
@@ -355,7 +603,7 @@ impl LogIngest {
                 environment_id: text("environment_id").to_owned(),
                 environment: identity.environment.clone(),
                 service_kind: identity.service_kind.clone(),
-                run_id: String::new(),
+                run_id: run_id.clone(),
                 ingest: "runner_follow".to_owned(),
                 ..Default::default()
             };
@@ -378,6 +626,10 @@ impl LogIngest {
         let mut payload = json!({});
         if let Some(since) = self.since() {
             payload["since"] = json!(since);
+        }
+        let resume = self.resume();
+        if !resume.is_empty() {
+            payload["resume"] = json!(resume);
         }
         let mut lines = match self
             .runner
@@ -416,6 +668,7 @@ impl LogIngest {
                 _ = save.tick() => {
                     self.save_checkpoint();
                     self.notices(Instant::now());
+                    self.flush_rollups(now_nanos().div_euclid(NANOS));
                 }
             }
         }
@@ -668,5 +921,184 @@ pub(crate) mod tests {
         assert!(!ingest.connect_once().await);
         assert!(t.degraded_reasons().contains(&"runner_unreachable"));
         std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    /// v1.1.2 container line: identity fields and the Docker cursor.
+    fn line_v2(container: &str, cursor: &str, line: &str) -> Value {
+        json!({"type": "progress", "op": OP, "at": "2026-09-23T10:00:09Z", "source": "container",
+               "container_id": container, "container_name": format!("{container}-live"),
+               "image": "ghcr.io/acme/web@sha256:ef", "project_id": "p1",
+               "environment": "staging", "environment_id": "e1", "service_id": "s1",
+               "service_kind": "worker", "deployment_id": "d1", "stream": "stdout",
+               "cursor": cursor, "line": line})
+    }
+
+    fn system(unit: &str, priority: i64, cursor: &str, line: &str) -> Value {
+        json!({"type": "progress", "op": OP, "at": "2026-09-23T10:00:05Z", "source": "system",
+               "unit": unit, "priority": priority, "cursor": cursor, "line": line})
+    }
+
+    fn stored_kind<M: Message + Default>(t: &Telemetry, kind: Kind) -> Vec<M> {
+        t.snapshot(kind)
+            .scan(ScanSpec::default())
+            .map(|r| M::decode(r.unwrap().payload.as_slice()).unwrap())
+            .collect()
+    }
+
+    /// contracts v1.1.2 (D-060): per-source resume points; a reconnect
+    /// resumes each container from its Docker cursor and each unit from
+    /// its journald cursor.
+    #[tokio::test]
+    async fn reconnect_sends_each_source_its_cursor() {
+        let dir = temp_dir("ingest-cursors");
+        let t = test_support::open(dir.join("telemetry"));
+        let runner = ScriptRunner::new(Vec::new());
+        runner.connections.lock().unwrap().extend([
+            vec![
+                line_v2("c1", "2026-09-23T10:00:01.000000001Z", "a"),
+                line_v2("c1", "2026-09-23T10:00:02.500000000Z", "b"),
+                line_v2("c2", "2026-09-23T10:00:03.000000000Z", "x"),
+                system("docker.service", 6, "s=1;i=5", "pulled"),
+            ],
+            vec![
+                // Docker `--since` is inclusive: b comes again.
+                line_v2("c1", "2026-09-23T10:00:02.500000000Z", "b"),
+                line_v2("c1", "2026-09-23T10:00:04.000000000Z", "c"),
+            ],
+        ]);
+        let mut ingest = LogIngest::new(t.clone(), runner.clone(), "h".into());
+        assert!(ingest.connect_once().await);
+        let mut ingest = LogIngest::new(t.clone(), runner.clone(), "h".into());
+        assert!(ingest.connect_once().await);
+        t.sync().await;
+        let messages: Vec<String> = stored(&t).into_iter().map(|r| r.message).collect();
+        assert_eq!(messages, vec!["a", "b", "x", "pulled", "c"]);
+        let requests = runner.requests.lock().unwrap().clone();
+        let opens: Vec<&Value> = requests.iter().filter(|r| r["op"] == OP).collect();
+        assert_eq!(opens[0]["payload"], json!({}));
+        assert_eq!(
+            opens[1]["payload"],
+            json!({"since": "2026-09-23T10:00:05Z", "resume": [
+                {"container_id": "c1", "cursor": "2026-09-23T10:00:02.500000000Z"},
+                {"container_id": "c2", "cursor": "2026-09-23T10:00:03.000000000Z"},
+                {"unit": "docker.service", "cursor": "s=1;i=5"}]})
+        );
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    /// v1.1.2: identity comes from the line itself (no `list_containers`
+    /// entry needed), the time from the Docker cursor; v1.1.3 (D-061): a
+    /// cron run's line is `CRON` under its `CronRun`.
+    #[tokio::test]
+    async fn line_fields_and_cron_runs_are_stored() {
+        struct Runs;
+        impl CronRuns for Runs {
+            fn cron_run(&self, runner_run_id: &str, cron_id: &str) -> Option<String> {
+                (runner_run_id == "rr-1" && cron_id == "cr-1").then(|| "cronrun-1".to_owned())
+            }
+        }
+        let dir = temp_dir("ingest-fields");
+        let t = test_support::open(dir.join("telemetry"));
+        let runner = ScriptRunner::new(Vec::new());
+        let mut ingest =
+            LogIngest::new(t.clone(), runner, "h".into()).with_cron_runs(Arc::new(Runs));
+        let now = Instant::now();
+        ingest
+            .handle(
+                &line_v2("c1", "2026-09-23T10:00:01.250000000Z", "hello"),
+                now,
+            )
+            .await;
+        let mut cron = line_v2("c9", "2026-09-23T10:00:02Z", "tick");
+        cron["cron_id"] = json!("cr-1");
+        cron["cron_run_id"] = json!("rr-1");
+        cron["service_kind"] = json!("cron");
+        ingest.handle(&cron, now).await;
+        let mut unknown = line_v2("c9", "2026-09-23T10:00:03Z", "tock");
+        unknown["cron_id"] = json!("cr-1");
+        unknown["cron_run_id"] = json!("rr-2");
+        ingest.handle(&unknown, now).await;
+        t.sync().await;
+        let records = stored(&t);
+        let first = &records[0];
+        assert_eq!(first.container_name, "c1-live");
+        assert_eq!(first.image, "ghcr.io/acme/web@sha256:ef");
+        assert_eq!(first.environment, "staging");
+        assert_eq!(first.service_kind, "worker");
+        assert_eq!(first.source_type, LogSourceType::App as i32);
+        assert_eq!(first.timestamp.unwrap().nanos, 250_000_000);
+        assert_eq!(first.timestamp.unwrap().seconds % 60, 1);
+        let cron = &records[1];
+        assert_eq!(cron.source_type, LogSourceType::Cron as i32);
+        assert_eq!(cron.run_id, "cronrun-1");
+        assert_eq!(cron.fields["cron_id"], "cr-1");
+        let unknown = &records[2];
+        assert_eq!(unknown.source_type, LogSourceType::Cron as i32);
+        assert_eq!(unknown.run_id, "");
+        assert_eq!(unknown.fields["cron_run_id"], "rr-2");
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    /// contracts v1.1.2 (D-060, agent-protocol.md 9.4): allowlisted units
+    /// only; `HOST` and `BUILD` in `logs`, Dwaar in `http` plus its 60 s
+    /// rollups in `analytics`.
+    #[tokio::test]
+    async fn system_units_feed_their_stores() {
+        use crate::proto::agent::v2::AnalyticsRow;
+        let project = "01a0cdb5-3500-70b1-8000-000000000001";
+        let dir = temp_dir("ingest-units");
+        let t = test_support::open(dir.join("telemetry"));
+        let runner = ScriptRunner::new(Vec::new());
+        let mut ingest = LogIngest::new(t.clone(), runner, "host-1".into());
+        let now = Instant::now();
+        let access = r#"{"timestamp":"2026-09-23T10:00:05Z","request_id":"r1","method":"GET","path":"/a","query":"token=abc","host":"app.example.com","status":200,"response_time_us":1500,"client_ip":"203.0.113.0","bytes_sent":10,"bytes_received":0,"http_version":"HTTP/2","is_bot":false,"authorization":"Bearer x"}"#;
+        for line in [
+            system("docker.service", 3, "s=1;i=1", "error pulling"),
+            system("permanu-runner@4-1.service", 6, "s=1;i=2", "bound"),
+            system(
+                &format!("permanu-buildkitd@{project}.service"),
+                6,
+                "s=1;i=3",
+                "solve",
+            ),
+            system("sshd.service", 6, "s=1;i=4", "Accepted password"),
+            system("dwaar.service", 6, "s=1;i=5", access),
+            system("dwaar.service", 4, "s=1;i=6", "WARN upstream slow"),
+        ] {
+            ingest.handle(&line, now).await;
+        }
+        ingest.flush_rollups(timestamp("2026-09-23T10:01:30Z"));
+        t.sync().await;
+        let logs = stored(&t);
+        assert_eq!(logs.len(), 3, "{logs:?}");
+        assert_eq!(logs[0].source_type, LogSourceType::Host as i32);
+        assert_eq!(logs[0].source, "docker.service");
+        assert_eq!(logs[0].level, LogLevel::Error as i32);
+        assert_eq!(logs[0].ingest, "journal");
+        assert_eq!(logs[0].project_id, "");
+        assert_eq!(logs[0].host, "host-1");
+        assert_eq!(logs[1].source, "permanu-runner@4-1.service");
+        assert_eq!(logs[2].source_type, LogSourceType::Build as i32);
+        assert_eq!(logs[2].project_id, project);
+        assert!(!logs.iter().any(|r| r.message.contains("Accepted")));
+        assert_eq!(t.usage().kinds[0].0.counters.dropped_total, 1);
+        let http: Vec<LogRecord> = stored_kind(&t, Kind::Http);
+        assert_eq!(http.len(), 2);
+        assert_eq!(http[0].source_type, LogSourceType::Dwaar as i32);
+        assert_eq!(http[0].source, "dwaar");
+        assert_eq!(http[0].fields["host"], "app.example.com");
+        assert_eq!(http[0].fields["status"], "200");
+        assert!(!http[0].fields.contains_key("authorization"));
+        assert!(!http[0].message.contains("abc"), "{}", http[0].message);
+        assert_eq!(http[1].level, LogLevel::Warn as i32);
+        let rows: Vec<AnalyticsRow> = stored_kind(&t, Kind::Analytics);
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].dimensions[0].value, "app.example.com");
+        assert_eq!(rows[0].values[0].value, 1.0);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    fn timestamp(text: &str) -> i64 {
+        crate::signed_plan::text::timestamp(text).unwrap()
     }
 }

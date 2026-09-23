@@ -231,6 +231,17 @@ impl FakeRunner {
     }
 
     /// `(op, action_index)` of every bound op for one plan.
+    /// The action indexes of `plan_id` the runner bound (`bind_plan`).
+    pub fn consumed_for(&self, plan_id: &str) -> Vec<u32> {
+        self.requests
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|r| r["plan"]["plan_id"] == plan_id && r["op"] == "bind_plan")
+            .map(|r| r["plan"]["action_index"].as_u64().unwrap() as u32)
+            .collect()
+    }
+
     pub fn ops_for(&self, plan_id: &str) -> Vec<(String, u32)> {
         self.requests
             .lock()
@@ -706,6 +717,8 @@ impl FakeRunner {
                     return refuse("E_EXEC_PRECONDITION", "trust write refused");
                 }
             }
+            // v1.0.9 (D-058): nothing interruptible runs in these tests.
+            "cancel_running" => return json!({"ok": true, "stopped": []}),
             "cancel_execution" => {
                 let Some((_, plan, _)) = self.admitted(plan_id) else {
                     return refuse("E_PLAN_NOT_ADMITTED", "no row");
@@ -729,6 +742,7 @@ impl FakeRunner {
                 | "restart_release"
                 | "update_trusted_keys"
                 | "install_artifact"
+                | "set_webhook_route"
                 | "cancel_execution" => Some("succeeded"),
                 "rollback_release" if prepared => Some("rolled_back"),
                 "rollback_release" => Some("succeeded"),

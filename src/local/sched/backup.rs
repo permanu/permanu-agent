@@ -14,7 +14,9 @@
 //!   wait in order).
 //! - After downtime a policy runs once when its latest missed fire time is
 //!   at most 3600 s old (the runner's schedule window); an older one is
-//!   recorded as a failed, missed run and reported.
+//!   recorded as one `MISSED` run (proto v2.1.3) and reported.
+//! - Failed and missed runs and failed verifications notify the channels
+//!   the policy signs (`channel_ids`, contracts v1.1.3, D-061).
 //! - Manual `backup.run` / `backup.verify` plans are executed by the plan
 //!   executor; their runs are recorded from the admissions.
 
@@ -77,6 +79,8 @@ pub struct PolicyDef {
     pub destination_ref: String,
     pub plan: PlanRef,
     pub active_from: i64,
+    /// v1.0.11 (D-061): the signed `channel_ids` (sorted, at most 16).
+    pub channel_ids: Vec<String>,
 }
 
 /// A recorded destination (no credential, only its ciphertext digest).
@@ -154,6 +158,16 @@ pub fn load(actions: &[AdmittedAction]) -> Definitions {
                             action_index: u32::try_from(action.action_index).unwrap_or(u32::MAX),
                         },
                         active_from: applied_at(action),
+                        channel_ids: params["channel_ids"]
+                            .as_array()
+                            .map(|ids| {
+                                ids.iter()
+                                    .filter_map(Value::as_str)
+                                    .take(16)
+                                    .map(str::to_owned)
+                                    .collect()
+                            })
+                            .unwrap_or_default(),
                     },
                 );
             }
@@ -466,8 +480,9 @@ impl BackupScheduler {
             source: "backup",
             subject_id: policy.resource_id.clone(),
             occurred,
-            standalone: false,
-            channel_ids: Vec::new(),
+            // A policy with its own channels notifies them (10.2).
+            standalone: !policy.channel_ids.is_empty(),
+            channel_ids: policy.channel_ids.clone(),
             summary: summary.to_owned(),
         });
     }
@@ -535,7 +550,7 @@ impl BackupScheduler {
         let run = BackupRun {
             id: new_id(now),
             policy_id: policy.resource_id.clone(),
-            status: BackupRunStatus::Failed as i32,
+            status: BackupRunStatus::Missed as i32,
             trigger: backup_run::Trigger::Schedule as i32,
             started_at: Some(pts(latest)),
             finished_at: Some(pts(now)),
@@ -1101,9 +1116,43 @@ impl BackupScheduler {
                 } as i32;
                 if !action.outcome.is_empty() {
                     verification.finished_at = finished.or(Some(pts(now)));
+                    self.apply_manual_verify(&action, &mut verification);
                 }
                 self.record_verification(&verification, &slot);
             }
+        }
+    }
+
+    /// v1.0.12 (D-062): a plan-bound `backup_verify` result sets the
+    /// verification and the artifact's `last_verification` from the
+    /// runner's `run_result` line exactly as a scheduled verify does:
+    /// `PASSED` when every check is true and `verified_at` is set.
+    fn apply_manual_verify(&self, action: &AdmittedAction, verification: &mut RestoreVerification) {
+        let Some(consumed) = &self.deps.consumed_log else {
+            return;
+        };
+        let lines =
+            crate::admissions::run_results(&consumed.path, consumed.owner_uid, "backup_verify");
+        let Some(line) = lines.iter().rev().find(|line| {
+            line["plan_id"] == action.plan_id.as_str()
+                && line["plan_digest_hex"] == action.plan_digest_hex.as_str()
+                && line["action_index"].as_u64() == u64::try_from(action.action_index).ok()
+        }) else {
+            return;
+        };
+        let mut answer = line.clone();
+        if answer["verified_at"].is_null() && answer["outcome"] == "succeeded" {
+            answer["outcome"] = Value::from("failed");
+        }
+        apply_verify_result(verification, &Ok(answer));
+        if let Some(mut artifact) = self
+            .deps
+            .ops
+            .get(RecordKind::Artifact, &verification.artifact_id)
+            .and_then(|row| row.decode::<BackupArtifact>())
+        {
+            artifact.last_verification = verification.status;
+            self.put_artifact(&artifact);
         }
     }
 
@@ -1135,6 +1184,10 @@ impl BackupScheduler {
             .unwrap_or_default()
             .to_owned();
         run.size_bytes = line["size_bytes"].as_u64().unwrap_or_default();
+        // v1.0.11 (D-061): the runner's finer trigger.
+        if matches!(line["trigger"].as_str(), Some("pre_restore" | "pre_deploy")) {
+            run.trigger = backup_run::Trigger::PreChange as i32;
+        }
         let policy = self.state().defs.policies.get(&run.policy_id).cloned();
         match policy {
             Some(policy) => self.record_artifact(&policy, run, backup_id, now),
@@ -1208,7 +1261,7 @@ impl BackupScheduler {
             age_recipients: recipients,
             verify_schedule: policy.verify_text.clone(),
             enabled: true,
-            channel_ids: Vec::new(),
+            channel_ids: policy.channel_ids.clone(),
             next_run_at: match (&policy.schedule, &policy.timezone) {
                 (Some(schedule), Some(tz)) => schedule
                     .next_after(tz, now.max(policy.active_from))

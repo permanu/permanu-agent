@@ -53,6 +53,8 @@ pub(super) struct TxContext<'a> {
     pub(super) tx: &'a Transaction<'a>,
     pub(super) trust: &'a TrustStore,
     pub(super) now: i64,
+    /// `build_id` → runner `build_started` time (see `AdmissionStore`).
+    pub(super) build_starts: std::collections::BTreeMap<String, i64>,
 }
 
 fn internal(_: rusqlite::Error) -> PlanCode {
@@ -125,17 +127,18 @@ impl PolicyContext for TxContext<'_> {
     }
 
     fn rule(&self, rule_id: &str) -> Result<Option<RuleRecord>, PlanCode> {
-        let row: Option<(String, String, String, Option<String>)> = self
+        let row: Option<(String, String, String, bool)> = self
             .tx
             .query_row(
-                "SELECT rule, rule_digest_hex, created_by_key_id, revoked_at FROM rules \
+                "SELECT rule, rule_digest_hex, created_by_key_id, \
+                 revoked_at IS NOT NULL OR revoked_plan_id IS NOT NULL FROM rules \
                  WHERE rule_id = ?1",
                 params![rule_id],
                 |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
             )
             .optional()
             .map_err(internal)?;
-        let Some((text, digest, creator, revoked_at)) = row else {
+        let Some((text, digest, creator, revoked)) = row else {
             return Ok(None);
         };
         let rule = parse_strict(text.as_bytes(), 64 * 1024).ok_or(PlanCode::Internal)?;
@@ -143,7 +146,8 @@ impl PolicyContext for TxContext<'_> {
             rule,
             rule_digest_hex: digest,
             created_by_key_id: creator,
-            revoked: revoked_at.is_some(),
+            // A pending (admitted, not yet recorded) revocation counts.
+            revoked,
         }))
     }
 
@@ -251,6 +255,28 @@ impl PolicyContext for TxContext<'_> {
             .map_err(internal)
     }
 
+    fn build_window(
+        &self,
+        service_id: &str,
+        commit_sha: &str,
+    ) -> Result<(Option<i64>, Option<i64>), PlanCode> {
+        let row: Option<(String, String)> = self
+            .tx
+            .query_row(
+                "SELECT build_id, built_at FROM builds WHERE service_id = ?1 AND commit_sha = ?2",
+                params![service_id, commit_sha],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .optional()
+            .map_err(internal)?;
+        Ok(row.map_or((None, None), |(build_id, built_at)| {
+            (
+                self.build_starts.get(&build_id).copied(),
+                crate::signed_plan::text::timestamp(&built_at),
+            )
+        }))
+    }
+
     fn deployed_commit(
         &self,
         service_id: &str,
@@ -312,6 +338,7 @@ impl AdmissionStore {
     /// Section 6.1 steps 1–13. `trust` is the validated trust store.
     pub fn admit(&self, trust: &TrustStore, input: &AdmitInput<'_>) -> Result<Admission, PlanCode> {
         self.check_quarantine(input.now)?;
+        let build_starts = self.build_starts();
         let mut conn = self.lock();
         let tx = conn
             .transaction_with_behavior(TransactionBehavior::Immediate)
@@ -320,6 +347,7 @@ impl AdmissionStore {
             tx: &tx,
             trust,
             now: input.now,
+            build_starts,
         };
         let verdict = verify_signed_plan(input.envelope, input.specs, input.submitter, &ctx)?;
         let verified = match verdict {
@@ -359,12 +387,14 @@ impl AdmissionStore {
         input: &AdmitInput<'_>,
     ) -> Result<Verdict, PlanCode> {
         self.check_quarantine(input.now)?;
+        let build_starts = self.build_starts();
         let mut conn = self.lock();
         let tx = conn.transaction().map_err(internal)?;
         let ctx = TxContext {
             tx: &tx,
             trust,
             now: input.now,
+            build_starts,
         };
         let verdict = verify_signed_plan(input.envelope, input.specs, input.submitter, &ctx)?;
         if let Verdict::Admit(verified) = &verdict {
@@ -779,13 +809,16 @@ fn write_admission(
                 )
                 .map_err(|_| PlanCode::ExecPrecondition)?;
             }
+            // v1.0.11 (D-061): the revocation is recorded from the runner's
+            // result line (reconcile); admission only marks it pending, which
+            // already stops the rule from triggering (fail closed).
             "rule.revoke" => {
                 let changed = tx
                     .execute(
-                        "UPDATE rules SET revoked_at = ?1, revoked_plan_id = ?2 \
-                         WHERE rule_id = ?3 AND rule_digest_hex = ?4 AND revoked_at IS NULL",
+                        "UPDATE rules SET revoked_plan_id = ?1 \
+                         WHERE rule_id = ?2 AND rule_digest_hex = ?3 AND revoked_at IS NULL \
+                         AND revoked_plan_id IS NULL",
                         params![
-                            admitted_at,
                             plan_id,
                             params_value["rule_id"].as_str(),
                             params_value["rule_digest_hex"].as_str()

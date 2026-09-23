@@ -311,8 +311,10 @@ impl Presence {
                     _ => return,
                 }
             }
+            // A MISSED run (proto v2.1.3) was a failed run before.
             (EventKind::BackupRun, event::Payload::BackupRun(run))
-                if run.status == BackupRunStatus::Failed as i32 =>
+                if run.status == BackupRunStatus::Failed as i32
+                    || run.status == BackupRunStatus::Missed as i32 =>
             {
                 AwayEvent::BackupFailed
             }

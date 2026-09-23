@@ -10,6 +10,7 @@
 //! 60 s and checks the disk guard every 5 s.
 
 pub mod ingest;
+pub mod journal;
 pub mod metrics;
 pub mod otlp;
 pub mod otlp_server;

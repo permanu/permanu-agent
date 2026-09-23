@@ -63,6 +63,8 @@ const OWNER_ONLY_PRESENCE: &[&str] = &[
     "db.upgrade",
     "backup.policy.delete",
     "backup.destination.delete",
+    // v1.0.11 (D-061).
+    "webhook.host.set",
 ];
 const CI_KINDS: &[&str] = &["deploy", "rollback", "restart", "operation.cancel"];
 const RULE_ELIGIBLE: &[&str] = &["deploy"];
@@ -143,6 +145,14 @@ pub trait PolicyContext {
     fn delivery(&self, delivery_id: &str) -> Result<Option<DeliveryRecord>, PlanCode>;
     fn last_admitted_spec(&self, service_id: &str) -> Result<Option<Value>, PlanCode>;
     fn build_image(&self, service_id: &str, commit_sha: &str) -> Result<Option<String>, PlanCode>;
+    /// v1.0.11 (D-061): when the runner's build of the service and commit
+    /// started (its `build_started` line) and ended (its `build` line), in
+    /// Unix seconds; `None` for a time this server does not know.
+    fn build_window(
+        &self,
+        service_id: &str,
+        commit_sha: &str,
+    ) -> Result<(Option<i64>, Option<i64>), PlanCode>;
     /// (commit_sha, commit_time) the service last deployed on `ref`.
     fn deployed_commit(
         &self,
@@ -610,6 +620,17 @@ fn names_in_scope(plan: &Value, ctx: &dyn PolicyContext) -> Result<bool, PlanCod
                 return Ok(false);
             }
         }
+        // v1.0.11 (D-061): the resource whose backup a restore reads.
+        if kind == "restore" {
+            if let Some(source) = params["source_resource_id"].as_str() {
+                if ctx
+                    .service_scope(source)?
+                    .is_some_and(|found| found != scope)
+                {
+                    return Ok(false);
+                }
+            }
+        }
         if CRON_ID_KINDS.contains(&kind) {
             let id = params["cron_id"].as_str().unwrap_or_default();
             if ctx.cron_scope(id)?.is_some_and(|found| found != scope) {
@@ -731,10 +752,27 @@ fn check_rule(
         return Err(PlanCode::RuleEvidence);
     }
     let received = timestamp(&evidence["received_at"])?;
-    if !(received - SKEW_SECONDS <= now && now <= received + WEBHOOK_TTL_SECONDS) {
+    if now < received - SKEW_SECONDS {
         return Err(PlanCode::RuleEvidence);
     }
     let commit_sha = evidence["commit_sha"].as_str().unwrap_or_default();
+    // v1.0.11 (D-061): the window is anchored to the runner's build: fresh
+    // within 900 s of the delivery, or when the build started within 900 s
+    // of it and ended at most 900 s ago.
+    if now > received + WEBHOOK_TTL_SECONDS {
+        for action in actions {
+            let service = action["params"]["service_id"].as_str().unwrap_or_default();
+            let fresh = match ctx.build_window(service, commit_sha)? {
+                (Some(started), Some(built)) => {
+                    started <= received + WEBHOOK_TTL_SECONDS && now <= built + WEBHOOK_TTL_SECONDS
+                }
+                _ => false,
+            };
+            if !fresh {
+                return Err(PlanCode::RuleEvidence);
+            }
+        }
+    }
     let commit_time = timestamp(&evidence["commit_time"])?;
     let r#ref = evidence["ref"].as_str().unwrap_or_default();
     for action in actions {

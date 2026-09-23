@@ -870,10 +870,11 @@ impl TelemetryService for TelemetrySvc {
             .map(Response::new)
     }
 
-    /// Dwaar analytics need the `dwaar.service` journal on the runner's
-    /// log stream, whose wire shape `logs_follow_stream` does not carry yet
-    /// (signed-plan.md 14.3), so nothing feeds the `analytics` store: the
-    /// RPC stays `CAPABILITY_MISSING` rather than answering empty rows.
+    /// The `dwaar.service` journal now feeds the `http` store and 60 s
+    /// rollups in the `analytics` store (contracts v1.1.2), but the rollups
+    /// are keyed by route host only: attributing them to a service needs a
+    /// route-host → service map no runner op returns yet, so the RPC stays
+    /// `CAPABILITY_MISSING` rather than answering rows it cannot scope.
     async fn query_analytics(
         &self,
         _request: Request<AnalyticsQuery>,

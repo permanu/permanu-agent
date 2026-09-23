@@ -185,6 +185,22 @@ impl PolicyContext for VectorContext {
         .and_then(|b| b["image_digest_hex"].as_str().map(str::to_owned)))
     }
 
+    fn build_window(
+        &self,
+        service_id: &str,
+        commit_sha: &str,
+    ) -> Result<(Option<i64>, Option<i64>), PlanCode> {
+        let build = find(&self.context["builds"], |b| {
+            b["service_id"] == service_id && b["commit_sha"] == commit_sha
+        });
+        let at = |field: &str| {
+            build
+                .and_then(|b| b[field].as_str())
+                .and_then(crate::signed_plan::text::timestamp)
+        };
+        Ok((at("started_at"), at("built_at")))
+    }
+
     fn deployed_commit(
         &self,
         service_id: &str,

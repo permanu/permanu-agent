@@ -40,6 +40,35 @@ fn context() -> Value {
 /// production" admitted, the service's last admitted spec and the
 /// production webhook secret held by the runner.
 async fn fixture(name: &str) -> Fixture {
+    let f = fixture_without_rule(name).await;
+    let rule_plan = admit_rule(&f.h);
+    Fixture { rule_plan, ..f }
+}
+
+/// Records the vector rule's `rule.create` admission (seq 1) and its row.
+fn admit_rule(h: &Harness) -> String {
+    let store = h.core.store.clone();
+    let context = context();
+    let rule = &context["rules"][0];
+    let rule_plan = record(
+        &store,
+        1,
+        (PROJECT, "production", ENV_ID),
+        &[json!({"kind": "rule.create", "params": {"rule": rule["rule"]}})],
+        "succeeded",
+    );
+    seed::rule(
+        &store,
+        &rule["rule"],
+        rule["rule_digest_hex"].as_str().unwrap(),
+        rule["created_by_key_id"].as_str().unwrap(),
+        &rule_plan,
+    );
+    rule_plan
+}
+
+/// [`fixture`] before its rule is admitted.
+async fn fixture_without_rule(name: &str) -> Fixture {
     let trust = serde_json::to_string(&vector("trusted-keys")).unwrap();
     let h = Harness::with(
         name,
@@ -52,22 +81,7 @@ async fn fixture(name: &str) -> Fixture {
     .await;
     let store = h.core.store.clone();
     let context = context();
-    let rule = &context["rules"][0];
     let scope = (PROJECT, "production", ENV_ID);
-    let rule_plan = record(
-        &store,
-        1,
-        scope,
-        &[json!({"kind": "rule.create", "params": {"rule": rule["rule"]}})],
-        "succeeded",
-    );
-    seed::rule(
-        &store,
-        &rule["rule"],
-        rule["rule_digest_hex"].as_str().unwrap(),
-        rule["created_by_key_id"].as_str().unwrap(),
-        &rule_plan,
-    );
     let spec_plan = record(
         &store,
         2,
@@ -84,7 +98,7 @@ async fn fixture(name: &str) -> Fixture {
     Fixture {
         h,
         hooks,
-        rule_plan,
+        rule_plan: String::new(),
     }
 }
 
@@ -219,6 +233,18 @@ async fn a_verified_push_builds_on_the_server_and_admits_the_rule_plan() {
     assert_eq!(build.status, ServerBuildStatus::Succeeded as i32);
     assert_eq!(build.image_digest_hex, "e".repeat(64));
     assert_eq!(build.platform, "linux/arm64");
+    // v2.1.3 (D-061): the runner's build id beside the agent-minted id.
+    let runner_log = std::fs::read_to_string(&f.h.runner.log).unwrap();
+    let build_line = runner_log
+        .lines()
+        .map(|l| serde_json::from_str::<Value>(l).unwrap())
+        .find(|l| l["event"] == "build")
+        .unwrap();
+    assert_eq!(
+        build.runner_build_id,
+        build_line["build_id"].as_str().unwrap()
+    );
+    assert_ne!(build.runner_build_id, build.id);
     assert_eq!(build.environment_id, ENV_ID);
     assert_eq!(
         build.deployment_id,
@@ -681,5 +707,178 @@ async fn hello_reports_presence_away_summary_and_webhook_fields() {
     assert_eq!(away.webhook_deliveries, 1);
     assert_eq!(away.rule_deploys, 1);
     assert_eq!(back.webhook_pending, 0);
+    f.h.stop().await;
+}
+
+/// v1.1.4 (D-062, agent-protocol.md 11.1 step 9): a push verified before
+/// its rule was admitted waits `PENDING`; admitting the `rule.create`
+/// re-matches it against the new rule and it deploys.
+#[tokio::test]
+async fn a_pending_push_is_rematched_once_its_rule_is_admitted() {
+    use crate::proto::agent::v2::{event, EventKind, Scope, TrustChangedEvent};
+    let f = fixture_without_rule("hooks-rematch").await;
+    let watch = f.hooks.spawn_rule_watch();
+    let body = push_body("refs/heads/main", COMMIT);
+    assert_eq!(
+        f.hooks
+            .intake(github(&body, SECRET, "203.0.113.9"))
+            .await
+            .status,
+        202
+    );
+    f.hooks.settle().await;
+    assert_eq!(
+        only_delivery(&f.hooks).status,
+        WebhookDeliveryStatus::Pending as i32
+    );
+    assert!(build_requests(&f.h).is_empty());
+    admit_rule(&f.h);
+    // What the executor publishes when it applies the rule.create.
+    f.h.core.events.publish(
+        EventKind::TrustChanged,
+        Scope::default(),
+        event::Payload::TrustChanged(TrustChangedEvent {
+            change: "rule.create".to_owned(),
+            subject_id: "01a0cdb5-3500-70f1-8000-000000000001".to_owned(),
+            ..Default::default()
+        }),
+    );
+    let mut status = 0;
+    for _ in 0..300 {
+        f.hooks.settle().await;
+        status = only_delivery(&f.hooks).status;
+        if status == WebhookDeliveryStatus::Deployed as i32 {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    }
+    assert_eq!(status, WebhookDeliveryStatus::Deployed as i32);
+    assert_eq!(build_requests(&f.h).len(), 1);
+    watch.abort();
+    f.h.stop().await;
+}
+
+/// The 900 s evidence window still applies to a re-matched push.
+#[tokio::test]
+async fn a_rematched_push_older_than_the_window_is_stale() {
+    let f = fixture_without_rule("hooks-rematch-stale").await;
+    let body = push_body("refs/heads/main", COMMIT);
+    assert_eq!(
+        f.hooks
+            .intake(github(&body, SECRET, "203.0.113.9"))
+            .await
+            .status,
+        202
+    );
+    f.hooks.settle().await;
+    f.h.clock
+        .0
+        .fetch_add(901, std::sync::atomic::Ordering::SeqCst);
+    admit_rule(&f.h);
+    f.hooks
+        .rule_admitted("01a0cdb5-3500-70f1-8000-000000000001");
+    f.hooks.settle().await;
+    assert_eq!(
+        only_delivery(&f.hooks).status,
+        WebhookDeliveryStatus::Stale as i32
+    );
+    assert!(build_requests(&f.h).is_empty());
+    f.h.stop().await;
+}
+
+/// v2.1.3 (D-061): `WebhookQueueStatus.webhook_host` is the latest
+/// succeeded `webhook.host.set`.
+#[tokio::test]
+async fn the_queue_status_reports_the_recorded_webhook_host() {
+    let f = fixture("hooks-webhook-host").await;
+    let status = || async {
+        WebhookServiceClient::new(f.h.channel.clone())
+            .get_webhook_queue_status(GetWebhookQueueStatusRequest::default())
+            .await
+            .unwrap()
+            .into_inner()
+    };
+    assert_eq!(status().await.webhook_host, "");
+    let host = |h: &str| json!({"kind": "webhook.host.set", "params": {"webhook_host": h}});
+    record(
+        &f.h.core.store,
+        3,
+        ("", "", ""),
+        &[host("hooks.a.example.com")],
+        "succeeded",
+    );
+    record(
+        &f.h.core.store,
+        4,
+        ("", "", ""),
+        &[host("hooks.b.example.com")],
+        "failed",
+    );
+    assert_eq!(status().await.webhook_host, "hooks.a.example.com");
+    record(
+        &f.h.core.store,
+        5,
+        ("", "", ""),
+        &[host("hooks.c.example.com")],
+        "succeeded",
+    );
+    assert_eq!(status().await.webhook_host, "hooks.c.example.com");
+    f.h.stop().await;
+}
+
+/// v1.1.3 (D-061, agent-protocol.md 11.1 "Body cap"): the agent never relies
+/// on Dwaar's cap. A body that ends before its `Content-Length`, or a
+/// chunked body cut before its last chunk (what Dwaar forwards when it cuts
+/// an oversize chunked body), is 400 and never reaches `webhook_verify`; a
+/// chunked body over 1 MiB is 413 and counted.
+#[tokio::test]
+async fn truncated_bodies_are_400_and_never_verified() {
+    let f = fixture("hooks-truncated").await;
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let task = super::listener::serve(f.hooks.clone(), listener);
+    let send_half = |raw: Vec<u8>| async move {
+        let mut stream = tokio::net::TcpStream::connect(addr).await.unwrap();
+        stream.write_all(&raw).await.unwrap();
+        stream.shutdown().await.unwrap();
+        let mut out = Vec::new();
+        let _ = stream.read_to_end(&mut out).await;
+        String::from_utf8_lossy(&out).into_owned()
+    };
+    let body = push_body("refs/heads/main", COMMIT);
+    let mac = hmac_sha256_hex(SECRET, &body);
+    let head = |framing: &str| {
+        format!(
+            "POST /hooks/{PROJECT} HTTP/1.1\r\nHost: x\r\nX-GitHub-Event: push\r\n\
+             X-Hub-Signature-256: sha256={mac}\r\nX-Real-IP: 203.0.113.9\r\n{framing}\r\n\r\n"
+        )
+    };
+    let mut short = head(&format!("Content-Length: {}", body.len() + 10)).into_bytes();
+    short.extend_from_slice(&body);
+    assert!(send_half(short).await.starts_with("HTTP/1.1 400"));
+    let mut cut = head("Transfer-Encoding: chunked").into_bytes();
+    cut.extend_from_slice(format!("{:x}\r\n", body.len()).as_bytes());
+    cut.extend_from_slice(&body);
+    cut.extend_from_slice(b"\r\n");
+    assert!(send_half(cut).await.starts_with("HTTP/1.1 400"));
+    let mut big = head("Transfer-Encoding: chunked").into_bytes();
+    let chunk = vec![b'x'; 64 * 1024];
+    for _ in 0..17 {
+        big.extend_from_slice(format!("{:x}\r\n", chunk.len()).as_bytes());
+        big.extend_from_slice(&chunk);
+        big.extend_from_slice(b"\r\n");
+    }
+    big.extend_from_slice(b"0\r\n\r\n");
+    assert!(send_half(big).await.starts_with("HTTP/1.1 413"));
+    assert_eq!(f.hooks.counters().1, 1);
+    assert!(!f
+        .h
+        .runner
+        .requests
+        .lock()
+        .unwrap()
+        .iter()
+        .any(|r| r["op"] == "webhook_verify"));
+    task.abort();
     f.h.stop().await;
 }

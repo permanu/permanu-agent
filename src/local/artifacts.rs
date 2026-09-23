@@ -55,7 +55,18 @@ pub const TEST_RELEASE_KEY_IDS: [&str; 3] = [
     "MA975uwluIeABZVJLGWMaA",
 ];
 const MANIFEST_PREFIX: &[u8] = b"permanu-release-manifest-v1\n";
-const COMPONENT_NAMES: [&str; 4] = ["permanu-agent", "permanu-runner", "dwaar", "permanu-env"];
+/// signed-plan.md 3.2 (v1.0.11, D-061: the build tools and `rclone`).
+const COMPONENT_NAMES: [&str; 9] = [
+    "permanu-agent",
+    "permanu-runner",
+    "dwaar",
+    "permanu-env",
+    "buildkitd",
+    "buildctl",
+    "rootlesskit",
+    "slirp4netns",
+    "rclone",
+];
 const MAX_RELEASE_KEYS_BYTES: u64 = 64 * 1024;
 const MAX_FILES: usize = 16;
 const MAX_FILE_BYTES: u64 = 128 * 1024 * 1024;
@@ -210,7 +221,7 @@ fn manifest_shape_ok(manifest: &Value) -> bool {
     };
     object.len() == 3
         && manifest["version"] == 2
-        && (1..=16).contains(&components.len())
+        && (1..=32).contains(&components.len())
         && (1..=8).contains(&keys.len())
         && components.iter().all(|c| {
             c.as_object().is_some_and(|m| m.len() == 5)
@@ -486,6 +497,31 @@ impl Artifacts {
                 && set.arch == arch
                 && self.deps.root.join(bundle_manifest_digest_hex).is_dir()
         })
+    }
+
+    /// v1.1.3 (D-061, agent-protocol.md 13): an `agent.update` /
+    /// `component.update` installed from this set ended `succeeded`, so the
+    /// set is deleted at once (a failed or cancelled install keeps it until
+    /// its 24 h expiry for a retry).
+    pub fn consumed(&self, bundle_manifest_digest_hex: &str) {
+        if !text::hex64(bundle_manifest_digest_hex) {
+            return;
+        }
+        for row in self.deps.ops.list(
+            RecordKind::StagedSet,
+            &Listing {
+                limit: 1_000,
+                ..Default::default()
+            },
+        ) {
+            let same = row
+                .decode::<StagedArtifactSet>()
+                .is_some_and(|set| set.bundle_manifest_digest_hex == bundle_manifest_digest_hex);
+            if same {
+                self.deps.ops.remove(RecordKind::StagedSet, &row.id);
+            }
+        }
+        let _ = fs::remove_dir_all(self.deps.root.join(bundle_manifest_digest_hex));
     }
 
     /// Drops expired sets and all but the newest two.
