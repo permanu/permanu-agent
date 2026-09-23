@@ -13,6 +13,7 @@ pub mod errors;
 pub mod events;
 pub mod execution;
 pub mod facts;
+pub mod logs;
 pub mod runner;
 pub mod socket;
 
@@ -41,6 +42,7 @@ use crate::{
         event_service_server::EventServiceServer,
         info_service_server::{InfoService, InfoServiceServer},
         state_service_server::{StateService, StateServiceServer},
+        telemetry_service_server::TelemetryServiceServer,
         trusted_keys_summary::TrustState as TrustStateProto,
         AgentInfo, ClockInfo, Container, ErrorReason, GetServerFactsRequest,
         GetStateSnapshotRequest, HelloRequest, HelloResponse, ListContainersRequest,
@@ -61,6 +63,9 @@ pub const CAPABILITY_ADMISSIONS: &str = "admissions.v1";
 pub const CAPABILITY_AGE: &str = "age.v1";
 /// v2.0.3 (D-035): the agent copies signed deployment ids and never mints.
 pub const CAPABILITY_DEPLOYMENT_IDS: &str = "deployment_ids.v1";
+/// v2.0.3 (D-036): QueryLogs serves APP and SERVICE from the runner's
+/// read-only container ops.
+pub const CAPABILITY_LOGS_CONTAINERS: &str = "logs.containers.v1";
 pub const ERROR_REASON_HEADER: &str = "permanu-error-reason";
 /// agent-protocol.md section 7.
 pub const MAX_MESSAGE_BYTES: usize = 4 * 1024 * 1024;
@@ -245,6 +250,7 @@ fn capabilities(age_recipient: &str) -> Vec<String> {
         CAPABILITY_SIGNED_PLANS.to_string(),
         CAPABILITY_ADMISSIONS.to_string(),
         CAPABILITY_DEPLOYMENT_IDS.to_string(),
+        CAPABILITY_LOGS_CONTAINERS.to_string(),
     ];
     if !age_recipient.is_empty() {
         ids.push(CAPABILITY_AGE.to_string());
@@ -328,7 +334,7 @@ fn matches_field(filter: &str, value: &str) -> bool {
     filter.is_empty() || filter == value
 }
 
-fn capability_missing() -> Status {
+pub(crate) fn capability_missing() -> Status {
     status_with_reason(
         Code::Unimplemented,
         "not available on this agent",
@@ -401,10 +407,14 @@ impl LocalServer {
             // End open Subscribe/WatchOperation streams so the server drains.
             bus.close();
         };
+        let runner = self.core.runner.clone();
         let change_svc = ChangeServiceServer::new(change::ChangeSvc { core: self.core })
             .max_decoding_message_size(MAX_MESSAGE_BYTES)
             .max_encoding_message_size(MAX_MESSAGE_BYTES);
         let event_svc = EventServiceServer::new(events::EventSvc { bus: events })
+            .max_decoding_message_size(MAX_MESSAGE_BYTES)
+            .max_encoding_message_size(MAX_MESSAGE_BYTES);
+        let telemetry_svc = TelemetryServiceServer::new(logs::TelemetrySvc::new(runner))
             .max_decoding_message_size(MAX_MESSAGE_BYTES)
             .max_encoding_message_size(MAX_MESSAGE_BYTES);
 
@@ -417,6 +427,7 @@ impl LocalServer {
             .add_service(state_svc)
             .add_service(change_svc)
             .add_service(event_svc)
+            .add_service(telemetry_svc)
             .serve_with_incoming_shutdown(logged_incoming(listener), shutdown)
             .await
     }
@@ -514,6 +525,7 @@ pub async fn run(
     let probe: Arc<dyn HostProbe> = Arc::new(facts::SystemProbe {
         server_id,
         ssh_host_key_dir: cfg.ssh_host_key_dir.clone(),
+        runner: runner.clone(),
     });
     let core = execution::ChangeCore::new(execution::ChangeCoreParts {
         store: Arc::new(store),
@@ -586,7 +598,12 @@ mod tests {
     fn age_capability_needs_a_recipient() {
         assert_eq!(
             capabilities(""),
-            vec!["signed_plans.v1", "admissions.v1", "deployment_ids.v1"]
+            vec![
+                "signed_plans.v1",
+                "admissions.v1",
+                "deployment_ids.v1",
+                "logs.containers.v1"
+            ]
         );
         assert_eq!(
             capabilities("age1xyz"),
@@ -594,6 +611,7 @@ mod tests {
                 "signed_plans.v1",
                 "admissions.v1",
                 "deployment_ids.v1",
+                "logs.containers.v1",
                 "age.v1"
             ]
         );
@@ -646,6 +664,7 @@ mod tests {
                 "signed_plans.v1",
                 "admissions.v1",
                 "deployment_ids.v1",
+                "logs.containers.v1",
                 "age.v1"
             ]
         );

@@ -1,9 +1,9 @@
-//! Host facts for `InfoService` and containers for `StateService`, read from
-//! the local system and Docker. The pure parsers are unit-tested; the probe
-//! itself is swapped for a fake in the socket round-trip test.
+//! Host facts for `InfoService`, read from the local system, and containers
+//! for `StateService`, read through the runner's `list_containers`. The pure
+//! parsers are unit-tested; the probe itself is swapped for a fake in the
+//! socket round-trip test.
 
 use std::{
-    collections::HashMap,
     ffi::CString,
     fs,
     path::Path,
@@ -11,13 +11,7 @@ use std::{
 };
 
 use base64::Engine as _;
-use bollard::{
-    models::{
-        ContainerSummary, ContainerSummaryHealthStatusEnum, LocalNodeState,
-        SwarmInfo as DockerSwarmInfo,
-    },
-    query_parameters::ListContainersOptionsBuilder,
-};
+use bollard::models::{LocalNodeState, SwarmInfo as DockerSwarmInfo};
 use prost_types::Timestamp;
 use sha2::{Digest, Sha256};
 use tonic::Status;
@@ -29,14 +23,6 @@ use crate::{
         ServerFacts, SwarmInfo,
     },
 };
-
-/// Docker labels that tie a container to Permanu identities. Containers
-/// without `permanu.project_id` or `permanu.service_id` are not listed.
-pub const LABEL_PROJECT_ID: &str = "permanu.project_id";
-pub const LABEL_ENVIRONMENT: &str = "permanu.environment";
-pub const LABEL_ENVIRONMENT_ID: &str = "permanu.environment_id";
-pub const LABEL_SERVICE_ID: &str = "permanu.service_id";
-pub const LABEL_SPEC_DIGEST: &str = "permanu.spec_digest_hex";
 
 const DWAAR_ADMIN_SOCKET: &str = "/run/dwaar/admin.sock";
 const DWAAR_BINARIES: [&str; 2] = ["/usr/local/bin/dwaar", "/usr/bin/dwaar"];
@@ -56,10 +42,13 @@ pub trait HostProbe: Send + Sync + 'static {
     fn timezone(&self) -> String;
 }
 
-/// The real host.
+/// The real host. Containers come from the runner's read-only
+/// `list_containers` (signed-plan.md 14.3, D-036): the agent has no Docker
+/// socket (D-030).
 pub struct SystemProbe {
     pub server_id: String,
     pub ssh_host_key_dir: std::path::PathBuf,
+    pub runner: std::sync::Arc<dyn super::runner::Runner>,
 }
 
 #[tonic::async_trait]
@@ -108,18 +97,18 @@ impl HostProbe for SystemProbe {
     }
 
     async fn containers(&self, include_stopped: bool) -> Result<Vec<Container>, Status> {
-        let docker = docker_observe::docker_client()
-            .map_err(|err| Status::unavailable(format!("docker unavailable: {err}")))?;
-        let options = ListContainersOptionsBuilder::default()
-            .all(include_stopped)
-            .build();
-        let summaries = tokio::time::timeout(PROBE_TIMEOUT, docker.list_containers(Some(options)))
+        let listed = super::runner::list_containers(self.runner.as_ref(), &Default::default())
             .await
-            .map_err(|_| Status::unavailable("docker list timed out"))?
-            .map_err(|err| Status::unavailable(format!("docker list failed: {err}")))?;
-        Ok(summaries
+            .map_err(|failure| {
+                Status::unavailable(format!(
+                    "containers unavailable ({}): {}",
+                    failure.code, failure.message
+                ))
+            })?;
+        Ok(listed
             .into_iter()
-            .filter_map(|summary| container_from_summary(summary, &self.server_id))
+            .filter(|c| include_stopped || c.state == "running")
+            .map(|c| container_from_runner(c, &self.server_id))
             .collect())
     }
 
@@ -293,42 +282,32 @@ pub fn swarm_from_docker(swarm: Option<&DockerSwarmInfo>) -> SwarmInfo {
 
 /// Maps a Docker container to the v2 `Container`; `None` when it carries no
 /// Permanu identity label.
-pub fn container_from_summary(summary: ContainerSummary, server_id: &str) -> Option<Container> {
-    let labels: HashMap<String, String> = summary.labels.unwrap_or_default();
-    let label = |key: &str| labels.get(key).cloned().unwrap_or_default();
-    if label(LABEL_PROJECT_ID).is_empty() && label(LABEL_SERVICE_ID).is_empty() {
-        return None;
-    }
-    let image = summary.image.unwrap_or_default();
-    let image_digest_hex = image
+/// A `list_containers` entry as a `StateService` container. The runner
+/// lists only Permanu-labelled containers; the environment name is not a
+/// label, so `environment` stays empty.
+pub fn container_from_runner(
+    container: super::runner::RunnerContainer,
+    server_id: &str,
+) -> Container {
+    let image_digest_hex = container
+        .image
         .split_once("@sha256:")
         .map(|(_, hex)| hex.to_string())
         .unwrap_or_default();
-    let health = match summary.health.and_then(|h| h.status) {
-        Some(ContainerSummaryHealthStatusEnum::HEALTHY) => health_event::Status::Healthy,
-        Some(ContainerSummaryHealthStatusEnum::UNHEALTHY) => health_event::Status::Unhealthy,
-        Some(ContainerSummaryHealthStatusEnum::STARTING) => health_event::Status::Starting,
-        _ => health_event::Status::Unknown,
-    };
-    Some(Container {
-        container_id: summary.id.unwrap_or_default(),
-        name: summary
-            .names
-            .and_then(|names| names.into_iter().next())
-            .map(|n| n.trim_start_matches('/').to_string())
-            .unwrap_or_default(),
+    Container {
+        container_id: container.id,
+        name: container.name.trim_start_matches('/').to_string(),
         server_id: server_id.to_string(),
-        project_id: label(LABEL_PROJECT_ID),
-        environment: label(LABEL_ENVIRONMENT),
-        environment_id: label(LABEL_ENVIRONMENT_ID),
-        service_id: label(LABEL_SERVICE_ID),
-        spec_digest_hex: label(LABEL_SPEC_DIGEST),
-        image,
+        project_id: container.project_id,
+        environment_id: container.environment_id,
+        service_id: container.service_id,
+        spec_digest_hex: container.spec_digest_hex,
+        image: container.image,
         image_digest_hex,
-        state: summary.state.map(|s| s.to_string()).unwrap_or_default(),
-        health: health as i32,
+        state: container.state,
+        health: health_event::Status::Unknown as i32,
         ..Default::default()
-    })
+    }
 }
 
 fn hostname() -> String {
@@ -446,7 +425,7 @@ fn ntp_synchronized() -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use bollard::models::{ClusterInfo, ContainerSummaryHealth, ContainerSummaryStateEnum};
+    use bollard::models::ClusterInfo;
 
     #[test]
     fn host_key_digests_come_from_the_configured_dir() {
@@ -461,6 +440,9 @@ mod tests {
         let probe = SystemProbe {
             server_id: String::new(),
             ssh_host_key_dir: dir.clone(),
+            runner: std::sync::Arc::new(super::super::runner::SocketRunner {
+                path: dir.join("runner.sock"),
+            }),
         };
         let line = format!("ssh-ed25519 {blob} root@host\n");
         assert_eq!(
@@ -570,42 +552,31 @@ mod tests {
     }
 
     #[test]
-    fn maps_labelled_containers_only() {
-        let unlabelled = ContainerSummary {
-            id: Some("x".to_string()),
-            ..Default::default()
-        };
-        assert!(container_from_summary(unlabelled, "srv").is_none());
-
-        let labels = HashMap::from([
-            (LABEL_PROJECT_ID.to_string(), "p1".to_string()),
-            (LABEL_SERVICE_ID.to_string(), "s1".to_string()),
-            (LABEL_ENVIRONMENT.to_string(), "production".to_string()),
-            (LABEL_SPEC_DIGEST.to_string(), "ab".repeat(32)),
-        ]);
-        let summary = ContainerSummary {
-            id: Some("c1".to_string()),
-            names: Some(vec!["/web-1".to_string()]),
-            image: Some(format!("ghcr.io/acme/web@sha256:{}", "cd".repeat(32))),
-            labels: Some(labels),
-            state: Some(ContainerSummaryStateEnum::RUNNING),
-            health: Some(ContainerSummaryHealth {
-                status: Some(ContainerSummaryHealthStatusEnum::HEALTHY),
+    fn maps_runner_containers() {
+        let got = container_from_runner(
+            super::super::runner::RunnerContainer {
+                id: "c1".to_string(),
+                name: "/web-1".to_string(),
+                image: format!("ghcr.io/acme/web@sha256:{}", "cd".repeat(32)),
+                state: "running".to_string(),
+                project_id: "p1".to_string(),
+                environment_id: "e1".to_string(),
+                service_id: "s1".to_string(),
+                deployment_id: "d1".to_string(),
+                spec_digest_hex: "ab".repeat(32),
                 ..Default::default()
-            }),
-            ..Default::default()
-        };
-        let got = container_from_summary(summary, "srv").unwrap();
+            },
+            "srv",
+        );
         assert_eq!(got.container_id, "c1");
         assert_eq!(got.name, "web-1");
         assert_eq!(got.server_id, "srv");
         assert_eq!(got.project_id, "p1");
+        assert_eq!(got.environment_id, "e1");
         assert_eq!(got.service_id, "s1");
-        assert_eq!(got.environment, "production");
         assert_eq!(got.spec_digest_hex, "ab".repeat(32));
         assert_eq!(got.image_digest_hex, "cd".repeat(32));
         assert_eq!(got.state, "running");
-        assert_eq!(got.health, health_event::Status::Healthy as i32);
     }
 
     #[test]

@@ -37,6 +37,9 @@ use crate::signed_plan::PlanCode;
 
 pub const VECTOR_NOW: &str = "2026-09-23T10:05:00Z";
 
+/// `container_logs` lines of one container: (stdout, stderr).
+pub type StdoutStderr = (Vec<String>, Vec<String>);
+
 pub struct FakeProbe {
     pub host_keys: Vec<String>,
 }
@@ -126,7 +129,7 @@ pub struct FakeRunner {
     /// Permanu containers `list_containers` reports (section 14.3 shape).
     pub containers: Mutex<Vec<Value>>,
     /// `container_logs` answers per container id: (stdout, stderr).
-    pub logs: Mutex<HashMap<String, (Vec<String>, Vec<String>)>>,
+    pub logs: Mutex<HashMap<String, StdoutStderr>>,
     /// Lines `container_logs_follow` streams before it waits for the close.
     pub follow_lines: Mutex<HashMap<String, Vec<String>>>,
     consumed: Mutex<HashSet<(String, u32)>>,

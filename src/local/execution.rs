@@ -1132,6 +1132,13 @@ impl ChangeCore {
         } else {
             ("cleanup_candidate", "failed")
         };
+        // The recovery op's own `result` line can end the action before the
+        // executor does; its final step must still carry the failed step's
+        // code.
+        locked(&self.failures).insert(
+            (record.plan_id.clone(), action.action_index),
+            (code.clone(), message.clone()),
+        );
         match self
             .op(record, plan, action, recovery, self.timing.op_timeout)
             .await
