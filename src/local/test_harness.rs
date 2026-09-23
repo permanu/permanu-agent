@@ -612,8 +612,11 @@ impl Harness {
             clock.now(),
         )
         .unwrap();
-        // The installer's public recipient file (D-027); no identity here.
-        let recipient_file = dir.join("agent/age-recipient");
+        // The installer's public recipient file (D-027, D-037); no identity
+        // here.
+        fs::create_dir_all(dir.join("etc/age")).unwrap();
+        fs::set_permissions(dir.join("etc/age"), fs::Permissions::from_mode(0o755)).unwrap();
+        let recipient_file = dir.join("etc/age/recipient");
         fs::write(
             &recipient_file,
             format!("{}\n", age::x25519::Identity::generate().to_public()),

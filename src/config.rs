@@ -333,7 +333,7 @@ impl LocalConfig {
             admissions_db: root.join("agent/admissions.db"),
             consumed_log: root.join("runner/consumed.log"),
             runner_socket: root.join("run/runner.sock"),
-            age_recipient_path: root.join("agent/age-recipient"),
+            age_recipient_path: root.join("etc/age/recipient"),
             trust_lock_path: root.join("run/trust.lock"),
             ssh_host_key_dir: root.join("etc/ssh"),
             // SAFETY: geteuid has no preconditions.
@@ -403,9 +403,10 @@ mod mode_tests {
         );
         assert_eq!(cfg.runner_socket, PathBuf::from("/run/permanu/runner.sock"));
         assert_eq!(cfg.runner_path, None);
+        // D-037: root-owned /etc/permanu/age, never the agent's own dir.
         assert_eq!(
             cfg.age_recipient_path,
-            PathBuf::from("/var/lib/permanu/agent/age-recipient")
+            PathBuf::from("/etc/permanu/age/recipient")
         );
         assert_eq!(cfg.store_user, "permanu-agent");
         assert_eq!(cfg.store_group, "permanu-runner");
@@ -457,7 +458,7 @@ mod mode_tests {
         assert_eq!(cfg.trust_lock_path, root.join("run/trust.lock"));
         assert_eq!(cfg.admissions_db, root.join("agent/admissions.db"));
         assert_eq!(cfg.consumed_log, root.join("runner/consumed.log"));
-        assert_eq!(cfg.age_recipient_path, root.join("agent/age-recipient"));
+        assert_eq!(cfg.age_recipient_path, root.join("etc/age/recipient"));
         assert_eq!(cfg.runner_socket, root.join("run/runner.sock"));
         assert_eq!(cfg.ssh_host_key_dir, root.join("etc/ssh"));
         assert_eq!(cfg.runner_path, Some(root.join("fake-runner")));
