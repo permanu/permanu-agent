@@ -43,6 +43,10 @@ service ChangeService {
   // the ci key that signed that plan). Admitted like any plan.
   // v2.0.2 (D-033): returns the cancel plan's own operation; the cancelled
   // operation ends CANCELLED and is observed with WatchOperation.
+  // v2.0.6 (D-048): the runner closes each cancelled action when the cancel
+  // starts (no further op binds to it); the cancelled operation's cleanup and
+  // final steps and its finished event come first, then the cancel
+  // operation's step logs listing each cancelled action, then its finished.
   rpc CancelOperation(CancelOperationRequest) returns (Operation);
 
   // GetStateHead returns the current state head for one scope, which the
@@ -130,6 +134,10 @@ message Operation {
   string initiator = 12;
   // plan.id (UUIDv7).
   string plan_id = 13;
+  // v2.0.6. The exact E_* code and its ErrorReason of the step that ended the
+  // operation (agent-protocol.md 5); empty / UNSPECIFIED on success.
+  string error_code = 14;
+  ErrorReason error_reason = 15;
 }
 
 // OperationStep.name vocabulary (v2.0.2, signed-plan.md 14.6), mapped by
@@ -164,6 +172,11 @@ message OperationStep {
   // "recovery"); "start" also when the start timeout (default 300 s)
   // expired. Empty otherwise.
   string failure_code = 10;
+  // v2.0.6. The runner or signed-plan.md 6.1 code of a failed step (e.g.
+  // "E_SCOPE_MISMATCH") and its ErrorReason (agent-protocol.md 5); the engine
+  // maps the reason with agent-protocol.md 5.1. Empty / UNSPECIFIED otherwise.
+  string error_code = 11;
+  ErrorReason error_reason = 12;
 }
 
 message GetOperationRequest {

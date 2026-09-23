@@ -15,8 +15,8 @@ use super::ERROR_REASON_HEADER;
 use crate::proto::agent::v2::{
     change_service_client::ChangeServiceClient, deploy_status_event::Phase, event,
     event_service_client::EventServiceClient, info_service_client::InfoServiceClient,
-    operation_event, trusted_keys_summary::TrustState, CancelOperationRequest, EventKind,
-    GetOperationRequest, GetStateHeadRequest, GetTrustedKeysRequest, HelloRequest,
+    operation_event, trusted_keys_summary::TrustState, CancelOperationRequest, ErrorReason,
+    EventKind, GetOperationRequest, GetStateHeadRequest, GetTrustedKeysRequest, HelloRequest,
     ListAdmissionsRequest, ListOperationsRequest, ListStandingRulesRequest, Operation,
     OperationRef, OperationState, PageRequest, SignedPlan, SubmitSignedPlanRequest,
     SubscribeRequest, VerifySignedPlanRequest, WatchOperationRequest,
@@ -366,7 +366,7 @@ async fn updates_without_an_artifact_trust_root_are_refused_before_admission() {
         assert_eq!(status.code(), Code::Unimplemented, "{action}");
         assert_eq!(
             trailer(&status, ERROR_REASON_HEADER),
-            "ERROR_REASON_CAPABILITY_MISSING"
+            "ERROR_REASON_NOT_SUPPORTED_YET"
         );
         assert!(
             status.message().starts_with("not_supported_yet"),
@@ -1159,15 +1159,80 @@ async fn runner_refusal_fails_the_operation_with_the_mapped_reason() {
     .await;
     wait_for_state(&h, &reference.operation_id, OperationState::Failed).await;
     let op = operation(&h, &reference.operation_id).await;
+    // v2.0.6: the runner code has its own reason (was EXEC_PRECONDITION),
+    // carried on the step and the operation next to the message.
     assert!(
         op.error
-            .starts_with("ERROR_REASON_EXEC_PRECONDITION (E_PLAN_WINDOW)"),
+            .starts_with("ERROR_REASON_PLAN_WINDOW (E_PLAN_WINDOW)"),
         "{}",
         op.error
     );
+    assert_eq!(op.error_code, "E_PLAN_WINDOW");
+    assert_eq!(op.error_reason, ErrorReason::PlanWindow as i32);
+    let failed = op.steps.last().unwrap();
+    assert_eq!(failed.name, "failed");
+    assert_eq!(failed.error_code, "E_PLAN_WINDOW");
+    assert_eq!(failed.error_reason, ErrorReason::PlanWindow as i32);
     // Nothing ran after the refused bind.
     assert!(h.runner.ops_for(&reference.plan_id).is_empty());
     assert_eq!(names(&op, 0), vec!["queued", "failed"]);
+    h.stop().await;
+}
+
+/// F-23 (QA_M1 run 5): `prepare_release` refused before it created a
+/// candidate (a refused input fold, `E_SCOPE_MISMATCH`) runs no recovery:
+/// the deploy fails `prepare` with the runner's reason, never `recovery` /
+/// `internal`.
+#[tokio::test]
+async fn a_refused_input_fold_reports_the_runner_reason_not_recovery() {
+    let Some(owner) = TestSigner::load("owner") else {
+        eprintln!("skipped: docs keys.json not found");
+        return;
+    };
+    let h = Harness::start("fold-refused", Some(&vector_trust())).await;
+    h.runner
+        .behave("prepare_release", OpBehavior::Fail("E_SCOPE_MISMATCH"));
+    h.runner
+        .behave("cleanup_candidate", OpBehavior::Fail("E_SCOPE_MISMATCH"));
+    let reference = submit_ok(
+        &h,
+        fresh_deploy(
+            &owner,
+            "0000000000e2",
+            "CCCCCCCCCCCCCCCCCCCCCQ",
+            GENESIS_HEAD,
+        ),
+    )
+    .await;
+    wait_for_state(&h, &reference.operation_id, OperationState::Failed).await;
+    assert_eq!(
+        h.runner.ops_for(&reference.plan_id),
+        vec![("prepare_release".to_owned(), 0)]
+    );
+    let op = operation(&h, &reference.operation_id).await;
+    assert_eq!(
+        final_step(&op),
+        (
+            "failed".to_owned(),
+            OperationState::Failed as i32,
+            "prepare".to_owned()
+        )
+    );
+    let prepare = op
+        .steps
+        .iter()
+        .find(|s| s.name == "prepare_release")
+        .unwrap();
+    assert_eq!(prepare.error_code, "E_SCOPE_MISMATCH");
+    assert_eq!(prepare.error_reason, ErrorReason::ScopeMismatch as i32);
+    assert!(
+        op.error
+            .starts_with("ERROR_REASON_SCOPE_MISMATCH (E_SCOPE_MISMATCH)"),
+        "{}",
+        op.error
+    );
+    assert_eq!(op.error_code, "E_SCOPE_MISMATCH");
+    assert_eq!(op.error_reason, ErrorReason::ScopeMismatch as i32);
     h.stop().await;
 }
 
@@ -1337,22 +1402,142 @@ async fn cancel_stops_a_running_deploy_and_returns_the_cancel_operation() {
     assert_eq!(cleanup.state, OperationState::Succeeded as i32);
     assert_eq!(cleanup.failure_code, "");
     assert_eq!(op.state, OperationState::Cancelled as i32);
-    // The cancel plan's own step logs what the runner cancelled. The
-    // runner's result line can finish the operation before the executor
-    // logs the wire result, so wait for the line in the store.
+    // The cancel plan's own step logs what the runner cancelled, before its
+    // `finished` (v1.0.6, D-048): no waiting once the cancel succeeded.
     let expected = format!(
         "cancelled action 0 (deployment {}): cleanup done",
         cleanup.deployment_id
     );
-    let mut lines = Vec::new();
-    for _ in 0..200 {
-        lines = step_logs(&h, &cancel.id);
-        if lines.contains(&expected) {
-            break;
-        }
-        tokio::time::sleep(Duration::from_millis(10)).await;
-    }
+    let lines = step_logs(&h, &cancel.id);
     assert!(lines.contains(&expected), "{lines:?}");
+    h.stop().await;
+}
+
+/// One operation event in the order the agent emitted it:
+/// `(operation_id, "step:<name>:<state>" | "log:<line>" | "finished")`.
+fn describe_event(event: &crate::proto::agent::v2::OperationEvent) -> (String, String) {
+    let what = match &event.event {
+        Some(operation_event::Event::Step(step)) => format!("step:{}:{}", step.name, step.state),
+        Some(operation_event::Event::Log(log)) => format!("log:{}", log.line),
+        Some(operation_event::Event::Finished(_)) => "finished".to_owned(),
+        None => String::new(),
+    };
+    (event.operation_id.clone(), what)
+}
+
+fn position(events: &[(String, String)], operation_id: &str, what: &str) -> usize {
+    events
+        .iter()
+        .position(|(id, w)| id == operation_id && w.starts_with(what))
+        .unwrap_or_else(|| panic!("{operation_id} {what} missing: {events:#?}"))
+}
+
+/// Contracts v1.0.6 (D-048, signed-plan.md 14.6): the cancelled deploy's
+/// cleanup step, its `cancelled` step and its `finished` come first; then the
+/// cancel operation's step logs listing each cancelled action, its
+/// `cancel_execution` step completion, and only then its `finished`. A
+/// `WatchOperation` replay of the cancel therefore holds the list.
+#[tokio::test]
+async fn a_cancel_emits_the_cancelled_list_before_its_finished() {
+    let Some(owner) = TestSigner::load("owner") else {
+        eprintln!("skipped: docs keys.json not found");
+        return;
+    };
+    let h = Harness::start("cancel-order", Some(&vector_trust())).await;
+    let mut feed = h.core.subscribe_operations();
+    let (deploy, cancel) = cancel_in_prepare(&h, &owner).await;
+    let mut events = Vec::new();
+    while let Ok(event) = feed.try_recv() {
+        events.push(describe_event(&event));
+    }
+    let succeeded = OperationState::Succeeded as i32;
+    let cleanup = position(
+        &events,
+        &deploy.operation_id,
+        &format!("step:cleanup_candidate:{succeeded}"),
+    );
+    let cancelled = position(
+        &events,
+        &deploy.operation_id,
+        &format!("step:cancelled:{}", OperationState::Cancelled as i32),
+    );
+    let deploy_finished = position(&events, &deploy.operation_id, "finished");
+    let listed = position(&events, &cancel.id, "log:cancelled action 0 (deployment ");
+    let step_done = position(
+        &events,
+        &cancel.id,
+        &format!("step:cancel_execution:{succeeded}"),
+    );
+    let cancel_finished = position(&events, &cancel.id, "finished");
+    assert!(cleanup < cancelled, "{events:#?}");
+    assert!(cancelled < deploy_finished, "{events:#?}");
+    assert!(deploy_finished < listed, "{events:#?}");
+    assert!(listed < step_done, "{events:#?}");
+    assert!(step_done < cancel_finished, "{events:#?}");
+    // Exactly one finished per operation.
+    for id in [&deploy.operation_id, &cancel.id] {
+        assert_eq!(
+            events
+                .iter()
+                .filter(|(o, w)| o == id && w == "finished")
+                .count(),
+            1,
+            "{events:#?}"
+        );
+    }
+    // The runner closed the deploy's action when the cancel started: the
+    // close marker precedes the cleanup and the one cancelled result.
+    let log = std::fs::read_to_string(&h.runner.log).unwrap();
+    let deploy_lines: Vec<Value> = log
+        .lines()
+        .map(|l| serde_json::from_str::<Value>(l).unwrap())
+        .filter(|l| l["plan_id"] == deploy.plan_id.as_str() && l["event"] != "consumed")
+        .map(|l| json!([l["event"], l["op"], l["outcome"]]))
+        .collect();
+    assert_eq!(
+        deploy_lines,
+        vec![
+            json!(["op", "prepare_release", null]),
+            json!(["op", "cancel_execution", null]),
+            json!(["op", "cleanup_candidate", null]),
+            json!(["result", null, "cancelled"]),
+        ]
+    );
+    h.stop().await;
+}
+
+/// v1.0.6 (signed-plan.md 14.6): when the `cancel_execution` wire result is
+/// lost (connection closed), the executor takes the cancelled list from the
+/// consumed log's `cancelled` result lines and still emits it before the
+/// cancel operation's `finished`; the cancel succeeded.
+#[tokio::test]
+async fn a_lost_cancel_result_takes_the_list_from_the_consumed_log() {
+    let Some(owner) = TestSigner::load("owner") else {
+        eprintln!("skipped: docs keys.json not found");
+        return;
+    };
+    let h = Harness::start("cancel-lost", Some(&vector_trust())).await;
+    h.runner
+        .drop_cancel_result
+        .store(true, std::sync::atomic::Ordering::SeqCst);
+    let (deploy, cancel) = cancel_in_prepare(&h, &owner).await;
+    let op = operation(&h, &deploy.operation_id).await;
+    let deployment_id = op
+        .steps
+        .iter()
+        .find(|s| s.name == "cleanup_candidate")
+        .unwrap()
+        .deployment_id
+        .clone();
+    let lines = step_logs(&h, &cancel.id);
+    assert!(
+        lines.contains(&format!(
+            "cancelled action 0 (deployment {deployment_id}): cleanup done"
+        )),
+        "{lines:?}"
+    );
+    let cancel_op = operation(&h, &cancel.id).await;
+    assert_eq!(cancel_op.error, "");
     h.stop().await;
 }
 

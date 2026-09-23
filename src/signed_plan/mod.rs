@@ -60,6 +60,13 @@ pub enum PlanCode {
     PlanAction,
     PlanArgs,
     PlanConsumed,
+    /// Runner (sections 14.2 check 3b, 14.7, v1.0.5 D-042).
+    ScopeMismatch,
+    /// Runner (section 14.4).
+    RollbackTargetUnknown,
+    /// Runner (section 14.4, v1.0.6 D-046 clarification): M1 refuses
+    /// `agent.update` and `component.update(runner|permanu-env)`.
+    NotSupportedYet,
 }
 
 impl PlanCode {
@@ -101,6 +108,9 @@ impl PlanCode {
             Self::PlanAction => "E_PLAN_ACTION",
             Self::PlanArgs => "E_PLAN_ARGS",
             Self::PlanConsumed => "E_PLAN_CONSUMED",
+            Self::ScopeMismatch => "E_SCOPE_MISMATCH",
+            Self::RollbackTargetUnknown => "E_ROLLBACK_TARGET_UNKNOWN",
+            Self::NotSupportedYet => "E_NOT_SUPPORTED_YET",
         }
     }
 
@@ -147,6 +157,9 @@ const ALL_CODES: &[PlanCode] = &[
     PlanCode::PlanAction,
     PlanCode::PlanArgs,
     PlanCode::PlanConsumed,
+    PlanCode::ScopeMismatch,
+    PlanCode::RollbackTargetUnknown,
+    PlanCode::NotSupportedYet,
 ];
 
 #[cfg(test)]
@@ -159,5 +172,13 @@ mod code_tests {
             assert_eq!(PlanCode::parse(code.as_str()), Some(*code));
         }
         assert_eq!(PlanCode::parse("E_NOPE"), None);
+        // v1.0.6 runner codes (signed-plan.md 14.2-14.4).
+        for (text, code) in [
+            ("E_SCOPE_MISMATCH", PlanCode::ScopeMismatch),
+            ("E_ROLLBACK_TARGET_UNKNOWN", PlanCode::RollbackTargetUnknown),
+            ("E_NOT_SUPPORTED_YET", PlanCode::NotSupportedYet),
+        ] {
+            assert_eq!(PlanCode::parse(text), Some(code));
+        }
     }
 }
