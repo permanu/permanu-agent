@@ -58,6 +58,13 @@ message HelloResponse {
   //                           container_logs_follow, without the telemetry
   //                           store (D-036). The engine reads server logs only
   //                           through QueryLogs, never over SSH.
+  //   "service_kind.v1"     - v2.0.5 (contracts v1.0.5, D-045): admits
+  //                           ServiceSpecs with service_kind and server.add
+  //                           plans with age_recipient_fingerprint, and fills
+  //                           Container.environment and Container.service_kind
+  //                           from the permanu.environment and
+  //                           permanu.service_kind labels. An engine requires
+  //                           it before it submits a plan that names a spec.
   repeated string capabilities = 3;
   ServerFacts server = 4;
   TrustedKeysSummary trusted_keys = 5;
@@ -100,7 +107,9 @@ message AgentInfo {
   // /var/lib/permanu/agent/age-recipient); the identity
   // (/etc/permanu/age/identity, root:root 0400) is created by the installer,
   // never overwritten, never leaves the server, and only the runner decrypts
-  // with it.
+  // with it. v2.0.5 (D-045): a bootstrap server.add must sign
+  // age_recipient_fingerprint = hex SHA-256 of this string, else
+  // BOOTSTRAP_REJECTED.
   string age_recipient = 10;
 }
 
