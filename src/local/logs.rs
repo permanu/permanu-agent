@@ -637,6 +637,8 @@ impl TelemetrySvc {
         let (mut sent_in_window, mut dropped) = (0_u64, 0_u64);
         loop {
             tokio::select! {
+                // The client went away: close every follow connection now.
+                () = tx.closed() => break,
                 line = lines_rx.recv() => {
                     let Some((container, stream, text)) = line else { break };
                     let (nanos, message) = split_line(&text);
