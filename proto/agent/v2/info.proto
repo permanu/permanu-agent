@@ -45,6 +45,19 @@ message HelloResponse {
   //                       v1.0.2 columns; ListAdmissions and GetStateHead.
   //   "age.v1"          - AgentInfo.age_recipient is set and the runner
   //                       decrypts SignedPlan.sealed_secrets (D-027).
+  // v2.0.3 adds (contracts v1.0.3):
+  //   "deployment_ids.v1"   - admits signed-plan v1.0.3 deploy.deployment_id
+  //                           and rollback.to_deployment_id (to_release_id
+  //                           alias), copies them into
+  //                           admission_actions.deployment_id and never mints
+  //                           one (D-035). An engine requires it before it
+  //                           submits a deploy or rollback.
+  //   "logs.containers.v1"  - QueryLogs serves APP and SERVICE sources,
+  //                           including follow, from the runner's read-only
+  //                           ops list_containers, container_logs and
+  //                           container_logs_follow, without the telemetry
+  //                           store (D-036). The engine reads server logs only
+  //                           through QueryLogs, never over SSH.
   repeated string capabilities = 3;
   ServerFacts server = 4;
   TrustedKeysSummary trusted_keys = 5;
@@ -82,10 +95,12 @@ message AgentInfo {
   // v2.0.1. The age X25519 recipient ("age1...") of this server. The engine
   // seals secret.set and alert.channel values to it; the plan signs the
   // SHA-256 of the binary age ciphertext (signed-plan.md 3.2, Sealed
-  // secrets). v2.0.2 (D-027): the agent reads it from
-  // /var/lib/permanu/agent/age-recipient (root:root 0644); the identity
-  // (age-identity, root:root 0400) is created by the installer, never leaves
-  // the server, and only the runner decrypts with it.
+  // secrets). v2.0.4 (D-037): the agent reads it from
+  // /etc/permanu/age/recipient (root:root 0644; v2.0.2 and v2.0.3 used
+  // /var/lib/permanu/agent/age-recipient); the identity
+  // (/etc/permanu/age/identity, root:root 0400) is created by the installer,
+  // never overwritten, never leaves the server, and only the runner decrypts
+  // with it.
   string age_recipient = 10;
 }
 

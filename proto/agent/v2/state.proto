@@ -75,6 +75,8 @@ message ServiceState {
   string environment_id = 4;
   // Last admitted spec digest and the release it runs.
   string spec_digest_hex = 5;
+  // v2.0.3 (D-035): the deployment id of the active release (the signed
+  // deploy.deployment_id it was prepared under).
   string release_id = 6;
   uint32 replicas_desired = 7;
   uint32 replicas_healthy = 8;
