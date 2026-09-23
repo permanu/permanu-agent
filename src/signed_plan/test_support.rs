@@ -23,6 +23,7 @@ pub fn vector(name: &str) -> Value {
         "plans" => include_str!("../../tests/vectors/signed-plan/plans.json"),
         "policy-cases" => include_str!("../../tests/vectors/signed-plan/policy-cases.json"),
         "trusted-keys" => include_str!("../../tests/vectors/signed-plan/trusted-keys.json"),
+        "artifact-cases" => include_str!("../../tests/vectors/signed-plan/artifact-cases.json"),
         _ => panic!("unknown vector file {name}"),
     };
     serde_json::from_str(text).expect("vector json")

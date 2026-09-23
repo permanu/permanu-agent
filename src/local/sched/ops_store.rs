@@ -49,6 +49,12 @@ pub enum RecordKind {
     Verification,
     Artifact,
     AlertEvent,
+    /// agent-protocol.md 11: webhook deliveries (`WebhookDelivery`).
+    WebhookDelivery,
+    /// agent-protocol.md 11.2: server builds (`ServerBuild`).
+    ServerBuild,
+    /// agent-protocol.md 13: staged artifact sets (`StagedArtifactSet`).
+    StagedSet,
 }
 
 impl RecordKind {
@@ -59,6 +65,9 @@ impl RecordKind {
             Self::Verification => "verification",
             Self::Artifact => "artifact",
             Self::AlertEvent => "alert_event",
+            Self::WebhookDelivery => "webhook_delivery",
+            Self::ServerBuild => "server_build",
+            Self::StagedSet => "staged_set",
         }
     }
 }
@@ -278,6 +287,29 @@ impl OpsStore {
             .query_map(rusqlite::params_from_iter(values), row)
             .map(|rows| rows.filter_map(Result::ok).collect())
             .unwrap_or_default()
+    }
+
+    /// Records of `kind` with one of `statuses` (all when empty) whose `at`
+    /// is at least `from`.
+    pub fn count(&self, kind: RecordKind, statuses: &[i32], from: Option<i64>) -> u32 {
+        let mut sql = String::from("SELECT COUNT(*) FROM records WHERE kind = ?1 AND at >= ?2");
+        if !statuses.is_empty() {
+            let list: Vec<String> = statuses.iter().map(i32::to_string).collect();
+            sql.push_str(&format!(" AND status IN ({})", list.join(",")));
+        }
+        self.lock()
+            .query_row(&sql, params![kind.name(), from.unwrap_or(i64::MIN)], |r| {
+                r.get::<_, i64>(0)
+            })
+            .map_or(0, |count| u32::try_from(count).unwrap_or(u32::MAX))
+    }
+
+    /// Drops one record (a staged set that was deleted).
+    pub fn remove(&self, kind: RecordKind, id: &str) {
+        let _ = self.lock().execute(
+            "DELETE FROM records WHERE kind = ?1 AND id = ?2",
+            params![kind.name(), id],
+        );
     }
 
     /// Drops run history older than 90 days beyond the newest 1,000 records

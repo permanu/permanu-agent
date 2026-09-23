@@ -23,6 +23,7 @@ mod admit;
 pub mod definitions;
 mod query;
 mod reconcile;
+pub mod webhooks;
 
 #[cfg(test)]
 mod tests;

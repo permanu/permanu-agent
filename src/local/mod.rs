@@ -10,15 +10,19 @@
 //! the host is an admitted signed plan.
 
 pub mod age_recipient;
+pub mod artifacts;
 pub mod change;
 pub mod errors;
 pub mod events;
 pub mod execution;
 pub mod facts;
+pub mod hooks;
 pub mod logs;
+pub mod presence;
 pub mod runner;
 pub mod sched;
 pub mod socket;
+pub mod status;
 pub mod telemetry;
 
 use std::{
@@ -43,6 +47,7 @@ use crate::{
     proto::agent::v2::{
         agent_info, agent_status,
         alert_service_server::AlertServiceServer,
+        artifact_service_server::ArtifactServiceServer,
         backup_service_server::BackupServiceServer,
         change_service_server::ChangeServiceServer,
         event_service_server::EventServiceServer,
@@ -51,6 +56,7 @@ use crate::{
         state_service_server::{StateService, StateServiceServer},
         telemetry_service_server::TelemetryServiceServer,
         trusted_keys_summary::TrustState as TrustStateProto,
+        webhook_service_server::WebhookServiceServer,
         AgentInfo, AgentStatus, ClockInfo, Container, ErrorReason, GetServerFactsRequest,
         GetStateSnapshotRequest, HelloRequest, HelloResponse, ListContainersRequest,
         ListContainersResponse, PageInfo, PingRequest, PingResponse, ServerFacts, StateSnapshot,
@@ -143,6 +149,10 @@ pub struct InfoSvc {
     age_recipient: String,
     telemetry: Option<Arc<telemetry::Telemetry>>,
     schedulers: bool,
+    /// Presence, webhook and scheduler fields of `AgentStatus`.
+    sources: status::StatusSources,
+    /// `artifacts.v1`: staging and `AgentInfo.release_keys`.
+    artifacts: Option<Arc<artifacts::Artifacts>>,
 }
 
 /// `AgentStatus` (agent-protocol.md 12.3) from what this agent tracks:
@@ -232,6 +242,7 @@ impl InfoService for InfoSvc {
         request: Request<HelloRequest>,
     ) -> Result<Response<HelloResponse>, Status> {
         log_peer(&request, "Hello");
+        let connection = presence::connection_of(&request);
         let req = request.into_inner();
         let Some(negotiated) = [PROTOCOL_VERSION, PROTOCOL_VERSION_2_0]
             .into_iter()
@@ -268,13 +279,19 @@ impl InfoService for InfoSvc {
         getrandom::getrandom(&mut session)
             .map_err(|_| Status::internal("session id generation failed"))?;
 
+        // agent-protocol.md 12.1: an engine Hello opens a session.
+        if let (Some(presence), Some(conn)) = (&self.sources.presence, connection) {
+            presence.hello(conn, &req.client_name, &req.engine_id);
+        }
         let status = (negotiated == PROTOCOL_VERSION).then(|| {
-            build_agent_status(
+            let mut status = build_agent_status(
                 self.telemetry.as_deref(),
                 &trust,
                 self.probe.ntp_synchronized(),
                 now,
-            )
+            );
+            self.sources.fill(&mut status, unix_seconds(now));
+            status
         });
         Ok(Response::new(HelloResponse {
             protocol_version: negotiated.to_string(),
@@ -292,7 +309,7 @@ impl InfoService for InfoSvc {
                 server_id,
                 ssh_host_key_digests_hex: self.probe.ssh_host_key_digests_hex(),
                 age_recipient: self.age_recipient.clone(),
-                release_keys: None,
+                release_keys: self.artifacts.as_ref().map(|a| a.summary()),
                 recovery_recipient_fingerprint: String::new(),
                 bundle_manifest_digest_hex: String::new(),
             }),
@@ -300,6 +317,8 @@ impl InfoService for InfoSvc {
                 &self.age_recipient,
                 self.telemetry.is_some(),
                 self.schedulers,
+                self.sources.hooks.is_some(),
+                self.artifacts.is_some(),
             ),
             server: Some(self.probe.server_facts().await),
             trusted_keys: Some(trusted_keys),
@@ -330,10 +349,22 @@ impl InfoService for InfoSvc {
     }
 }
 
+fn unix_seconds(at: SystemTime) -> i64 {
+    at.duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| i64::try_from(d.as_secs()).unwrap_or(i64::MAX))
+}
+
 /// `HelloResponse.capabilities`: `age.v1` only when a recipient is set,
 /// `telemetry.v1` only when the store opened, `cron.v1`, `backups.v1` and
-/// `alerts.v1` only while the schedulers run.
-fn capabilities(age_recipient: &str, telemetry: bool, schedulers: bool) -> Vec<String> {
+/// `alerts.v1` only while the schedulers run, `webhooks.v1` only with the
+/// webhook path and `artifacts.v1` only with the staging directory.
+fn capabilities(
+    age_recipient: &str,
+    telemetry: bool,
+    schedulers: bool,
+    webhooks: bool,
+    artifacts: bool,
+) -> Vec<String> {
     let mut ids = vec![
         CAPABILITY_SIGNED_PLANS.to_string(),
         CAPABILITY_ADMISSIONS.to_string(),
@@ -349,6 +380,12 @@ fn capabilities(age_recipient: &str, telemetry: bool, schedulers: bool) -> Vec<S
     }
     if schedulers {
         ids.extend(sched::Schedulers::capabilities().map(str::to_owned));
+    }
+    if webhooks {
+        ids.push(hooks::CAPABILITY_WEBHOOKS.to_owned());
+    }
+    if artifacts {
+        ids.push(artifacts::CAPABILITY_ARTIFACTS.to_owned());
     }
     ids
 }
@@ -440,8 +477,8 @@ pub(crate) fn capability_missing() -> Status {
 pub(crate) fn log_peer<T>(request: &Request<T>, rpc: &str) {
     let peer = request
         .extensions()
-        .get::<tonic::transport::server::UdsConnectInfo>()
-        .and_then(|info| info.peer_cred);
+        .get::<presence::ConnectionInfo>()
+        .and_then(|info| info.uds.peer_cred);
     if let Some(cred) = peer {
         info!(
             rpc,
@@ -480,15 +517,31 @@ pub struct LocalServer {
     /// Cron, backup and alert schedulers (`cron.v1`, `backups.v1`,
     /// `alerts.v1`); `None` leaves those services unimplemented.
     pub schedulers: Option<sched::Schedulers>,
+    /// Engine presence (agent-protocol.md 12.1).
+    pub presence: Arc<presence::Presence>,
+    /// The webhook path (`webhooks.v1`); `None` leaves it unimplemented.
+    pub hooks: Option<Arc<hooks::Hooks>>,
+    /// Artifact staging (`artifacts.v1`); `None` leaves it unimplemented.
+    pub artifacts: Option<Arc<artifacts::Artifacts>>,
 }
 
 impl LocalServer {
+    /// The status sources this server fills `AgentStatus` from.
+    pub fn sources(&self) -> status::StatusSources {
+        status::StatusSources {
+            presence: Some(self.presence.clone()),
+            hooks: self.hooks.clone(),
+            schedulers: self.schedulers.clone(),
+        }
+    }
+
     /// Serves until `shutdown` resolves.
     pub async fn serve(
         self,
         listener: UnixListener,
         shutdown: impl std::future::Future<Output = ()> + Send,
     ) -> Result<(), tonic::transport::Error> {
+        let sources = self.sources();
         let info_svc = InfoServiceServer::new(InfoSvc {
             probe: self.probe.clone(),
             identity: self.identity,
@@ -496,6 +549,8 @@ impl LocalServer {
             age_recipient: self.age_recipient,
             telemetry: self.telemetry.clone(),
             schedulers: self.schedulers.is_some(),
+            sources,
+            artifacts: self.artifacts.clone(),
         })
         .max_decoding_message_size(MAX_MESSAGE_BYTES)
         .max_encoding_message_size(MAX_MESSAGE_BYTES);
@@ -543,9 +598,22 @@ impl LocalServer {
         let change_svc = ChangeServiceServer::new(change::ChangeSvc { core: self.core })
             .max_decoding_message_size(MAX_MESSAGE_BYTES)
             .max_encoding_message_size(MAX_MESSAGE_BYTES);
-        let event_svc = EventServiceServer::new(events::EventSvc { bus: events })
-            .max_decoding_message_size(MAX_MESSAGE_BYTES)
-            .max_encoding_message_size(MAX_MESSAGE_BYTES);
+        let webhook_svc = self.hooks.clone().map(|hooks| {
+            WebhookServiceServer::new(hooks::rpc::WebhookSvc { hooks })
+                .max_decoding_message_size(MAX_MESSAGE_BYTES)
+                .max_encoding_message_size(MAX_MESSAGE_BYTES)
+        });
+        let artifact_svc = self.artifacts.clone().map(|artifacts| {
+            ArtifactServiceServer::new(artifacts::ArtifactSvc { artifacts })
+                .max_decoding_message_size(MAX_MESSAGE_BYTES)
+                .max_encoding_message_size(MAX_MESSAGE_BYTES)
+        });
+        let event_svc = EventServiceServer::new(events::EventSvc {
+            bus: events,
+            presence: Some(self.presence.clone()),
+        })
+        .max_decoding_message_size(MAX_MESSAGE_BYTES)
+        .max_encoding_message_size(MAX_MESSAGE_BYTES);
         let telemetry = match self.telemetry {
             Some(store) => logs::TelemetrySvc::with_store(runner, store),
             None => logs::TelemetrySvc::new(runner),
@@ -559,6 +627,7 @@ impl LocalServer {
             .http2_keepalive_timeout(Some(Duration::from_secs(30)))
             .concurrency_limit_per_connection(32)
             .layer(tower::util::MapResponseLayer::new(tag_unimplemented))
+            .layer(presence::PresenceLayer(self.presence.clone()))
             .add_service(info_svc)
             .add_service(state_svc)
             .add_service(change_svc)
@@ -567,26 +636,33 @@ impl LocalServer {
             .add_optional_service(schedule_svc)
             .add_optional_service(backup_svc)
             .add_optional_service(alert_svc)
-            .serve_with_incoming_shutdown(logged_incoming(listener), shutdown)
+            .add_optional_service(webhook_svc)
+            .add_optional_service(artifact_svc)
+            .serve_with_incoming_shutdown(logged_incoming(listener, self.presence), shutdown)
             .await
     }
 }
 
 fn logged_incoming(
     listener: UnixListener,
-) -> impl Stream<Item = std::io::Result<UnixStream>> + Send {
-    UnixListenerStream::new(listener).inspect(|conn| match conn {
-        Ok(stream) => match stream.peer_cred() {
-            Ok(cred) => info!(
-                uid = cred.uid(),
-                gid = cred.gid(),
-                pid = cred.pid().unwrap_or_default(),
-                "v2 connection"
-            ),
-            Err(err) => warn!(error = %err, "v2 connection without peer credentials"),
-        },
-        Err(err) => warn!(error = %err, "v2 accept failed"),
-    })
+    presence: Arc<presence::Presence>,
+) -> impl Stream<Item = std::io::Result<presence::TrackedStream>> + Send {
+    UnixListenerStream::new(listener)
+        .inspect(|conn: &std::io::Result<UnixStream>| match conn {
+            Ok(stream) => match stream.peer_cred() {
+                Ok(cred) => info!(
+                    uid = cred.uid(),
+                    gid = cred.gid(),
+                    pid = cred.pid().unwrap_or_default(),
+                    "v2 connection"
+                ),
+                Err(err) => warn!(error = %err, "v2 connection without peer credentials"),
+            },
+            Err(err) => warn!(error = %err, "v2 accept failed"),
+        })
+        .map(move |conn| {
+            conn.map(|stream| presence::TrackedStream::new(stream, Some(presence.clone())))
+        })
 }
 
 /// `permanu-agent:permanu-runner` for the store files (D-022, section 6.3).
@@ -697,19 +773,77 @@ pub async fn run(
         core.store_recreated();
     }
     let background = core.spawn_background();
-    let (telemetry, telemetry_tasks) = start_telemetry(&cfg, &core, probe.clone(), trust.clone());
+    let presence = presence::Presence::new(Arc::new(execution::SystemClock));
+    let (telemetry, mut telemetry_tasks) = start_telemetry(&cfg, &core);
+    let ops = open_ops(&cfg, owner);
     let schedulers = start_schedulers(
-        &cfg,
-        owner,
+        ops.clone(),
         &core,
         telemetry.clone(),
         &age_recipient,
         &trust,
     );
-    let scheduler_tasks = schedulers
+    let mut scheduler_tasks = schedulers
         .as_ref()
         .map(sched::Schedulers::spawn)
         .unwrap_or_default();
+    let hooks = ops.clone().map(|ops| {
+        hooks::Hooks::new(
+            hooks::HookDeps {
+                store: core.store.clone(),
+                ops,
+                core: core.clone(),
+                events: core.events.clone(),
+                clock: Arc::new(execution::SystemClock),
+                logs: sched::AgentLogs {
+                    telemetry: telemetry.clone(),
+                    host: hostname(),
+                },
+                presence: Some(presence.clone()),
+                alerts: schedulers
+                    .as_ref()
+                    .map(|s| -> Arc<dyn sched::AlertSink> { s.alerts.clone() }),
+            },
+            hooks::HookTiming::default(),
+        )
+    });
+    if let Some(hooks) = &hooks {
+        match hooks::listener::bind_and_serve(hooks.clone(), hooks::LISTEN_ADDR).await {
+            Ok(task) => scheduler_tasks.push(task),
+            Err(err) => warn!(error = %err, "webhook listener not bound"),
+        }
+        scheduler_tasks.push(hooks.spawn_sweeper());
+    }
+    let artifacts = ops
+        .clone()
+        .filter(|_| cfg.staging_root.is_dir())
+        .map(|ops| {
+            artifacts::Artifacts::new(artifacts::ArtifactDeps {
+                root: cfg.staging_root.clone(),
+                release_keys: cfg.release_keys_path.clone(),
+                release_keys_owner: cfg.file_owner_uid,
+                ops,
+                probe: probe.clone(),
+                clock: Arc::new(execution::SystemClock),
+                mode: artifacts::ReleaseMode::production(),
+            })
+        });
+    if let Some(artifacts) = &artifacts {
+        let _ = core.staging.set(artifacts.clone());
+    }
+    let sources = status::StatusSources {
+        presence: Some(presence.clone()),
+        hooks: hooks.clone(),
+        schedulers: schedulers.clone(),
+    };
+    telemetry_tasks.push(spawn_presence_feed(presence.clone(), core.events.clone()));
+    telemetry_tasks.push(spawn_status_events(
+        telemetry.clone(),
+        core.events.clone(),
+        probe.clone(),
+        trust.clone(),
+        sources,
+    ));
     let listener = socket::listen(&cfg.socket_path, gid)?;
     info!(socket = %cfg.socket_path.display(), "serving agent protocol v2");
     let result = LocalServer {
@@ -720,6 +854,9 @@ pub async fn run(
         core,
         telemetry: telemetry.clone(),
         schedulers,
+        presence,
+        hooks,
+        artifacts,
     }
     .serve(listener, shutdown)
     .await;
@@ -739,25 +876,32 @@ pub async fn run(
     Ok(())
 }
 
-/// Opens `ops.db` next to `admissions.db` and builds the schedulers
-/// (agent-protocol.md 10). A store that cannot open leaves them off (no
-/// `cron.v1`, `backups.v1`, `alerts.v1`).
-fn start_schedulers(
+/// Opens `ops.db` next to `admissions.db`. A store that cannot open leaves
+/// the schedulers, the webhook path and staging off.
+fn open_ops(
     cfg: &LocalConfig,
     owner: Option<StoreOwner>,
+) -> Option<Arc<sched::ops_store::OpsStore>> {
+    let path = cfg.admissions_db.with_file_name("ops.db");
+    match sched::ops_store::OpsStore::open(&path, owner) {
+        Ok(ops) => Some(Arc::new(ops)),
+        Err(err) => {
+            warn!(error = %err, path = %path.display(), "ops.db unavailable; schedulers, webhooks and staging are off");
+            None
+        }
+    }
+}
+
+/// Builds the schedulers (agent-protocol.md 10); without `ops.db` they are
+/// off (no `cron.v1`, `backups.v1`, `alerts.v1`).
+fn start_schedulers(
+    ops: Option<Arc<sched::ops_store::OpsStore>>,
     core: &Arc<execution::ChangeCore>,
     telemetry: Option<Arc<telemetry::Telemetry>>,
     age_recipient: &str,
     trust: &TrustPaths,
 ) -> Option<sched::Schedulers> {
-    let path = cfg.admissions_db.with_file_name("ops.db");
-    let ops = match sched::ops_store::OpsStore::open(&path, owner) {
-        Ok(ops) => Arc::new(ops),
-        Err(err) => {
-            warn!(error = %err, path = %path.display(), "ops.db unavailable; schedulers are off");
-            return None;
-        }
-    };
+    let ops = ops?;
     let server_id = match trust.load() {
         TrustState::Valid(store) => store.server_id,
         _ => String::new(),
@@ -792,8 +936,6 @@ fn start_schedulers(
 fn start_telemetry(
     cfg: &LocalConfig,
     core: &Arc<execution::ChangeCore>,
-    probe: Arc<dyn HostProbe>,
-    trust: TrustPaths,
 ) -> (
     Option<Arc<telemetry::Telemetry>>,
     Vec<tokio::task::JoinHandle<()>>,
@@ -836,12 +978,6 @@ fn start_telemetry(
         },
     };
     tasks.push(tokio::spawn(listeners.run()));
-    tasks.push(spawn_status_events(
-        store.clone(),
-        core.events.clone(),
-        probe,
-        trust,
-    ));
     (Some(store), tasks)
 }
 
@@ -856,26 +992,66 @@ fn hostname() -> String {
     String::from_utf8_lossy(&buf[..end]).into_owned()
 }
 
-/// Emits `EVENT_KIND_AGENT_STATUS` whenever health or the degraded reasons
-/// change (checked every 5 s).
+/// Feeds the away summary from the agent's own events and ends silent
+/// engine sessions (agent-protocol.md 12.1, 12.2).
+fn spawn_presence_feed(
+    presence: Arc<presence::Presence>,
+    events: events::EventBus,
+) -> tokio::task::JoinHandle<()> {
+    tokio::spawn(async move {
+        let mut live = events.live();
+        let mut tick = tokio::time::interval(Duration::from_secs(5));
+        loop {
+            tokio::select! {
+                _ = tick.tick() => presence.tick(),
+                event = live.recv() => match event {
+                    Ok(event) => presence.observe(&event),
+                    Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {}
+                    Err(tokio::sync::broadcast::error::RecvError::Closed) => return,
+                },
+            }
+        }
+    })
+}
+
+/// Emits `EVENT_KIND_AGENT_STATUS` whenever health, the degraded reasons or
+/// engine presence change (checked every 5 s, and at once on a presence
+/// flip).
 fn spawn_status_events(
-    telemetry: Arc<telemetry::Telemetry>,
+    telemetry: Option<Arc<telemetry::Telemetry>>,
     events: events::EventBus,
     probe: Arc<dyn HostProbe>,
     trust: TrustPaths,
+    sources: status::StatusSources,
 ) -> tokio::task::JoinHandle<()> {
     tokio::spawn(async move {
-        let mut last: Option<(i32, Vec<String>)> = None;
+        let mut last: Option<(i32, Vec<String>, bool)> = None;
         let mut tick = tokio::time::interval(Duration::from_secs(5));
         loop {
-            tick.tick().await;
-            let status = build_agent_status(
-                Some(&telemetry),
+            match &sources.presence {
+                Some(presence) => {
+                    tokio::select! {
+                        _ = tick.tick() => {}
+                        () = presence.changed.notified() => {}
+                    }
+                }
+                None => {
+                    tick.tick().await;
+                }
+            }
+            let now = SystemTime::now();
+            let mut status = build_agent_status(
+                telemetry.as_deref(),
                 &trust.load(),
                 probe.ntp_synchronized(),
-                SystemTime::now(),
+                now,
             );
-            let key = (status.health, status.degraded_reasons.clone());
+            sources.fill(&mut status, unix_seconds(now));
+            let key = (
+                status.health,
+                status.degraded_reasons.clone(),
+                status.engine_online,
+            );
             if last.as_ref() != Some(&key) {
                 last = Some(key);
                 events.publish(
@@ -950,7 +1126,7 @@ mod tests {
     #[test]
     fn age_capability_needs_a_recipient() {
         assert_eq!(
-            capabilities("", false, false),
+            capabilities("", false, false, false, false),
             vec![
                 "signed_plans.v1",
                 "admissions.v1",
@@ -960,7 +1136,7 @@ mod tests {
             ]
         );
         assert_eq!(
-            capabilities("age1xyz", false, false),
+            capabilities("age1xyz", false, false, false, false),
             vec![
                 "signed_plans.v1",
                 "admissions.v1",
@@ -972,7 +1148,7 @@ mod tests {
         );
         // telemetry.v1 supersedes logs.containers.v1 for reads; both stay.
         assert_eq!(
-            capabilities("", true, false),
+            capabilities("", true, false, false, false),
             vec![
                 "signed_plans.v1",
                 "admissions.v1",
@@ -982,7 +1158,7 @@ mod tests {
                 "telemetry.v1"
             ]
         );
-        let with_schedulers = capabilities("", false, true);
+        let with_schedulers = capabilities("", false, true, false, false);
         assert!(with_schedulers.ends_with(&[
             "cron.v1".to_owned(),
             "backups.v1".to_owned(),

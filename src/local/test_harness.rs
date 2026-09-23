@@ -40,6 +40,31 @@ pub const VECTOR_NOW: &str = "2026-09-23T10:05:00Z";
 /// `container_logs` lines of one container: (stdout, stderr).
 pub type StdoutStderr = (Vec<String>, Vec<String>);
 
+/// HMAC-SHA256 (RFC 2104) in hex, as git providers sign webhooks.
+pub fn hmac_sha256_hex(key: &[u8], message: &[u8]) -> String {
+    use sha2::{Digest, Sha256};
+    let mut block = [0u8; 64];
+    if key.len() > 64 {
+        block[..32].copy_from_slice(&Sha256::digest(key));
+    } else {
+        block[..key.len()].copy_from_slice(key);
+    }
+    let pad = |byte: u8| block.iter().map(|b| b ^ byte).collect::<Vec<u8>>();
+    let inner = Sha256::new()
+        .chain_update(pad(0x36))
+        .chain_update(message)
+        .finalize();
+    hex::encode(
+        Sha256::new()
+            .chain_update(pad(0x5c))
+            .chain_update(inner)
+            .finalize(),
+    )
+}
+
+/// `(environment, PERMANU_WEBHOOK_SECRET)` of one project.
+pub type EnvironmentSecrets = Vec<(String, Vec<u8>)>;
+
 pub struct FakeProbe {
     pub host_keys: Vec<String>,
 }
@@ -142,6 +167,12 @@ pub struct FakeRunner {
     /// Close the `cancel_execution` connection after the consumed-log lines
     /// are written, without its wire `result` (v1.0.6, section 14.6).
     pub drop_cancel_result: AtomicBool,
+    /// `PERMANU_WEBHOOK_SECRET` per project: `(environment, secret)`.
+    pub webhook_secrets: Mutex<HashMap<String, EnvironmentSecrets>>,
+    /// The next `build_image` answers, in order (success when empty).
+    pub build_answers: Mutex<Vec<Value>>,
+    /// The image digest a successful `build_image` reports.
+    pub build_image_digest: Mutex<String>,
     /// Actions a `cancel_execution` closed (v1.0.6, D-048).
     closed: Mutex<HashSet<(String, u32)>>,
     consumed: Mutex<HashSet<(String, u32)>>,
@@ -170,6 +201,8 @@ fn request_shape_ok(request: &Value) -> bool {
                 | "inspect_container"
                 | "container_logs"
                 | "container_logs_follow"
+                | "webhook_verify"
+                | "build_image"
         )
     );
     map.keys()
@@ -355,6 +388,8 @@ impl FakeRunner {
             "list_containers" => self.list(&request["payload"]),
             "inspect_container" => self.inspect(&request["payload"]),
             "container_logs" => self.container_logs(&request["payload"]),
+            "webhook_verify" => self.webhook_verify(&request["payload"]),
+            "build_image" => self.build_image(&request["payload"]),
             op => self.bound_op(op, &request).await,
         }
     }
@@ -418,6 +453,140 @@ impl FakeRunner {
             .unwrap_or_default();
         let last = |lines: Vec<String>| lines[lines.len().saturating_sub(tail)..].to_vec();
         json!({"ok": true, "stdout": last(stdout), "stderr": last(stderr)})
+    }
+
+    /// A consumed-log line that names no action (v1.0.7+ events).
+    fn append_other(&self, event: &str, fields: Value) {
+        use std::io::Write;
+        let seq = self.seq.fetch_add(1, Ordering::SeqCst) + 1;
+        let mut line = json!({"v": 1, "seq": seq, "at": format_timestamp(self.clock.now()),
+                              "event": event});
+        if let Value::Object(fields) = fields {
+            for (name, value) in fields {
+                line[name] = value;
+            }
+        }
+        let mut file = fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&self.log)
+            .unwrap();
+        writeln!(file, "{line}").unwrap();
+        fs::set_permissions(&self.log, fs::Permissions::from_mode(0o640)).unwrap();
+    }
+
+    /// `webhook_verify` (signed-plan.md 14.3): GitHub/Gitea HMAC-SHA256 or
+    /// the GitLab token against each environment's secret; a verified push
+    /// gets a `delivery` line.
+    fn webhook_verify(&self, payload: &Value) -> Value {
+        use base64::Engine as _;
+        use sha2::Digest as _;
+        let keys: Vec<&str> = payload
+            .as_object()
+            .map(|m| m.keys().map(String::as_str).collect())
+            .unwrap_or_default();
+        if keys != ["body_b64", "project_id", "provider", "signature"] {
+            return refuse("invalid_request", "payload keys");
+        }
+        let project = payload["project_id"].as_str().unwrap_or_default();
+        let provider = payload["provider"].as_str().unwrap_or_default();
+        let signature = payload["signature"].as_str().unwrap_or_default();
+        let Ok(body) = base64::engine::general_purpose::STANDARD
+            .decode(payload["body_b64"].as_str().unwrap_or_default())
+        else {
+            return refuse("invalid_request", "body");
+        };
+        let secrets = self
+            .webhook_secrets
+            .lock()
+            .unwrap()
+            .get(project)
+            .cloned()
+            .unwrap_or_default();
+        if secrets.is_empty() {
+            return refuse("not_found", "no webhook secret");
+        }
+        let digest = hex::encode(sha2::Sha256::digest(&body));
+        let mut matched: Vec<String> = secrets
+            .iter()
+            .filter(|(_, secret)| match provider {
+                "gitlab" => signature.as_bytes() == secret.as_slice(),
+                "github" => signature
+                    .strip_prefix("sha256=")
+                    .is_some_and(|mac| mac == hmac_sha256_hex(secret, &body)),
+                _ => signature == hmac_sha256_hex(secret, &body),
+            })
+            .map(|(env, _)| env.clone())
+            .collect();
+        matched.sort();
+        if matched.is_empty() {
+            return json!({"ok": true, "verified": false, "environments": [], "event": null,
+                          "body_digest_hex": digest});
+        }
+        let Ok(push) = serde_json::from_slice::<Value>(&body) else {
+            return refuse("invalid_request", "body is not JSON");
+        };
+        if push["after"].is_null() {
+            return json!({"ok": true, "verified": true, "environments": matched,
+                          "event": "ping", "body_digest_hex": digest});
+        }
+        let repo = push["repository"]["html_url"]
+            .as_str()
+            .unwrap_or_default()
+            .trim_start_matches("https://")
+            .to_lowercase();
+        let fields = json!({"repo": repo, "ref": push["ref"], "commit_sha": push["after"],
+                            "commit_time": push["head_commit"]["timestamp"]});
+        let mut line = fields.clone();
+        line["body_digest_hex"] = json!(digest);
+        line["project_id"] = json!(project);
+        line["provider"] = json!(provider);
+        line["environments"] = json!(matched);
+        self.append_other("delivery", line);
+        let mut result = json!({"ok": true, "verified": true, "environments": matched,
+                                "event": "push", "body_digest_hex": digest});
+        for (name, value) in fields.as_object().unwrap() {
+            result[name] = value.clone();
+        }
+        result
+    }
+
+    /// `build_image` (signed-plan.md 14.10) with its pinned payload.
+    fn build_image(&self, payload: &Value) -> Value {
+        let keys: Vec<&str> = payload
+            .as_object()
+            .map(|m| m.keys().map(String::as_str).collect())
+            .unwrap_or_default();
+        if keys
+            != [
+                "body_digest_hex",
+                "commit_sha",
+                "delivery_id",
+                "rule_digest_hex",
+                "rule_id",
+                "service_id",
+            ]
+        {
+            return refuse("E_PARSE", "build_image payload");
+        }
+        let queued = {
+            let mut answers = self.build_answers.lock().unwrap();
+            (!answers.is_empty()).then(|| answers.remove(0))
+        };
+        if let Some(answer) = queued {
+            return answer;
+        }
+        let build_id =
+            crate::admissions::new_uuid7(u64::try_from(self.clock.now()).unwrap_or(0) * 1_000);
+        let image = self.build_image_digest.lock().unwrap().clone();
+        let mut line = payload.clone();
+        line["build_id"] = json!(build_id);
+        self.append_other("build_started", line.clone());
+        line["image_digest_hex"] = json!(image);
+        line["outcome"] = json!("succeeded");
+        self.append_other("build", line);
+        json!({"ok": true, "build_id": build_id, "image_digest_hex": image,
+               "progress": ["#1 building"]})
     }
 
     fn bind(&self, request: &Value) -> Value {
@@ -656,6 +825,11 @@ pub struct Options {
     pub telemetry: bool,
     /// Serve the schedulers (`cron.v1`, `backups.v1`, `alerts.v1`).
     pub schedulers: bool,
+    /// Serve the webhook path (`webhooks.v1`) with a short finish poll.
+    pub webhooks: bool,
+    /// Serve artifact staging (`artifacts.v1`) under the test dir, trusting
+    /// the TEST release keys.
+    pub artifacts: bool,
 }
 
 impl Default for Options {
@@ -668,6 +842,8 @@ impl Default for Options {
             age_recipient: None,
             telemetry: false,
             schedulers: false,
+            webhooks: false,
+            artifacts: false,
         }
     }
 }
@@ -681,6 +857,9 @@ pub struct Harness {
     pub trust_file: PathBuf,
     pub age_recipient: String,
     pub telemetry: Option<Arc<crate::local::telemetry::Telemetry>>,
+    pub presence: Arc<crate::local::presence::Presence>,
+    pub hooks: Option<Arc<crate::local::hooks::Hooks>>,
+    pub artifacts: Option<Arc<crate::local::artifacts::Artifacts>>,
     shutdown: Option<tokio::sync::oneshot::Sender<()>>,
     task: tokio::task::JoinHandle<()>,
     runner_task: tokio::task::JoinHandle<()>,
@@ -765,6 +944,9 @@ impl Harness {
             follow_lines: Mutex::new(HashMap::new()),
             follow_breaks: AtomicBool::new(false),
             drop_cancel_result: AtomicBool::new(false),
+            webhook_secrets: Mutex::new(HashMap::new()),
+            build_answers: Mutex::new(Vec::new()),
+            build_image_digest: Mutex::new("e".repeat(64)),
             closed: Mutex::new(HashSet::new()),
             consumed: Mutex::new(HashSet::new()),
             ops: Mutex::new(HashMap::new()),
@@ -808,6 +990,47 @@ impl Harness {
         let socket_path = dir.join("run").join("agent.sock");
         let listener = socket::bind(&socket_path, None).unwrap();
         let (tx, rx) = tokio::sync::oneshot::channel::<()>();
+        let presence = crate::local::presence::Presence::new(clock.clone());
+        let hooks = options.webhooks.then(|| {
+            crate::local::hooks::Hooks::new(
+                crate::local::hooks::HookDeps {
+                    store: core.store.clone(),
+                    ops: Arc::new(crate::local::sched::ops_store::OpsStore::in_memory()),
+                    core: core.clone(),
+                    events: core.events.clone(),
+                    clock: clock.clone(),
+                    logs: crate::local::sched::AgentLogs {
+                        telemetry: telemetry.clone(),
+                        host: "test".to_owned(),
+                    },
+                    presence: Some(presence.clone()),
+                    alerts: None,
+                },
+                crate::local::hooks::HookTiming {
+                    finish_poll: Duration::from_millis(20),
+                    finish_wait: Duration::from_secs(20),
+                    build_timeout: Duration::from_secs(20),
+                },
+            )
+        });
+        let artifacts = options.artifacts.then(|| {
+            fs::create_dir_all(dir.join("staging")).unwrap();
+            crate::local::artifacts::Artifacts::new(crate::local::artifacts::ArtifactDeps {
+                root: dir.join("staging"),
+                release_keys: dir.join("etc/release-keys.json"),
+                // SAFETY: geteuid has no preconditions.
+                release_keys_owner: unsafe { libc::geteuid() },
+                ops: Arc::new(crate::local::sched::ops_store::OpsStore::in_memory()),
+                probe: probe.clone(),
+                clock: clock.clone(),
+                mode: crate::local::artifacts::ReleaseMode {
+                    trust_test_keys: true,
+                },
+            })
+        });
+        if let Some(artifacts) = &artifacts {
+            let _ = core.staging.set(artifacts.clone());
+        }
         let server = LocalServer {
             probe,
             identity: AgentIdentity {
@@ -838,6 +1061,9 @@ impl Harness {
                     Arc::new(crate::local::sched::alerts::NoSource),
                 )
             }),
+            presence: presence.clone(),
+            hooks: hooks.clone(),
+            artifacts: artifacts.clone(),
         };
         let task = tokio::spawn(async move {
             server
@@ -857,6 +1083,9 @@ impl Harness {
             trust_file,
             age_recipient,
             telemetry,
+            presence,
+            hooks,
+            artifacts,
             shutdown: Some(tx),
             task,
             runner_task,

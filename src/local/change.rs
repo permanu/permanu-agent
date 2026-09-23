@@ -121,7 +121,19 @@ impl ChangeSvc {
             ));
         }
         let submission = submission(plan)?;
-        if let Some(action) = not_supported_yet(&submission.envelope) {
+        if let Some(staging) = self.core.staging.get() {
+            // agent-protocol.md 13 "Install": a committed, verified,
+            // unexpired set with the plan's digest must be staged.
+            for digest in update_digests(&submission.envelope) {
+                if !staging.staged(&digest).await {
+                    return Err(status_with_reason(
+                        Code::FailedPrecondition,
+                        "artifact_not_staged: no verified staged set for bundle_manifest_digest_hex",
+                        ErrorReason::ExecPrecondition,
+                    ));
+                }
+            }
+        } else if let Some(action) = not_supported_yet(&submission.envelope) {
             return Err(status_with_reason(
                 Code::Unimplemented,
                 &format!(
@@ -144,6 +156,34 @@ impl ChangeSvc {
             plan_id: admission.plan_id,
         })
     }
+}
+
+/// `bundle_manifest_digest_hex` of every `agent.update` and
+/// `component.update` (not `os_packages`) of an envelope. Not verified
+/// here: this can only refuse.
+fn update_digests(envelope: &[u8]) -> Vec<String> {
+    let Ok(parsed) = serde_json::from_slice::<serde_json::Value>(envelope) else {
+        return Vec::new();
+    };
+    parsed["plan"]["actions"]
+        .as_array()
+        .map(|actions| {
+            actions
+                .iter()
+                .filter(|a| {
+                    a["kind"] == "agent.update"
+                        || (a["kind"] == "component.update"
+                            && a["params"]["component"] != "os_packages")
+                })
+                .map(|a| {
+                    a["params"]["bundle_manifest_digest_hex"]
+                        .as_str()
+                        .unwrap_or_default()
+                        .to_owned()
+                })
+                .collect()
+        })
+        .unwrap_or_default()
 }
 
 type WatchStream = Pin<Box<dyn Stream<Item = Result<OperationEvent, Status>> + Send>>;

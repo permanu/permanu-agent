@@ -1,0 +1,894 @@
+{
+  "manifest_digest_hex": "16b57bf3062edbeb3d8583d2b672e1c321a33a39b9efcf81afee82d781661fe1",
+  "cases": [
+    {
+      "name": "ok_artifact_agent_update",
+      "action": {
+        "kind": "agent.update",
+        "params": {
+          "version": "2.1.0",
+          "artifact_digest_hex": "e10e11e9a895b71e006e52acb2f8af1faa198062942ee1cfb02a61078b7b191a",
+          "bundle_manifest_digest_hex": "16b57bf3062edbeb3d8583d2b672e1c321a33a39b9efcf81afee82d781661fe1",
+          "allow_downgrade": false
+        }
+      },
+      "arch": "amd64",
+      "installed_version": "2.0.6",
+      "manifest": "{\"components\":[{\"arch\":\"amd64\",\"artifact_digest_hex\":\"dc2ffed1fc999b259c6dce9bb95e80ac29e6be359185d29bebb94f2cf8ba60cb\",\"name\":\"dwaar\",\"path\":\"amd64/dwaar\",\"version\":\"2.1.0\"},{\"arch\":\"arm64\",\"artifact_digest_hex\":\"5e5b51ddc42089bf76d75b94868585cd909307bd035c21969408d903a7c5556b\",\"name\":\"dwaar\",\"path\":\"arm64/dwaar\",\"version\":\"2.1.0\"},{\"arch\":\"amd64\",\"artifact_digest_hex\":\"e10e11e9a895b71e006e52acb2f8af1faa198062942ee1cfb02a61078b7b191a\",\"name\":\"permanu-agent\",\"path\":\"amd64/permanu-agent\",\"version\":\"2.1.0\"},{\"arch\":\"arm64\",\"artifact_digest_hex\":\"a4bc871a4c9c21b2e855ff3ac6a981789229aa9b773bd72151b48c747e54fa98\",\"name\":\"permanu-agent\",\"path\":\"arm64/permanu-agent\",\"version\":\"2.1.0\"},{\"arch\":\"amd64\",\"artifact_digest_hex\":\"baddb48a415805b84fdd5553efd5376d61555021a89f7db75391897d61074da5\",\"name\":\"permanu-env\",\"path\":\"amd64/permanu-env\",\"version\":\"2.1.0\"},{\"arch\":\"arm64\",\"artifact_digest_hex\":\"a5a30a0fd407fc34a09223df7c2560022daf7d8f3f4252f5f763fb4dd9cb1065\",\"name\":\"permanu-env\",\"path\":\"arm64/permanu-env\",\"version\":\"2.1.0\"},{\"arch\":\"amd64\",\"artifact_digest_hex\":\"8ef5dbf0b98a80108f9f4b3c6b66bd7e0a4c936e2d6c42ea056e4f7202eda599\",\"name\":\"permanu-runner\",\"path\":\"amd64/permanu-runner\",\"version\":\"2.1.0\"},{\"arch\":\"arm64\",\"artifact_digest_hex\":\"a9964497d655e0e8240e5550b1392a0cd4680297d42143f746b1a4915f8b5c0d\",\"name\":\"permanu-runner\",\"path\":\"arm64/permanu-runner\",\"version\":\"2.1.0\"}],\"release_keys\":[{\"key_id\":\"RE1jopVSq8Moy0jDftg6Kg\",\"label\":\"Permanu TEST release key (rotated)\",\"spki\":\"MCowBQYDK2VwAyEAGZtqVq+kKLsm+LOjTwv8MyMHrGU4692o51PChact9zc=\"},{\"key_id\":\"cl98Xxg2voSKlukyuAPKJg\",\"label\":\"Permanu TEST release key (release)\",\"spki\":\"MCowBQYDK2VwAyEAxUG8N6ZYv4fm4+BLDKpGKrVaGRXdQjEdXbvfEADrd2k=\"}],\"version\":2}",
+      "manifest_sig": "{\"alg\":\"Ed25519\",\"key_id\":\"cl98Xxg2voSKlukyuAPKJg\",\"sig\":\"oNjknkDrfHE4rc18Ej-Bw7d1naWEyOBYtdMgb5bD4ZmMn7jo72EnO2Cb4cZR--_t3BCf7utpK4sRLMUPpsLzAg\",\"version\":1}",
+      "release_keys": {
+        "version": 1,
+        "keys": [
+          {
+            "key_id": "cl98Xxg2voSKlukyuAPKJg",
+            "alg": "Ed25519",
+            "spki": "MCowBQYDK2VwAyEAxUG8N6ZYv4fm4+BLDKpGKrVaGRXdQjEdXbvfEADrd2k=",
+            "label": "Permanu TEST release key (release)",
+            "added_at": "2026-09-01T08:00:00Z",
+            "added_by": null
+          },
+          {
+            "key_id": "RE1jopVSq8Moy0jDftg6Kg",
+            "alg": "Ed25519",
+            "spki": "MCowBQYDK2VwAyEAGZtqVq+kKLsm+LOjTwv8MyMHrGU4692o51PChact9zc=",
+            "label": "Permanu TEST release key (rotated)",
+            "added_at": "2026-09-23T10:00:00Z",
+            "added_by": {
+              "plan_id": "01a0cdb5-3500-7001-8000-00000000000b",
+              "plan_digest_hex": "f6a50c66742dd3864c5ab9a39dc519275d135144bbe4eb5f8ac468b6969afcc9"
+            }
+          }
+        ],
+        "revocations": []
+      },
+      "staged_digests_hex": {
+        "permanu-agent": "e10e11e9a895b71e006e52acb2f8af1faa198062942ee1cfb02a61078b7b191a",
+        "permanu-runner": "8ef5dbf0b98a80108f9f4b3c6b66bd7e0a4c936e2d6c42ea056e4f7202eda599",
+        "permanu-env": "baddb48a415805b84fdd5553efd5376d61555021a89f7db75391897d61074da5",
+        "dwaar": "dc2ffed1fc999b259c6dce9bb95e80ac29e6be359185d29bebb94f2cf8ba60cb"
+      },
+      "mode": "test",
+      "expect": "OK"
+    },
+    {
+      "name": "ok_artifact_component_runner",
+      "action": {
+        "kind": "component.update",
+        "params": {
+          "component": "runner",
+          "version": "2.1.0",
+          "artifact_digest_hex": "a9964497d655e0e8240e5550b1392a0cd4680297d42143f746b1a4915f8b5c0d",
+          "bundle_manifest_digest_hex": "16b57bf3062edbeb3d8583d2b672e1c321a33a39b9efcf81afee82d781661fe1",
+          "allow_downgrade": false
+        }
+      },
+      "arch": "arm64",
+      "installed_version": "2.0.6",
+      "manifest": "{\"components\":[{\"arch\":\"amd64\",\"artifact_digest_hex\":\"dc2ffed1fc999b259c6dce9bb95e80ac29e6be359185d29bebb94f2cf8ba60cb\",\"name\":\"dwaar\",\"path\":\"amd64/dwaar\",\"version\":\"2.1.0\"},{\"arch\":\"arm64\",\"artifact_digest_hex\":\"5e5b51ddc42089bf76d75b94868585cd909307bd035c21969408d903a7c5556b\",\"name\":\"dwaar\",\"path\":\"arm64/dwaar\",\"version\":\"2.1.0\"},{\"arch\":\"amd64\",\"artifact_digest_hex\":\"e10e11e9a895b71e006e52acb2f8af1faa198062942ee1cfb02a61078b7b191a\",\"name\":\"permanu-agent\",\"path\":\"amd64/permanu-agent\",\"version\":\"2.1.0\"},{\"arch\":\"arm64\",\"artifact_digest_hex\":\"a4bc871a4c9c21b2e855ff3ac6a981789229aa9b773bd72151b48c747e54fa98\",\"name\":\"permanu-agent\",\"path\":\"arm64/permanu-agent\",\"version\":\"2.1.0\"},{\"arch\":\"amd64\",\"artifact_digest_hex\":\"baddb48a415805b84fdd5553efd5376d61555021a89f7db75391897d61074da5\",\"name\":\"permanu-env\",\"path\":\"amd64/permanu-env\",\"version\":\"2.1.0\"},{\"arch\":\"arm64\",\"artifact_digest_hex\":\"a5a30a0fd407fc34a09223df7c2560022daf7d8f3f4252f5f763fb4dd9cb1065\",\"name\":\"permanu-env\",\"path\":\"arm64/permanu-env\",\"version\":\"2.1.0\"},{\"arch\":\"amd64\",\"artifact_digest_hex\":\"8ef5dbf0b98a80108f9f4b3c6b66bd7e0a4c936e2d6c42ea056e4f7202eda599\",\"name\":\"permanu-runner\",\"path\":\"amd64/permanu-runner\",\"version\":\"2.1.0\"},{\"arch\":\"arm64\",\"artifact_digest_hex\":\"a9964497d655e0e8240e5550b1392a0cd4680297d42143f746b1a4915f8b5c0d\",\"name\":\"permanu-runner\",\"path\":\"arm64/permanu-runner\",\"version\":\"2.1.0\"}],\"release_keys\":[{\"key_id\":\"RE1jopVSq8Moy0jDftg6Kg\",\"label\":\"Permanu TEST release key (rotated)\",\"spki\":\"MCowBQYDK2VwAyEAGZtqVq+kKLsm+LOjTwv8MyMHrGU4692o51PChact9zc=\"},{\"key_id\":\"cl98Xxg2voSKlukyuAPKJg\",\"label\":\"Permanu TEST release key (release)\",\"spki\":\"MCowBQYDK2VwAyEAxUG8N6ZYv4fm4+BLDKpGKrVaGRXdQjEdXbvfEADrd2k=\"}],\"version\":2}",
+      "manifest_sig": "{\"alg\":\"Ed25519\",\"key_id\":\"cl98Xxg2voSKlukyuAPKJg\",\"sig\":\"oNjknkDrfHE4rc18Ej-Bw7d1naWEyOBYtdMgb5bD4ZmMn7jo72EnO2Cb4cZR--_t3BCf7utpK4sRLMUPpsLzAg\",\"version\":1}",
+      "release_keys": {
+        "version": 1,
+        "keys": [
+          {
+            "key_id": "cl98Xxg2voSKlukyuAPKJg",
+            "alg": "Ed25519",
+            "spki": "MCowBQYDK2VwAyEAxUG8N6ZYv4fm4+BLDKpGKrVaGRXdQjEdXbvfEADrd2k=",
+            "label": "Permanu TEST release key (release)",
+            "added_at": "2026-09-01T08:00:00Z",
+            "added_by": null
+          },
+          {
+            "key_id": "RE1jopVSq8Moy0jDftg6Kg",
+            "alg": "Ed25519",
+            "spki": "MCowBQYDK2VwAyEAGZtqVq+kKLsm+LOjTwv8MyMHrGU4692o51PChact9zc=",
+            "label": "Permanu TEST release key (rotated)",
+            "added_at": "2026-09-23T10:00:00Z",
+            "added_by": {
+              "plan_id": "01a0cdb5-3500-7001-8000-00000000000b",
+              "plan_digest_hex": "f6a50c66742dd3864c5ab9a39dc519275d135144bbe4eb5f8ac468b6969afcc9"
+            }
+          }
+        ],
+        "revocations": []
+      },
+      "staged_digests_hex": {
+        "permanu-agent": "a4bc871a4c9c21b2e855ff3ac6a981789229aa9b773bd72151b48c747e54fa98",
+        "permanu-runner": "a9964497d655e0e8240e5550b1392a0cd4680297d42143f746b1a4915f8b5c0d",
+        "permanu-env": "a5a30a0fd407fc34a09223df7c2560022daf7d8f3f4252f5f763fb4dd9cb1065",
+        "dwaar": "5e5b51ddc42089bf76d75b94868585cd909307bd035c21969408d903a7c5556b"
+      },
+      "mode": "test",
+      "expect": "OK"
+    },
+    {
+      "name": "ok_artifact_component_dwaar",
+      "action": {
+        "kind": "component.update",
+        "params": {
+          "component": "dwaar",
+          "version": "2.1.0",
+          "artifact_digest_hex": "dc2ffed1fc999b259c6dce9bb95e80ac29e6be359185d29bebb94f2cf8ba60cb",
+          "bundle_manifest_digest_hex": "16b57bf3062edbeb3d8583d2b672e1c321a33a39b9efcf81afee82d781661fe1",
+          "allow_downgrade": false
+        }
+      },
+      "arch": "amd64",
+      "installed_version": "2.0.6",
+      "manifest": "{\"components\":[{\"arch\":\"amd64\",\"artifact_digest_hex\":\"dc2ffed1fc999b259c6dce9bb95e80ac29e6be359185d29bebb94f2cf8ba60cb\",\"name\":\"dwaar\",\"path\":\"amd64/dwaar\",\"version\":\"2.1.0\"},{\"arch\":\"arm64\",\"artifact_digest_hex\":\"5e5b51ddc42089bf76d75b94868585cd909307bd035c21969408d903a7c5556b\",\"name\":\"dwaar\",\"path\":\"arm64/dwaar\",\"version\":\"2.1.0\"},{\"arch\":\"amd64\",\"artifact_digest_hex\":\"e10e11e9a895b71e006e52acb2f8af1faa198062942ee1cfb02a61078b7b191a\",\"name\":\"permanu-agent\",\"path\":\"amd64/permanu-agent\",\"version\":\"2.1.0\"},{\"arch\":\"arm64\",\"artifact_digest_hex\":\"a4bc871a4c9c21b2e855ff3ac6a981789229aa9b773bd72151b48c747e54fa98\",\"name\":\"permanu-agent\",\"path\":\"arm64/permanu-agent\",\"version\":\"2.1.0\"},{\"arch\":\"amd64\",\"artifact_digest_hex\":\"baddb48a415805b84fdd5553efd5376d61555021a89f7db75391897d61074da5\",\"name\":\"permanu-env\",\"path\":\"amd64/permanu-env\",\"version\":\"2.1.0\"},{\"arch\":\"arm64\",\"artifact_digest_hex\":\"a5a30a0fd407fc34a09223df7c2560022daf7d8f3f4252f5f763fb4dd9cb1065\",\"name\":\"permanu-env\",\"path\":\"arm64/permanu-env\",\"version\":\"2.1.0\"},{\"arch\":\"amd64\",\"artifact_digest_hex\":\"8ef5dbf0b98a80108f9f4b3c6b66bd7e0a4c936e2d6c42ea056e4f7202eda599\",\"name\":\"permanu-runner\",\"path\":\"amd64/permanu-runner\",\"version\":\"2.1.0\"},{\"arch\":\"arm64\",\"artifact_digest_hex\":\"a9964497d655e0e8240e5550b1392a0cd4680297d42143f746b1a4915f8b5c0d\",\"name\":\"permanu-runner\",\"path\":\"arm64/permanu-runner\",\"version\":\"2.1.0\"}],\"release_keys\":[{\"key_id\":\"RE1jopVSq8Moy0jDftg6Kg\",\"label\":\"Permanu TEST release key (rotated)\",\"spki\":\"MCowBQYDK2VwAyEAGZtqVq+kKLsm+LOjTwv8MyMHrGU4692o51PChact9zc=\"},{\"key_id\":\"cl98Xxg2voSKlukyuAPKJg\",\"label\":\"Permanu TEST release key (release)\",\"spki\":\"MCowBQYDK2VwAyEAxUG8N6ZYv4fm4+BLDKpGKrVaGRXdQjEdXbvfEADrd2k=\"}],\"version\":2}",
+      "manifest_sig": "{\"alg\":\"Ed25519\",\"key_id\":\"cl98Xxg2voSKlukyuAPKJg\",\"sig\":\"oNjknkDrfHE4rc18Ej-Bw7d1naWEyOBYtdMgb5bD4ZmMn7jo72EnO2Cb4cZR--_t3BCf7utpK4sRLMUPpsLzAg\",\"version\":1}",
+      "release_keys": {
+        "version": 1,
+        "keys": [
+          {
+            "key_id": "cl98Xxg2voSKlukyuAPKJg",
+            "alg": "Ed25519",
+            "spki": "MCowBQYDK2VwAyEAxUG8N6ZYv4fm4+BLDKpGKrVaGRXdQjEdXbvfEADrd2k=",
+            "label": "Permanu TEST release key (release)",
+            "added_at": "2026-09-01T08:00:00Z",
+            "added_by": null
+          },
+          {
+            "key_id": "RE1jopVSq8Moy0jDftg6Kg",
+            "alg": "Ed25519",
+            "spki": "MCowBQYDK2VwAyEAGZtqVq+kKLsm+LOjTwv8MyMHrGU4692o51PChact9zc=",
+            "label": "Permanu TEST release key (rotated)",
+            "added_at": "2026-09-23T10:00:00Z",
+            "added_by": {
+              "plan_id": "01a0cdb5-3500-7001-8000-00000000000b",
+              "plan_digest_hex": "f6a50c66742dd3864c5ab9a39dc519275d135144bbe4eb5f8ac468b6969afcc9"
+            }
+          }
+        ],
+        "revocations": []
+      },
+      "staged_digests_hex": {
+        "permanu-agent": "e10e11e9a895b71e006e52acb2f8af1faa198062942ee1cfb02a61078b7b191a",
+        "permanu-runner": "8ef5dbf0b98a80108f9f4b3c6b66bd7e0a4c936e2d6c42ea056e4f7202eda599",
+        "permanu-env": "baddb48a415805b84fdd5553efd5376d61555021a89f7db75391897d61074da5",
+        "dwaar": "dc2ffed1fc999b259c6dce9bb95e80ac29e6be359185d29bebb94f2cf8ba60cb"
+      },
+      "mode": "test",
+      "expect": "OK"
+    },
+    {
+      "name": "ok_artifact_signed_by_second_pinned_key",
+      "action": {
+        "kind": "agent.update",
+        "params": {
+          "version": "2.1.0",
+          "artifact_digest_hex": "e10e11e9a895b71e006e52acb2f8af1faa198062942ee1cfb02a61078b7b191a",
+          "bundle_manifest_digest_hex": "16b57bf3062edbeb3d8583d2b672e1c321a33a39b9efcf81afee82d781661fe1",
+          "allow_downgrade": false
+        }
+      },
+      "arch": "amd64",
+      "installed_version": "2.0.6",
+      "manifest": "{\"components\":[{\"arch\":\"amd64\",\"artifact_digest_hex\":\"dc2ffed1fc999b259c6dce9bb95e80ac29e6be359185d29bebb94f2cf8ba60cb\",\"name\":\"dwaar\",\"path\":\"amd64/dwaar\",\"version\":\"2.1.0\"},{\"arch\":\"arm64\",\"artifact_digest_hex\":\"5e5b51ddc42089bf76d75b94868585cd909307bd035c21969408d903a7c5556b\",\"name\":\"dwaar\",\"path\":\"arm64/dwaar\",\"version\":\"2.1.0\"},{\"arch\":\"amd64\",\"artifact_digest_hex\":\"e10e11e9a895b71e006e52acb2f8af1faa198062942ee1cfb02a61078b7b191a\",\"name\":\"permanu-agent\",\"path\":\"amd64/permanu-agent\",\"version\":\"2.1.0\"},{\"arch\":\"arm64\",\"artifact_digest_hex\":\"a4bc871a4c9c21b2e855ff3ac6a981789229aa9b773bd72151b48c747e54fa98\",\"name\":\"permanu-agent\",\"path\":\"arm64/permanu-agent\",\"version\":\"2.1.0\"},{\"arch\":\"amd64\",\"artifact_digest_hex\":\"baddb48a415805b84fdd5553efd5376d61555021a89f7db75391897d61074da5\",\"name\":\"permanu-env\",\"path\":\"amd64/permanu-env\",\"version\":\"2.1.0\"},{\"arch\":\"arm64\",\"artifact_digest_hex\":\"a5a30a0fd407fc34a09223df7c2560022daf7d8f3f4252f5f763fb4dd9cb1065\",\"name\":\"permanu-env\",\"path\":\"arm64/permanu-env\",\"version\":\"2.1.0\"},{\"arch\":\"amd64\",\"artifact_digest_hex\":\"8ef5dbf0b98a80108f9f4b3c6b66bd7e0a4c936e2d6c42ea056e4f7202eda599\",\"name\":\"permanu-runner\",\"path\":\"amd64/permanu-runner\",\"version\":\"2.1.0\"},{\"arch\":\"arm64\",\"artifact_digest_hex\":\"a9964497d655e0e8240e5550b1392a0cd4680297d42143f746b1a4915f8b5c0d\",\"name\":\"permanu-runner\",\"path\":\"arm64/permanu-runner\",\"version\":\"2.1.0\"}],\"release_keys\":[{\"key_id\":\"RE1jopVSq8Moy0jDftg6Kg\",\"label\":\"Permanu TEST release key (rotated)\",\"spki\":\"MCowBQYDK2VwAyEAGZtqVq+kKLsm+LOjTwv8MyMHrGU4692o51PChact9zc=\"},{\"key_id\":\"cl98Xxg2voSKlukyuAPKJg\",\"label\":\"Permanu TEST release key (release)\",\"spki\":\"MCowBQYDK2VwAyEAxUG8N6ZYv4fm4+BLDKpGKrVaGRXdQjEdXbvfEADrd2k=\"}],\"version\":2}",
+      "manifest_sig": "{\"alg\":\"Ed25519\",\"key_id\":\"RE1jopVSq8Moy0jDftg6Kg\",\"sig\":\"U6EieUaJd5oeEir2Y1RtnGxTGRGtrQZ2m_GXaOqah8YmTQODkFopoEm_xneRtEGxoFp9J5ejIz-K-B4YA-EQBg\",\"version\":1}",
+      "release_keys": {
+        "version": 1,
+        "keys": [
+          {
+            "key_id": "cl98Xxg2voSKlukyuAPKJg",
+            "alg": "Ed25519",
+            "spki": "MCowBQYDK2VwAyEAxUG8N6ZYv4fm4+BLDKpGKrVaGRXdQjEdXbvfEADrd2k=",
+            "label": "Permanu TEST release key (release)",
+            "added_at": "2026-09-01T08:00:00Z",
+            "added_by": null
+          },
+          {
+            "key_id": "RE1jopVSq8Moy0jDftg6Kg",
+            "alg": "Ed25519",
+            "spki": "MCowBQYDK2VwAyEAGZtqVq+kKLsm+LOjTwv8MyMHrGU4692o51PChact9zc=",
+            "label": "Permanu TEST release key (rotated)",
+            "added_at": "2026-09-23T10:00:00Z",
+            "added_by": {
+              "plan_id": "01a0cdb5-3500-7001-8000-00000000000b",
+              "plan_digest_hex": "f6a50c66742dd3864c5ab9a39dc519275d135144bbe4eb5f8ac468b6969afcc9"
+            }
+          }
+        ],
+        "revocations": []
+      },
+      "staged_digests_hex": {
+        "permanu-agent": "e10e11e9a895b71e006e52acb2f8af1faa198062942ee1cfb02a61078b7b191a",
+        "permanu-runner": "8ef5dbf0b98a80108f9f4b3c6b66bd7e0a4c936e2d6c42ea056e4f7202eda599",
+        "permanu-env": "baddb48a415805b84fdd5553efd5376d61555021a89f7db75391897d61074da5",
+        "dwaar": "dc2ffed1fc999b259c6dce9bb95e80ac29e6be359185d29bebb94f2cf8ba60cb"
+      },
+      "mode": "test",
+      "expect": "OK"
+    },
+    {
+      "name": "artifact_manifest_digest_mismatch",
+      "action": {
+        "kind": "agent.update",
+        "params": {
+          "version": "2.1.0",
+          "artifact_digest_hex": "e10e11e9a895b71e006e52acb2f8af1faa198062942ee1cfb02a61078b7b191a",
+          "bundle_manifest_digest_hex": "46059793cf2205d6d422af6824215ab4fe474eed0310ef82162832711d838f34",
+          "allow_downgrade": false
+        }
+      },
+      "arch": "amd64",
+      "installed_version": "2.0.6",
+      "manifest": "{\"components\":[{\"arch\":\"amd64\",\"artifact_digest_hex\":\"dc2ffed1fc999b259c6dce9bb95e80ac29e6be359185d29bebb94f2cf8ba60cb\",\"name\":\"dwaar\",\"path\":\"amd64/dwaar\",\"version\":\"2.1.0\"},{\"arch\":\"arm64\",\"artifact_digest_hex\":\"5e5b51ddc42089bf76d75b94868585cd909307bd035c21969408d903a7c5556b\",\"name\":\"dwaar\",\"path\":\"arm64/dwaar\",\"version\":\"2.1.0\"},{\"arch\":\"amd64\",\"artifact_digest_hex\":\"e10e11e9a895b71e006e52acb2f8af1faa198062942ee1cfb02a61078b7b191a\",\"name\":\"permanu-agent\",\"path\":\"amd64/permanu-agent\",\"version\":\"2.1.0\"},{\"arch\":\"arm64\",\"artifact_digest_hex\":\"a4bc871a4c9c21b2e855ff3ac6a981789229aa9b773bd72151b48c747e54fa98\",\"name\":\"permanu-agent\",\"path\":\"arm64/permanu-agent\",\"version\":\"2.1.0\"},{\"arch\":\"amd64\",\"artifact_digest_hex\":\"baddb48a415805b84fdd5553efd5376d61555021a89f7db75391897d61074da5\",\"name\":\"permanu-env\",\"path\":\"amd64/permanu-env\",\"version\":\"2.1.0\"},{\"arch\":\"arm64\",\"artifact_digest_hex\":\"a5a30a0fd407fc34a09223df7c2560022daf7d8f3f4252f5f763fb4dd9cb1065\",\"name\":\"permanu-env\",\"path\":\"arm64/permanu-env\",\"version\":\"2.1.0\"},{\"arch\":\"amd64\",\"artifact_digest_hex\":\"8ef5dbf0b98a80108f9f4b3c6b66bd7e0a4c936e2d6c42ea056e4f7202eda599\",\"name\":\"permanu-runner\",\"path\":\"amd64/permanu-runner\",\"version\":\"2.1.0\"},{\"arch\":\"arm64\",\"artifact_digest_hex\":\"a9964497d655e0e8240e5550b1392a0cd4680297d42143f746b1a4915f8b5c0d\",\"name\":\"permanu-runner\",\"path\":\"arm64/permanu-runner\",\"version\":\"2.1.0\"}],\"release_keys\":[{\"key_id\":\"RE1jopVSq8Moy0jDftg6Kg\",\"label\":\"Permanu TEST release key (rotated)\",\"spki\":\"MCowBQYDK2VwAyEAGZtqVq+kKLsm+LOjTwv8MyMHrGU4692o51PChact9zc=\"},{\"key_id\":\"cl98Xxg2voSKlukyuAPKJg\",\"label\":\"Permanu TEST release key (release)\",\"spki\":\"MCowBQYDK2VwAyEAxUG8N6ZYv4fm4+BLDKpGKrVaGRXdQjEdXbvfEADrd2k=\"}],\"version\":2}",
+      "manifest_sig": "{\"alg\":\"Ed25519\",\"key_id\":\"cl98Xxg2voSKlukyuAPKJg\",\"sig\":\"oNjknkDrfHE4rc18Ej-Bw7d1naWEyOBYtdMgb5bD4ZmMn7jo72EnO2Cb4cZR--_t3BCf7utpK4sRLMUPpsLzAg\",\"version\":1}",
+      "release_keys": {
+        "version": 1,
+        "keys": [
+          {
+            "key_id": "cl98Xxg2voSKlukyuAPKJg",
+            "alg": "Ed25519",
+            "spki": "MCowBQYDK2VwAyEAxUG8N6ZYv4fm4+BLDKpGKrVaGRXdQjEdXbvfEADrd2k=",
+            "label": "Permanu TEST release key (release)",
+            "added_at": "2026-09-01T08:00:00Z",
+            "added_by": null
+          },
+          {
+            "key_id": "RE1jopVSq8Moy0jDftg6Kg",
+            "alg": "Ed25519",
+            "spki": "MCowBQYDK2VwAyEAGZtqVq+kKLsm+LOjTwv8MyMHrGU4692o51PChact9zc=",
+            "label": "Permanu TEST release key (rotated)",
+            "added_at": "2026-09-23T10:00:00Z",
+            "added_by": {
+              "plan_id": "01a0cdb5-3500-7001-8000-00000000000b",
+              "plan_digest_hex": "f6a50c66742dd3864c5ab9a39dc519275d135144bbe4eb5f8ac468b6969afcc9"
+            }
+          }
+        ],
+        "revocations": []
+      },
+      "staged_digests_hex": {
+        "permanu-agent": "e10e11e9a895b71e006e52acb2f8af1faa198062942ee1cfb02a61078b7b191a",
+        "permanu-runner": "8ef5dbf0b98a80108f9f4b3c6b66bd7e0a4c936e2d6c42ea056e4f7202eda599",
+        "permanu-env": "baddb48a415805b84fdd5553efd5376d61555021a89f7db75391897d61074da5",
+        "dwaar": "dc2ffed1fc999b259c6dce9bb95e80ac29e6be359185d29bebb94f2cf8ba60cb"
+      },
+      "mode": "test",
+      "expect": "E_EXEC_PRECONDITION"
+    },
+    {
+      "name": "artifact_manifest_not_canonical",
+      "action": {
+        "kind": "agent.update",
+        "params": {
+          "version": "2.1.0",
+          "artifact_digest_hex": "e10e11e9a895b71e006e52acb2f8af1faa198062942ee1cfb02a61078b7b191a",
+          "bundle_manifest_digest_hex": "3ae9e0357185d038f5d577976b7c4592947c59cca02eb66f8242da003a44af2a",
+          "allow_downgrade": false
+        }
+      },
+      "arch": "amd64",
+      "installed_version": "2.0.6",
+      "manifest": "{\n \"version\": 2,\n \"components\": [\n  {\n   \"name\": \"dwaar\",\n   \"version\": \"2.1.0\",\n   \"arch\": \"amd64\",\n   \"path\": \"amd64/dwaar\",\n   \"artifact_digest_hex\": \"dc2ffed1fc999b259c6dce9bb95e80ac29e6be359185d29bebb94f2cf8ba60cb\"\n  },\n  {\n   \"name\": \"dwaar\",\n   \"version\": \"2.1.0\",\n   \"arch\": \"arm64\",\n   \"path\": \"arm64/dwaar\",\n   \"artifact_digest_hex\": \"5e5b51ddc42089bf76d75b94868585cd909307bd035c21969408d903a7c5556b\"\n  },\n  {\n   \"name\": \"permanu-agent\",\n   \"version\": \"2.1.0\",\n   \"arch\": \"amd64\",\n   \"path\": \"amd64/permanu-agent\",\n   \"artifact_digest_hex\": \"e10e11e9a895b71e006e52acb2f8af1faa198062942ee1cfb02a61078b7b191a\"\n  },\n  {\n   \"name\": \"permanu-agent\",\n   \"version\": \"2.1.0\",\n   \"arch\": \"arm64\",\n   \"path\": \"arm64/permanu-agent\",\n   \"artifact_digest_hex\": \"a4bc871a4c9c21b2e855ff3ac6a981789229aa9b773bd72151b48c747e54fa98\"\n  },\n  {\n   \"name\": \"permanu-env\",\n   \"version\": \"2.1.0\",\n   \"arch\": \"amd64\",\n   \"path\": \"amd64/permanu-env\",\n   \"artifact_digest_hex\": \"baddb48a415805b84fdd5553efd5376d61555021a89f7db75391897d61074da5\"\n  },\n  {\n   \"name\": \"permanu-env\",\n   \"version\": \"2.1.0\",\n   \"arch\": \"arm64\",\n   \"path\": \"arm64/permanu-env\",\n   \"artifact_digest_hex\": \"a5a30a0fd407fc34a09223df7c2560022daf7d8f3f4252f5f763fb4dd9cb1065\"\n  },\n  {\n   \"name\": \"permanu-runner\",\n   \"version\": \"2.1.0\",\n   \"arch\": \"amd64\",\n   \"path\": \"amd64/permanu-runner\",\n   \"artifact_digest_hex\": \"8ef5dbf0b98a80108f9f4b3c6b66bd7e0a4c936e2d6c42ea056e4f7202eda599\"\n  },\n  {\n   \"name\": \"permanu-runner\",\n   \"version\": \"2.1.0\",\n   \"arch\": \"arm64\",\n   \"path\": \"arm64/permanu-runner\",\n   \"artifact_digest_hex\": \"a9964497d655e0e8240e5550b1392a0cd4680297d42143f746b1a4915f8b5c0d\"\n  }\n ],\n \"release_keys\": [\n  {\n   \"key_id\": \"RE1jopVSq8Moy0jDftg6Kg\",\n   \"spki\": \"MCowBQYDK2VwAyEAGZtqVq+kKLsm+LOjTwv8MyMHrGU4692o51PChact9zc=\",\n   \"label\": \"Permanu TEST release key (rotated)\"\n  },\n  {\n   \"key_id\": \"cl98Xxg2voSKlukyuAPKJg\",\n   \"spki\": \"MCowBQYDK2VwAyEAxUG8N6ZYv4fm4+BLDKpGKrVaGRXdQjEdXbvfEADrd2k=\",\n   \"label\": \"Permanu TEST release key (release)\"\n  }\n ]\n}",
+      "manifest_sig": "{\"alg\":\"Ed25519\",\"key_id\":\"cl98Xxg2voSKlukyuAPKJg\",\"sig\":\"2DO0eulCNvK5Gfqus98FSqDjyR9rdHcGYx3EKi82hFFg0JcPBDwvSd7V8ZId3dd71x6yB_dFK1Oud0AKI7IcCg\",\"version\":1}",
+      "release_keys": {
+        "version": 1,
+        "keys": [
+          {
+            "key_id": "cl98Xxg2voSKlukyuAPKJg",
+            "alg": "Ed25519",
+            "spki": "MCowBQYDK2VwAyEAxUG8N6ZYv4fm4+BLDKpGKrVaGRXdQjEdXbvfEADrd2k=",
+            "label": "Permanu TEST release key (release)",
+            "added_at": "2026-09-01T08:00:00Z",
+            "added_by": null
+          },
+          {
+            "key_id": "RE1jopVSq8Moy0jDftg6Kg",
+            "alg": "Ed25519",
+            "spki": "MCowBQYDK2VwAyEAGZtqVq+kKLsm+LOjTwv8MyMHrGU4692o51PChact9zc=",
+            "label": "Permanu TEST release key (rotated)",
+            "added_at": "2026-09-23T10:00:00Z",
+            "added_by": {
+              "plan_id": "01a0cdb5-3500-7001-8000-00000000000b",
+              "plan_digest_hex": "f6a50c66742dd3864c5ab9a39dc519275d135144bbe4eb5f8ac468b6969afcc9"
+            }
+          }
+        ],
+        "revocations": []
+      },
+      "staged_digests_hex": {
+        "permanu-agent": "e10e11e9a895b71e006e52acb2f8af1faa198062942ee1cfb02a61078b7b191a",
+        "permanu-runner": "8ef5dbf0b98a80108f9f4b3c6b66bd7e0a4c936e2d6c42ea056e4f7202eda599",
+        "permanu-env": "baddb48a415805b84fdd5553efd5376d61555021a89f7db75391897d61074da5",
+        "dwaar": "dc2ffed1fc999b259c6dce9bb95e80ac29e6be359185d29bebb94f2cf8ba60cb"
+      },
+      "mode": "test",
+      "expect": "E_ARTIFACT_UNTRUSTED"
+    },
+    {
+      "name": "artifact_signature_without_prefix",
+      "action": {
+        "kind": "agent.update",
+        "params": {
+          "version": "2.1.0",
+          "artifact_digest_hex": "e10e11e9a895b71e006e52acb2f8af1faa198062942ee1cfb02a61078b7b191a",
+          "bundle_manifest_digest_hex": "16b57bf3062edbeb3d8583d2b672e1c321a33a39b9efcf81afee82d781661fe1",
+          "allow_downgrade": false
+        }
+      },
+      "arch": "amd64",
+      "installed_version": "2.0.6",
+      "manifest": "{\"components\":[{\"arch\":\"amd64\",\"artifact_digest_hex\":\"dc2ffed1fc999b259c6dce9bb95e80ac29e6be359185d29bebb94f2cf8ba60cb\",\"name\":\"dwaar\",\"path\":\"amd64/dwaar\",\"version\":\"2.1.0\"},{\"arch\":\"arm64\",\"artifact_digest_hex\":\"5e5b51ddc42089bf76d75b94868585cd909307bd035c21969408d903a7c5556b\",\"name\":\"dwaar\",\"path\":\"arm64/dwaar\",\"version\":\"2.1.0\"},{\"arch\":\"amd64\",\"artifact_digest_hex\":\"e10e11e9a895b71e006e52acb2f8af1faa198062942ee1cfb02a61078b7b191a\",\"name\":\"permanu-agent\",\"path\":\"amd64/permanu-agent\",\"version\":\"2.1.0\"},{\"arch\":\"arm64\",\"artifact_digest_hex\":\"a4bc871a4c9c21b2e855ff3ac6a981789229aa9b773bd72151b48c747e54fa98\",\"name\":\"permanu-agent\",\"path\":\"arm64/permanu-agent\",\"version\":\"2.1.0\"},{\"arch\":\"amd64\",\"artifact_digest_hex\":\"baddb48a415805b84fdd5553efd5376d61555021a89f7db75391897d61074da5\",\"name\":\"permanu-env\",\"path\":\"amd64/permanu-env\",\"version\":\"2.1.0\"},{\"arch\":\"arm64\",\"artifact_digest_hex\":\"a5a30a0fd407fc34a09223df7c2560022daf7d8f3f4252f5f763fb4dd9cb1065\",\"name\":\"permanu-env\",\"path\":\"arm64/permanu-env\",\"version\":\"2.1.0\"},{\"arch\":\"amd64\",\"artifact_digest_hex\":\"8ef5dbf0b98a80108f9f4b3c6b66bd7e0a4c936e2d6c42ea056e4f7202eda599\",\"name\":\"permanu-runner\",\"path\":\"amd64/permanu-runner\",\"version\":\"2.1.0\"},{\"arch\":\"arm64\",\"artifact_digest_hex\":\"a9964497d655e0e8240e5550b1392a0cd4680297d42143f746b1a4915f8b5c0d\",\"name\":\"permanu-runner\",\"path\":\"arm64/permanu-runner\",\"version\":\"2.1.0\"}],\"release_keys\":[{\"key_id\":\"RE1jopVSq8Moy0jDftg6Kg\",\"label\":\"Permanu TEST release key (rotated)\",\"spki\":\"MCowBQYDK2VwAyEAGZtqVq+kKLsm+LOjTwv8MyMHrGU4692o51PChact9zc=\"},{\"key_id\":\"cl98Xxg2voSKlukyuAPKJg\",\"label\":\"Permanu TEST release key (release)\",\"spki\":\"MCowBQYDK2VwAyEAxUG8N6ZYv4fm4+BLDKpGKrVaGRXdQjEdXbvfEADrd2k=\"}],\"version\":2}",
+      "manifest_sig": "{\"alg\":\"Ed25519\",\"key_id\":\"cl98Xxg2voSKlukyuAPKJg\",\"sig\":\"drzNYcHxBA65uzAPfaTKG-Cps0bgui7hpks3-D_TgV8F_thLLXAOsxBIbTFvVhvVUFvfGWzwZRxCdl1R2nKdDQ\",\"version\":1}",
+      "release_keys": {
+        "version": 1,
+        "keys": [
+          {
+            "key_id": "cl98Xxg2voSKlukyuAPKJg",
+            "alg": "Ed25519",
+            "spki": "MCowBQYDK2VwAyEAxUG8N6ZYv4fm4+BLDKpGKrVaGRXdQjEdXbvfEADrd2k=",
+            "label": "Permanu TEST release key (release)",
+            "added_at": "2026-09-01T08:00:00Z",
+            "added_by": null
+          },
+          {
+            "key_id": "RE1jopVSq8Moy0jDftg6Kg",
+            "alg": "Ed25519",
+            "spki": "MCowBQYDK2VwAyEAGZtqVq+kKLsm+LOjTwv8MyMHrGU4692o51PChact9zc=",
+            "label": "Permanu TEST release key (rotated)",
+            "added_at": "2026-09-23T10:00:00Z",
+            "added_by": {
+              "plan_id": "01a0cdb5-3500-7001-8000-00000000000b",
+              "plan_digest_hex": "f6a50c66742dd3864c5ab9a39dc519275d135144bbe4eb5f8ac468b6969afcc9"
+            }
+          }
+        ],
+        "revocations": []
+      },
+      "staged_digests_hex": {
+        "permanu-agent": "e10e11e9a895b71e006e52acb2f8af1faa198062942ee1cfb02a61078b7b191a",
+        "permanu-runner": "8ef5dbf0b98a80108f9f4b3c6b66bd7e0a4c936e2d6c42ea056e4f7202eda599",
+        "permanu-env": "baddb48a415805b84fdd5553efd5376d61555021a89f7db75391897d61074da5",
+        "dwaar": "dc2ffed1fc999b259c6dce9bb95e80ac29e6be359185d29bebb94f2cf8ba60cb"
+      },
+      "mode": "test",
+      "expect": "E_ARTIFACT_UNTRUSTED"
+    },
+    {
+      "name": "artifact_key_not_pinned",
+      "action": {
+        "kind": "agent.update",
+        "params": {
+          "version": "2.1.0",
+          "artifact_digest_hex": "e10e11e9a895b71e006e52acb2f8af1faa198062942ee1cfb02a61078b7b191a",
+          "bundle_manifest_digest_hex": "16b57bf3062edbeb3d8583d2b672e1c321a33a39b9efcf81afee82d781661fe1",
+          "allow_downgrade": false
+        }
+      },
+      "arch": "amd64",
+      "installed_version": "2.0.6",
+      "manifest": "{\"components\":[{\"arch\":\"amd64\",\"artifact_digest_hex\":\"dc2ffed1fc999b259c6dce9bb95e80ac29e6be359185d29bebb94f2cf8ba60cb\",\"name\":\"dwaar\",\"path\":\"amd64/dwaar\",\"version\":\"2.1.0\"},{\"arch\":\"arm64\",\"artifact_digest_hex\":\"5e5b51ddc42089bf76d75b94868585cd909307bd035c21969408d903a7c5556b\",\"name\":\"dwaar\",\"path\":\"arm64/dwaar\",\"version\":\"2.1.0\"},{\"arch\":\"amd64\",\"artifact_digest_hex\":\"e10e11e9a895b71e006e52acb2f8af1faa198062942ee1cfb02a61078b7b191a\",\"name\":\"permanu-agent\",\"path\":\"amd64/permanu-agent\",\"version\":\"2.1.0\"},{\"arch\":\"arm64\",\"artifact_digest_hex\":\"a4bc871a4c9c21b2e855ff3ac6a981789229aa9b773bd72151b48c747e54fa98\",\"name\":\"permanu-agent\",\"path\":\"arm64/permanu-agent\",\"version\":\"2.1.0\"},{\"arch\":\"amd64\",\"artifact_digest_hex\":\"baddb48a415805b84fdd5553efd5376d61555021a89f7db75391897d61074da5\",\"name\":\"permanu-env\",\"path\":\"amd64/permanu-env\",\"version\":\"2.1.0\"},{\"arch\":\"arm64\",\"artifact_digest_hex\":\"a5a30a0fd407fc34a09223df7c2560022daf7d8f3f4252f5f763fb4dd9cb1065\",\"name\":\"permanu-env\",\"path\":\"arm64/permanu-env\",\"version\":\"2.1.0\"},{\"arch\":\"amd64\",\"artifact_digest_hex\":\"8ef5dbf0b98a80108f9f4b3c6b66bd7e0a4c936e2d6c42ea056e4f7202eda599\",\"name\":\"permanu-runner\",\"path\":\"amd64/permanu-runner\",\"version\":\"2.1.0\"},{\"arch\":\"arm64\",\"artifact_digest_hex\":\"a9964497d655e0e8240e5550b1392a0cd4680297d42143f746b1a4915f8b5c0d\",\"name\":\"permanu-runner\",\"path\":\"arm64/permanu-runner\",\"version\":\"2.1.0\"}],\"release_keys\":[{\"key_id\":\"RE1jopVSq8Moy0jDftg6Kg\",\"label\":\"Permanu TEST release key (rotated)\",\"spki\":\"MCowBQYDK2VwAyEAGZtqVq+kKLsm+LOjTwv8MyMHrGU4692o51PChact9zc=\"},{\"key_id\":\"cl98Xxg2voSKlukyuAPKJg\",\"label\":\"Permanu TEST release key (release)\",\"spki\":\"MCowBQYDK2VwAyEAxUG8N6ZYv4fm4+BLDKpGKrVaGRXdQjEdXbvfEADrd2k=\"}],\"version\":2}",
+      "manifest_sig": "{\"alg\":\"Ed25519\",\"key_id\":\"MA975uwluIeABZVJLGWMaA\",\"sig\":\"VAqoXECLo7HFN7741ZFh5CRumfd5Hjd_7mKdpKdOZtElZsEiGJSPck1VYybT0-WML3l2UPSCaeoBxBLv_KESCA\",\"version\":1}",
+      "release_keys": {
+        "version": 1,
+        "keys": [
+          {
+            "key_id": "cl98Xxg2voSKlukyuAPKJg",
+            "alg": "Ed25519",
+            "spki": "MCowBQYDK2VwAyEAxUG8N6ZYv4fm4+BLDKpGKrVaGRXdQjEdXbvfEADrd2k=",
+            "label": "Permanu TEST release key (release)",
+            "added_at": "2026-09-01T08:00:00Z",
+            "added_by": null
+          },
+          {
+            "key_id": "RE1jopVSq8Moy0jDftg6Kg",
+            "alg": "Ed25519",
+            "spki": "MCowBQYDK2VwAyEAGZtqVq+kKLsm+LOjTwv8MyMHrGU4692o51PChact9zc=",
+            "label": "Permanu TEST release key (rotated)",
+            "added_at": "2026-09-23T10:00:00Z",
+            "added_by": {
+              "plan_id": "01a0cdb5-3500-7001-8000-00000000000b",
+              "plan_digest_hex": "f6a50c66742dd3864c5ab9a39dc519275d135144bbe4eb5f8ac468b6969afcc9"
+            }
+          }
+        ],
+        "revocations": []
+      },
+      "staged_digests_hex": {
+        "permanu-agent": "e10e11e9a895b71e006e52acb2f8af1faa198062942ee1cfb02a61078b7b191a",
+        "permanu-runner": "8ef5dbf0b98a80108f9f4b3c6b66bd7e0a4c936e2d6c42ea056e4f7202eda599",
+        "permanu-env": "baddb48a415805b84fdd5553efd5376d61555021a89f7db75391897d61074da5",
+        "dwaar": "dc2ffed1fc999b259c6dce9bb95e80ac29e6be359185d29bebb94f2cf8ba60cb"
+      },
+      "mode": "test",
+      "expect": "E_ARTIFACT_UNTRUSTED"
+    },
+    {
+      "name": "artifact_key_revoked",
+      "action": {
+        "kind": "agent.update",
+        "params": {
+          "version": "2.1.0",
+          "artifact_digest_hex": "e10e11e9a895b71e006e52acb2f8af1faa198062942ee1cfb02a61078b7b191a",
+          "bundle_manifest_digest_hex": "16b57bf3062edbeb3d8583d2b672e1c321a33a39b9efcf81afee82d781661fe1",
+          "allow_downgrade": false
+        }
+      },
+      "arch": "amd64",
+      "installed_version": "2.0.6",
+      "manifest": "{\"components\":[{\"arch\":\"amd64\",\"artifact_digest_hex\":\"dc2ffed1fc999b259c6dce9bb95e80ac29e6be359185d29bebb94f2cf8ba60cb\",\"name\":\"dwaar\",\"path\":\"amd64/dwaar\",\"version\":\"2.1.0\"},{\"arch\":\"arm64\",\"artifact_digest_hex\":\"5e5b51ddc42089bf76d75b94868585cd909307bd035c21969408d903a7c5556b\",\"name\":\"dwaar\",\"path\":\"arm64/dwaar\",\"version\":\"2.1.0\"},{\"arch\":\"amd64\",\"artifact_digest_hex\":\"e10e11e9a895b71e006e52acb2f8af1faa198062942ee1cfb02a61078b7b191a\",\"name\":\"permanu-agent\",\"path\":\"amd64/permanu-agent\",\"version\":\"2.1.0\"},{\"arch\":\"arm64\",\"artifact_digest_hex\":\"a4bc871a4c9c21b2e855ff3ac6a981789229aa9b773bd72151b48c747e54fa98\",\"name\":\"permanu-agent\",\"path\":\"arm64/permanu-agent\",\"version\":\"2.1.0\"},{\"arch\":\"amd64\",\"artifact_digest_hex\":\"baddb48a415805b84fdd5553efd5376d61555021a89f7db75391897d61074da5\",\"name\":\"permanu-env\",\"path\":\"amd64/permanu-env\",\"version\":\"2.1.0\"},{\"arch\":\"arm64\",\"artifact_digest_hex\":\"a5a30a0fd407fc34a09223df7c2560022daf7d8f3f4252f5f763fb4dd9cb1065\",\"name\":\"permanu-env\",\"path\":\"arm64/permanu-env\",\"version\":\"2.1.0\"},{\"arch\":\"amd64\",\"artifact_digest_hex\":\"8ef5dbf0b98a80108f9f4b3c6b66bd7e0a4c936e2d6c42ea056e4f7202eda599\",\"name\":\"permanu-runner\",\"path\":\"amd64/permanu-runner\",\"version\":\"2.1.0\"},{\"arch\":\"arm64\",\"artifact_digest_hex\":\"a9964497d655e0e8240e5550b1392a0cd4680297d42143f746b1a4915f8b5c0d\",\"name\":\"permanu-runner\",\"path\":\"arm64/permanu-runner\",\"version\":\"2.1.0\"}],\"release_keys\":[{\"key_id\":\"RE1jopVSq8Moy0jDftg6Kg\",\"label\":\"Permanu TEST release key (rotated)\",\"spki\":\"MCowBQYDK2VwAyEAGZtqVq+kKLsm+LOjTwv8MyMHrGU4692o51PChact9zc=\"},{\"key_id\":\"cl98Xxg2voSKlukyuAPKJg\",\"label\":\"Permanu TEST release key (release)\",\"spki\":\"MCowBQYDK2VwAyEAxUG8N6ZYv4fm4+BLDKpGKrVaGRXdQjEdXbvfEADrd2k=\"}],\"version\":2}",
+      "manifest_sig": "{\"alg\":\"Ed25519\",\"key_id\":\"RE1jopVSq8Moy0jDftg6Kg\",\"sig\":\"U6EieUaJd5oeEir2Y1RtnGxTGRGtrQZ2m_GXaOqah8YmTQODkFopoEm_xneRtEGxoFp9J5ejIz-K-B4YA-EQBg\",\"version\":1}",
+      "release_keys": {
+        "version": 1,
+        "keys": [
+          {
+            "key_id": "cl98Xxg2voSKlukyuAPKJg",
+            "alg": "Ed25519",
+            "spki": "MCowBQYDK2VwAyEAxUG8N6ZYv4fm4+BLDKpGKrVaGRXdQjEdXbvfEADrd2k=",
+            "label": "Permanu TEST release key (release)",
+            "added_at": "2026-09-01T08:00:00Z",
+            "added_by": null
+          },
+          {
+            "key_id": "RE1jopVSq8Moy0jDftg6Kg",
+            "alg": "Ed25519",
+            "spki": "MCowBQYDK2VwAyEAGZtqVq+kKLsm+LOjTwv8MyMHrGU4692o51PChact9zc=",
+            "label": "Permanu TEST release key (rotated)",
+            "added_at": "2026-09-23T10:00:00Z",
+            "added_by": {
+              "plan_id": "01a0cdb5-3500-7001-8000-00000000000b",
+              "plan_digest_hex": "f6a50c66742dd3864c5ab9a39dc519275d135144bbe4eb5f8ac468b6969afcc9"
+            }
+          }
+        ],
+        "revocations": [
+          {
+            "key_id": "RE1jopVSq8Moy0jDftg6Kg",
+            "revoked_at": "2026-09-23T10:00:00Z",
+            "reason": "rotated",
+            "revoked_by": {
+              "plan_id": "01a0cdb5-3500-7001-8000-0000000000a9",
+              "plan_digest_hex": "52245405e109ec91416ab1631d287b6b0d20fae5190fcd874755c30fc76c4574"
+            }
+          }
+        ]
+      },
+      "staged_digests_hex": {
+        "permanu-agent": "e10e11e9a895b71e006e52acb2f8af1faa198062942ee1cfb02a61078b7b191a",
+        "permanu-runner": "8ef5dbf0b98a80108f9f4b3c6b66bd7e0a4c936e2d6c42ea056e4f7202eda599",
+        "permanu-env": "baddb48a415805b84fdd5553efd5376d61555021a89f7db75391897d61074da5",
+        "dwaar": "dc2ffed1fc999b259c6dce9bb95e80ac29e6be359185d29bebb94f2cf8ba60cb"
+      },
+      "mode": "test",
+      "expect": "E_ARTIFACT_UNTRUSTED"
+    },
+    {
+      "name": "artifact_production_refuses_test_keys",
+      "action": {
+        "kind": "agent.update",
+        "params": {
+          "version": "2.1.0",
+          "artifact_digest_hex": "e10e11e9a895b71e006e52acb2f8af1faa198062942ee1cfb02a61078b7b191a",
+          "bundle_manifest_digest_hex": "16b57bf3062edbeb3d8583d2b672e1c321a33a39b9efcf81afee82d781661fe1",
+          "allow_downgrade": false
+        }
+      },
+      "arch": "amd64",
+      "installed_version": "2.0.6",
+      "manifest": "{\"components\":[{\"arch\":\"amd64\",\"artifact_digest_hex\":\"dc2ffed1fc999b259c6dce9bb95e80ac29e6be359185d29bebb94f2cf8ba60cb\",\"name\":\"dwaar\",\"path\":\"amd64/dwaar\",\"version\":\"2.1.0\"},{\"arch\":\"arm64\",\"artifact_digest_hex\":\"5e5b51ddc42089bf76d75b94868585cd909307bd035c21969408d903a7c5556b\",\"name\":\"dwaar\",\"path\":\"arm64/dwaar\",\"version\":\"2.1.0\"},{\"arch\":\"amd64\",\"artifact_digest_hex\":\"e10e11e9a895b71e006e52acb2f8af1faa198062942ee1cfb02a61078b7b191a\",\"name\":\"permanu-agent\",\"path\":\"amd64/permanu-agent\",\"version\":\"2.1.0\"},{\"arch\":\"arm64\",\"artifact_digest_hex\":\"a4bc871a4c9c21b2e855ff3ac6a981789229aa9b773bd72151b48c747e54fa98\",\"name\":\"permanu-agent\",\"path\":\"arm64/permanu-agent\",\"version\":\"2.1.0\"},{\"arch\":\"amd64\",\"artifact_digest_hex\":\"baddb48a415805b84fdd5553efd5376d61555021a89f7db75391897d61074da5\",\"name\":\"permanu-env\",\"path\":\"amd64/permanu-env\",\"version\":\"2.1.0\"},{\"arch\":\"arm64\",\"artifact_digest_hex\":\"a5a30a0fd407fc34a09223df7c2560022daf7d8f3f4252f5f763fb4dd9cb1065\",\"name\":\"permanu-env\",\"path\":\"arm64/permanu-env\",\"version\":\"2.1.0\"},{\"arch\":\"amd64\",\"artifact_digest_hex\":\"8ef5dbf0b98a80108f9f4b3c6b66bd7e0a4c936e2d6c42ea056e4f7202eda599\",\"name\":\"permanu-runner\",\"path\":\"amd64/permanu-runner\",\"version\":\"2.1.0\"},{\"arch\":\"arm64\",\"artifact_digest_hex\":\"a9964497d655e0e8240e5550b1392a0cd4680297d42143f746b1a4915f8b5c0d\",\"name\":\"permanu-runner\",\"path\":\"arm64/permanu-runner\",\"version\":\"2.1.0\"}],\"release_keys\":[{\"key_id\":\"RE1jopVSq8Moy0jDftg6Kg\",\"label\":\"Permanu TEST release key (rotated)\",\"spki\":\"MCowBQYDK2VwAyEAGZtqVq+kKLsm+LOjTwv8MyMHrGU4692o51PChact9zc=\"},{\"key_id\":\"cl98Xxg2voSKlukyuAPKJg\",\"label\":\"Permanu TEST release key (release)\",\"spki\":\"MCowBQYDK2VwAyEAxUG8N6ZYv4fm4+BLDKpGKrVaGRXdQjEdXbvfEADrd2k=\"}],\"version\":2}",
+      "manifest_sig": "{\"alg\":\"Ed25519\",\"key_id\":\"cl98Xxg2voSKlukyuAPKJg\",\"sig\":\"oNjknkDrfHE4rc18Ej-Bw7d1naWEyOBYtdMgb5bD4ZmMn7jo72EnO2Cb4cZR--_t3BCf7utpK4sRLMUPpsLzAg\",\"version\":1}",
+      "release_keys": {
+        "version": 1,
+        "keys": [
+          {
+            "key_id": "cl98Xxg2voSKlukyuAPKJg",
+            "alg": "Ed25519",
+            "spki": "MCowBQYDK2VwAyEAxUG8N6ZYv4fm4+BLDKpGKrVaGRXdQjEdXbvfEADrd2k=",
+            "label": "Permanu TEST release key (release)",
+            "added_at": "2026-09-01T08:00:00Z",
+            "added_by": null
+          },
+          {
+            "key_id": "RE1jopVSq8Moy0jDftg6Kg",
+            "alg": "Ed25519",
+            "spki": "MCowBQYDK2VwAyEAGZtqVq+kKLsm+LOjTwv8MyMHrGU4692o51PChact9zc=",
+            "label": "Permanu TEST release key (rotated)",
+            "added_at": "2026-09-23T10:00:00Z",
+            "added_by": {
+              "plan_id": "01a0cdb5-3500-7001-8000-00000000000b",
+              "plan_digest_hex": "f6a50c66742dd3864c5ab9a39dc519275d135144bbe4eb5f8ac468b6969afcc9"
+            }
+          }
+        ],
+        "revocations": []
+      },
+      "staged_digests_hex": {
+        "permanu-agent": "e10e11e9a895b71e006e52acb2f8af1faa198062942ee1cfb02a61078b7b191a",
+        "permanu-runner": "8ef5dbf0b98a80108f9f4b3c6b66bd7e0a4c936e2d6c42ea056e4f7202eda599",
+        "permanu-env": "baddb48a415805b84fdd5553efd5376d61555021a89f7db75391897d61074da5",
+        "dwaar": "dc2ffed1fc999b259c6dce9bb95e80ac29e6be359185d29bebb94f2cf8ba60cb"
+      },
+      "mode": "production",
+      "expect": "release_keys_invalid"
+    },
+    {
+      "name": "release_keys_key_id_mismatch",
+      "action": {
+        "kind": "agent.update",
+        "params": {
+          "version": "2.1.0",
+          "artifact_digest_hex": "e10e11e9a895b71e006e52acb2f8af1faa198062942ee1cfb02a61078b7b191a",
+          "bundle_manifest_digest_hex": "16b57bf3062edbeb3d8583d2b672e1c321a33a39b9efcf81afee82d781661fe1",
+          "allow_downgrade": false
+        }
+      },
+      "arch": "amd64",
+      "installed_version": "2.0.6",
+      "manifest": "{\"components\":[{\"arch\":\"amd64\",\"artifact_digest_hex\":\"dc2ffed1fc999b259c6dce9bb95e80ac29e6be359185d29bebb94f2cf8ba60cb\",\"name\":\"dwaar\",\"path\":\"amd64/dwaar\",\"version\":\"2.1.0\"},{\"arch\":\"arm64\",\"artifact_digest_hex\":\"5e5b51ddc42089bf76d75b94868585cd909307bd035c21969408d903a7c5556b\",\"name\":\"dwaar\",\"path\":\"arm64/dwaar\",\"version\":\"2.1.0\"},{\"arch\":\"amd64\",\"artifact_digest_hex\":\"e10e11e9a895b71e006e52acb2f8af1faa198062942ee1cfb02a61078b7b191a\",\"name\":\"permanu-agent\",\"path\":\"amd64/permanu-agent\",\"version\":\"2.1.0\"},{\"arch\":\"arm64\",\"artifact_digest_hex\":\"a4bc871a4c9c21b2e855ff3ac6a981789229aa9b773bd72151b48c747e54fa98\",\"name\":\"permanu-agent\",\"path\":\"arm64/permanu-agent\",\"version\":\"2.1.0\"},{\"arch\":\"amd64\",\"artifact_digest_hex\":\"baddb48a415805b84fdd5553efd5376d61555021a89f7db75391897d61074da5\",\"name\":\"permanu-env\",\"path\":\"amd64/permanu-env\",\"version\":\"2.1.0\"},{\"arch\":\"arm64\",\"artifact_digest_hex\":\"a5a30a0fd407fc34a09223df7c2560022daf7d8f3f4252f5f763fb4dd9cb1065\",\"name\":\"permanu-env\",\"path\":\"arm64/permanu-env\",\"version\":\"2.1.0\"},{\"arch\":\"amd64\",\"artifact_digest_hex\":\"8ef5dbf0b98a80108f9f4b3c6b66bd7e0a4c936e2d6c42ea056e4f7202eda599\",\"name\":\"permanu-runner\",\"path\":\"amd64/permanu-runner\",\"version\":\"2.1.0\"},{\"arch\":\"arm64\",\"artifact_digest_hex\":\"a9964497d655e0e8240e5550b1392a0cd4680297d42143f746b1a4915f8b5c0d\",\"name\":\"permanu-runner\",\"path\":\"arm64/permanu-runner\",\"version\":\"2.1.0\"}],\"release_keys\":[{\"key_id\":\"RE1jopVSq8Moy0jDftg6Kg\",\"label\":\"Permanu TEST release key (rotated)\",\"spki\":\"MCowBQYDK2VwAyEAGZtqVq+kKLsm+LOjTwv8MyMHrGU4692o51PChact9zc=\"},{\"key_id\":\"cl98Xxg2voSKlukyuAPKJg\",\"label\":\"Permanu TEST release key (release)\",\"spki\":\"MCowBQYDK2VwAyEAxUG8N6ZYv4fm4+BLDKpGKrVaGRXdQjEdXbvfEADrd2k=\"}],\"version\":2}",
+      "manifest_sig": "{\"alg\":\"Ed25519\",\"key_id\":\"cl98Xxg2voSKlukyuAPKJg\",\"sig\":\"oNjknkDrfHE4rc18Ej-Bw7d1naWEyOBYtdMgb5bD4ZmMn7jo72EnO2Cb4cZR--_t3BCf7utpK4sRLMUPpsLzAg\",\"version\":1}",
+      "release_keys": {
+        "version": 1,
+        "keys": [
+          {
+            "key_id": "MA975uwluIeABZVJLGWMaA",
+            "alg": "Ed25519",
+            "spki": "MCowBQYDK2VwAyEAxUG8N6ZYv4fm4+BLDKpGKrVaGRXdQjEdXbvfEADrd2k=",
+            "label": "Permanu TEST release key (release)",
+            "added_at": "2026-09-01T08:00:00Z",
+            "added_by": null
+          },
+          {
+            "key_id": "RE1jopVSq8Moy0jDftg6Kg",
+            "alg": "Ed25519",
+            "spki": "MCowBQYDK2VwAyEAGZtqVq+kKLsm+LOjTwv8MyMHrGU4692o51PChact9zc=",
+            "label": "Permanu TEST release key (rotated)",
+            "added_at": "2026-09-23T10:00:00Z",
+            "added_by": {
+              "plan_id": "01a0cdb5-3500-7001-8000-00000000000b",
+              "plan_digest_hex": "f6a50c66742dd3864c5ab9a39dc519275d135144bbe4eb5f8ac468b6969afcc9"
+            }
+          }
+        ],
+        "revocations": []
+      },
+      "staged_digests_hex": {
+        "permanu-agent": "e10e11e9a895b71e006e52acb2f8af1faa198062942ee1cfb02a61078b7b191a",
+        "permanu-runner": "8ef5dbf0b98a80108f9f4b3c6b66bd7e0a4c936e2d6c42ea056e4f7202eda599",
+        "permanu-env": "baddb48a415805b84fdd5553efd5376d61555021a89f7db75391897d61074da5",
+        "dwaar": "dc2ffed1fc999b259c6dce9bb95e80ac29e6be359185d29bebb94f2cf8ba60cb"
+      },
+      "mode": "test",
+      "expect": "release_keys_invalid"
+    },
+    {
+      "name": "artifact_version_mismatch",
+      "action": {
+        "kind": "agent.update",
+        "params": {
+          "version": "2.2.0",
+          "artifact_digest_hex": "e10e11e9a895b71e006e52acb2f8af1faa198062942ee1cfb02a61078b7b191a",
+          "bundle_manifest_digest_hex": "16b57bf3062edbeb3d8583d2b672e1c321a33a39b9efcf81afee82d781661fe1",
+          "allow_downgrade": false
+        }
+      },
+      "arch": "amd64",
+      "installed_version": "2.0.6",
+      "manifest": "{\"components\":[{\"arch\":\"amd64\",\"artifact_digest_hex\":\"dc2ffed1fc999b259c6dce9bb95e80ac29e6be359185d29bebb94f2cf8ba60cb\",\"name\":\"dwaar\",\"path\":\"amd64/dwaar\",\"version\":\"2.1.0\"},{\"arch\":\"arm64\",\"artifact_digest_hex\":\"5e5b51ddc42089bf76d75b94868585cd909307bd035c21969408d903a7c5556b\",\"name\":\"dwaar\",\"path\":\"arm64/dwaar\",\"version\":\"2.1.0\"},{\"arch\":\"amd64\",\"artifact_digest_hex\":\"e10e11e9a895b71e006e52acb2f8af1faa198062942ee1cfb02a61078b7b191a\",\"name\":\"permanu-agent\",\"path\":\"amd64/permanu-agent\",\"version\":\"2.1.0\"},{\"arch\":\"arm64\",\"artifact_digest_hex\":\"a4bc871a4c9c21b2e855ff3ac6a981789229aa9b773bd72151b48c747e54fa98\",\"name\":\"permanu-agent\",\"path\":\"arm64/permanu-agent\",\"version\":\"2.1.0\"},{\"arch\":\"amd64\",\"artifact_digest_hex\":\"baddb48a415805b84fdd5553efd5376d61555021a89f7db75391897d61074da5\",\"name\":\"permanu-env\",\"path\":\"amd64/permanu-env\",\"version\":\"2.1.0\"},{\"arch\":\"arm64\",\"artifact_digest_hex\":\"a5a30a0fd407fc34a09223df7c2560022daf7d8f3f4252f5f763fb4dd9cb1065\",\"name\":\"permanu-env\",\"path\":\"arm64/permanu-env\",\"version\":\"2.1.0\"},{\"arch\":\"amd64\",\"artifact_digest_hex\":\"8ef5dbf0b98a80108f9f4b3c6b66bd7e0a4c936e2d6c42ea056e4f7202eda599\",\"name\":\"permanu-runner\",\"path\":\"amd64/permanu-runner\",\"version\":\"2.1.0\"},{\"arch\":\"arm64\",\"artifact_digest_hex\":\"a9964497d655e0e8240e5550b1392a0cd4680297d42143f746b1a4915f8b5c0d\",\"name\":\"permanu-runner\",\"path\":\"arm64/permanu-runner\",\"version\":\"2.1.0\"}],\"release_keys\":[{\"key_id\":\"RE1jopVSq8Moy0jDftg6Kg\",\"label\":\"Permanu TEST release key (rotated)\",\"spki\":\"MCowBQYDK2VwAyEAGZtqVq+kKLsm+LOjTwv8MyMHrGU4692o51PChact9zc=\"},{\"key_id\":\"cl98Xxg2voSKlukyuAPKJg\",\"label\":\"Permanu TEST release key (release)\",\"spki\":\"MCowBQYDK2VwAyEAxUG8N6ZYv4fm4+BLDKpGKrVaGRXdQjEdXbvfEADrd2k=\"}],\"version\":2}",
+      "manifest_sig": "{\"alg\":\"Ed25519\",\"key_id\":\"cl98Xxg2voSKlukyuAPKJg\",\"sig\":\"oNjknkDrfHE4rc18Ej-Bw7d1naWEyOBYtdMgb5bD4ZmMn7jo72EnO2Cb4cZR--_t3BCf7utpK4sRLMUPpsLzAg\",\"version\":1}",
+      "release_keys": {
+        "version": 1,
+        "keys": [
+          {
+            "key_id": "cl98Xxg2voSKlukyuAPKJg",
+            "alg": "Ed25519",
+            "spki": "MCowBQYDK2VwAyEAxUG8N6ZYv4fm4+BLDKpGKrVaGRXdQjEdXbvfEADrd2k=",
+            "label": "Permanu TEST release key (release)",
+            "added_at": "2026-09-01T08:00:00Z",
+            "added_by": null
+          },
+          {
+            "key_id": "RE1jopVSq8Moy0jDftg6Kg",
+            "alg": "Ed25519",
+            "spki": "MCowBQYDK2VwAyEAGZtqVq+kKLsm+LOjTwv8MyMHrGU4692o51PChact9zc=",
+            "label": "Permanu TEST release key (rotated)",
+            "added_at": "2026-09-23T10:00:00Z",
+            "added_by": {
+              "plan_id": "01a0cdb5-3500-7001-8000-00000000000b",
+              "plan_digest_hex": "f6a50c66742dd3864c5ab9a39dc519275d135144bbe4eb5f8ac468b6969afcc9"
+            }
+          }
+        ],
+        "revocations": []
+      },
+      "staged_digests_hex": {
+        "permanu-agent": "e10e11e9a895b71e006e52acb2f8af1faa198062942ee1cfb02a61078b7b191a",
+        "permanu-runner": "8ef5dbf0b98a80108f9f4b3c6b66bd7e0a4c936e2d6c42ea056e4f7202eda599",
+        "permanu-env": "baddb48a415805b84fdd5553efd5376d61555021a89f7db75391897d61074da5",
+        "dwaar": "dc2ffed1fc999b259c6dce9bb95e80ac29e6be359185d29bebb94f2cf8ba60cb"
+      },
+      "mode": "test",
+      "expect": "E_EXEC_PRECONDITION"
+    },
+    {
+      "name": "artifact_staged_binary_mismatch",
+      "action": {
+        "kind": "agent.update",
+        "params": {
+          "version": "2.1.0",
+          "artifact_digest_hex": "e10e11e9a895b71e006e52acb2f8af1faa198062942ee1cfb02a61078b7b191a",
+          "bundle_manifest_digest_hex": "16b57bf3062edbeb3d8583d2b672e1c321a33a39b9efcf81afee82d781661fe1",
+          "allow_downgrade": false
+        }
+      },
+      "arch": "amd64",
+      "installed_version": "2.0.6",
+      "manifest": "{\"components\":[{\"arch\":\"amd64\",\"artifact_digest_hex\":\"dc2ffed1fc999b259c6dce9bb95e80ac29e6be359185d29bebb94f2cf8ba60cb\",\"name\":\"dwaar\",\"path\":\"amd64/dwaar\",\"version\":\"2.1.0\"},{\"arch\":\"arm64\",\"artifact_digest_hex\":\"5e5b51ddc42089bf76d75b94868585cd909307bd035c21969408d903a7c5556b\",\"name\":\"dwaar\",\"path\":\"arm64/dwaar\",\"version\":\"2.1.0\"},{\"arch\":\"amd64\",\"artifact_digest_hex\":\"e10e11e9a895b71e006e52acb2f8af1faa198062942ee1cfb02a61078b7b191a\",\"name\":\"permanu-agent\",\"path\":\"amd64/permanu-agent\",\"version\":\"2.1.0\"},{\"arch\":\"arm64\",\"artifact_digest_hex\":\"a4bc871a4c9c21b2e855ff3ac6a981789229aa9b773bd72151b48c747e54fa98\",\"name\":\"permanu-agent\",\"path\":\"arm64/permanu-agent\",\"version\":\"2.1.0\"},{\"arch\":\"amd64\",\"artifact_digest_hex\":\"baddb48a415805b84fdd5553efd5376d61555021a89f7db75391897d61074da5\",\"name\":\"permanu-env\",\"path\":\"amd64/permanu-env\",\"version\":\"2.1.0\"},{\"arch\":\"arm64\",\"artifact_digest_hex\":\"a5a30a0fd407fc34a09223df7c2560022daf7d8f3f4252f5f763fb4dd9cb1065\",\"name\":\"permanu-env\",\"path\":\"arm64/permanu-env\",\"version\":\"2.1.0\"},{\"arch\":\"amd64\",\"artifact_digest_hex\":\"8ef5dbf0b98a80108f9f4b3c6b66bd7e0a4c936e2d6c42ea056e4f7202eda599\",\"name\":\"permanu-runner\",\"path\":\"amd64/permanu-runner\",\"version\":\"2.1.0\"},{\"arch\":\"arm64\",\"artifact_digest_hex\":\"a9964497d655e0e8240e5550b1392a0cd4680297d42143f746b1a4915f8b5c0d\",\"name\":\"permanu-runner\",\"path\":\"arm64/permanu-runner\",\"version\":\"2.1.0\"}],\"release_keys\":[{\"key_id\":\"RE1jopVSq8Moy0jDftg6Kg\",\"label\":\"Permanu TEST release key (rotated)\",\"spki\":\"MCowBQYDK2VwAyEAGZtqVq+kKLsm+LOjTwv8MyMHrGU4692o51PChact9zc=\"},{\"key_id\":\"cl98Xxg2voSKlukyuAPKJg\",\"label\":\"Permanu TEST release key (release)\",\"spki\":\"MCowBQYDK2VwAyEAxUG8N6ZYv4fm4+BLDKpGKrVaGRXdQjEdXbvfEADrd2k=\"}],\"version\":2}",
+      "manifest_sig": "{\"alg\":\"Ed25519\",\"key_id\":\"cl98Xxg2voSKlukyuAPKJg\",\"sig\":\"oNjknkDrfHE4rc18Ej-Bw7d1naWEyOBYtdMgb5bD4ZmMn7jo72EnO2Cb4cZR--_t3BCf7utpK4sRLMUPpsLzAg\",\"version\":1}",
+      "release_keys": {
+        "version": 1,
+        "keys": [
+          {
+            "key_id": "cl98Xxg2voSKlukyuAPKJg",
+            "alg": "Ed25519",
+            "spki": "MCowBQYDK2VwAyEAxUG8N6ZYv4fm4+BLDKpGKrVaGRXdQjEdXbvfEADrd2k=",
+            "label": "Permanu TEST release key (release)",
+            "added_at": "2026-09-01T08:00:00Z",
+            "added_by": null
+          },
+          {
+            "key_id": "RE1jopVSq8Moy0jDftg6Kg",
+            "alg": "Ed25519",
+            "spki": "MCowBQYDK2VwAyEAGZtqVq+kKLsm+LOjTwv8MyMHrGU4692o51PChact9zc=",
+            "label": "Permanu TEST release key (rotated)",
+            "added_at": "2026-09-23T10:00:00Z",
+            "added_by": {
+              "plan_id": "01a0cdb5-3500-7001-8000-00000000000b",
+              "plan_digest_hex": "f6a50c66742dd3864c5ab9a39dc519275d135144bbe4eb5f8ac468b6969afcc9"
+            }
+          }
+        ],
+        "revocations": []
+      },
+      "staged_digests_hex": {
+        "permanu-agent": "16bd90139519f046cfad0f8392f602dada4f214a5039f1b467535dab191366dc"
+      },
+      "mode": "test",
+      "expect": "E_EXEC_PRECONDITION"
+    },
+    {
+      "name": "artifact_runner_without_permanu_env",
+      "action": {
+        "kind": "component.update",
+        "params": {
+          "component": "runner",
+          "version": "2.1.0",
+          "artifact_digest_hex": "8ef5dbf0b98a80108f9f4b3c6b66bd7e0a4c936e2d6c42ea056e4f7202eda599",
+          "bundle_manifest_digest_hex": "16b57bf3062edbeb3d8583d2b672e1c321a33a39b9efcf81afee82d781661fe1",
+          "allow_downgrade": false
+        }
+      },
+      "arch": "amd64",
+      "installed_version": "2.0.6",
+      "manifest": "{\"components\":[{\"arch\":\"amd64\",\"artifact_digest_hex\":\"dc2ffed1fc999b259c6dce9bb95e80ac29e6be359185d29bebb94f2cf8ba60cb\",\"name\":\"dwaar\",\"path\":\"amd64/dwaar\",\"version\":\"2.1.0\"},{\"arch\":\"arm64\",\"artifact_digest_hex\":\"5e5b51ddc42089bf76d75b94868585cd909307bd035c21969408d903a7c5556b\",\"name\":\"dwaar\",\"path\":\"arm64/dwaar\",\"version\":\"2.1.0\"},{\"arch\":\"amd64\",\"artifact_digest_hex\":\"e10e11e9a895b71e006e52acb2f8af1faa198062942ee1cfb02a61078b7b191a\",\"name\":\"permanu-agent\",\"path\":\"amd64/permanu-agent\",\"version\":\"2.1.0\"},{\"arch\":\"arm64\",\"artifact_digest_hex\":\"a4bc871a4c9c21b2e855ff3ac6a981789229aa9b773bd72151b48c747e54fa98\",\"name\":\"permanu-agent\",\"path\":\"arm64/permanu-agent\",\"version\":\"2.1.0\"},{\"arch\":\"amd64\",\"artifact_digest_hex\":\"baddb48a415805b84fdd5553efd5376d61555021a89f7db75391897d61074da5\",\"name\":\"permanu-env\",\"path\":\"amd64/permanu-env\",\"version\":\"2.1.0\"},{\"arch\":\"arm64\",\"artifact_digest_hex\":\"a5a30a0fd407fc34a09223df7c2560022daf7d8f3f4252f5f763fb4dd9cb1065\",\"name\":\"permanu-env\",\"path\":\"arm64/permanu-env\",\"version\":\"2.1.0\"},{\"arch\":\"amd64\",\"artifact_digest_hex\":\"8ef5dbf0b98a80108f9f4b3c6b66bd7e0a4c936e2d6c42ea056e4f7202eda599\",\"name\":\"permanu-runner\",\"path\":\"amd64/permanu-runner\",\"version\":\"2.1.0\"},{\"arch\":\"arm64\",\"artifact_digest_hex\":\"a9964497d655e0e8240e5550b1392a0cd4680297d42143f746b1a4915f8b5c0d\",\"name\":\"permanu-runner\",\"path\":\"arm64/permanu-runner\",\"version\":\"2.1.0\"}],\"release_keys\":[{\"key_id\":\"RE1jopVSq8Moy0jDftg6Kg\",\"label\":\"Permanu TEST release key (rotated)\",\"spki\":\"MCowBQYDK2VwAyEAGZtqVq+kKLsm+LOjTwv8MyMHrGU4692o51PChact9zc=\"},{\"key_id\":\"cl98Xxg2voSKlukyuAPKJg\",\"label\":\"Permanu TEST release key (release)\",\"spki\":\"MCowBQYDK2VwAyEAxUG8N6ZYv4fm4+BLDKpGKrVaGRXdQjEdXbvfEADrd2k=\"}],\"version\":2}",
+      "manifest_sig": "{\"alg\":\"Ed25519\",\"key_id\":\"cl98Xxg2voSKlukyuAPKJg\",\"sig\":\"oNjknkDrfHE4rc18Ej-Bw7d1naWEyOBYtdMgb5bD4ZmMn7jo72EnO2Cb4cZR--_t3BCf7utpK4sRLMUPpsLzAg\",\"version\":1}",
+      "release_keys": {
+        "version": 1,
+        "keys": [
+          {
+            "key_id": "cl98Xxg2voSKlukyuAPKJg",
+            "alg": "Ed25519",
+            "spki": "MCowBQYDK2VwAyEAxUG8N6ZYv4fm4+BLDKpGKrVaGRXdQjEdXbvfEADrd2k=",
+            "label": "Permanu TEST release key (release)",
+            "added_at": "2026-09-01T08:00:00Z",
+            "added_by": null
+          },
+          {
+            "key_id": "RE1jopVSq8Moy0jDftg6Kg",
+            "alg": "Ed25519",
+            "spki": "MCowBQYDK2VwAyEAGZtqVq+kKLsm+LOjTwv8MyMHrGU4692o51PChact9zc=",
+            "label": "Permanu TEST release key (rotated)",
+            "added_at": "2026-09-23T10:00:00Z",
+            "added_by": {
+              "plan_id": "01a0cdb5-3500-7001-8000-00000000000b",
+              "plan_digest_hex": "f6a50c66742dd3864c5ab9a39dc519275d135144bbe4eb5f8ac468b6969afcc9"
+            }
+          }
+        ],
+        "revocations": []
+      },
+      "staged_digests_hex": {
+        "permanu-runner": "8ef5dbf0b98a80108f9f4b3c6b66bd7e0a4c936e2d6c42ea056e4f7202eda599"
+      },
+      "mode": "test",
+      "expect": "E_EXEC_PRECONDITION"
+    },
+    {
+      "name": "artifact_downgrade_refused",
+      "action": {
+        "kind": "agent.update",
+        "params": {
+          "version": "2.1.0",
+          "artifact_digest_hex": "e10e11e9a895b71e006e52acb2f8af1faa198062942ee1cfb02a61078b7b191a",
+          "bundle_manifest_digest_hex": "16b57bf3062edbeb3d8583d2b672e1c321a33a39b9efcf81afee82d781661fe1",
+          "allow_downgrade": false
+        }
+      },
+      "arch": "amd64",
+      "installed_version": "2.2.0",
+      "manifest": "{\"components\":[{\"arch\":\"amd64\",\"artifact_digest_hex\":\"dc2ffed1fc999b259c6dce9bb95e80ac29e6be359185d29bebb94f2cf8ba60cb\",\"name\":\"dwaar\",\"path\":\"amd64/dwaar\",\"version\":\"2.1.0\"},{\"arch\":\"arm64\",\"artifact_digest_hex\":\"5e5b51ddc42089bf76d75b94868585cd909307bd035c21969408d903a7c5556b\",\"name\":\"dwaar\",\"path\":\"arm64/dwaar\",\"version\":\"2.1.0\"},{\"arch\":\"amd64\",\"artifact_digest_hex\":\"e10e11e9a895b71e006e52acb2f8af1faa198062942ee1cfb02a61078b7b191a\",\"name\":\"permanu-agent\",\"path\":\"amd64/permanu-agent\",\"version\":\"2.1.0\"},{\"arch\":\"arm64\",\"artifact_digest_hex\":\"a4bc871a4c9c21b2e855ff3ac6a981789229aa9b773bd72151b48c747e54fa98\",\"name\":\"permanu-agent\",\"path\":\"arm64/permanu-agent\",\"version\":\"2.1.0\"},{\"arch\":\"amd64\",\"artifact_digest_hex\":\"baddb48a415805b84fdd5553efd5376d61555021a89f7db75391897d61074da5\",\"name\":\"permanu-env\",\"path\":\"amd64/permanu-env\",\"version\":\"2.1.0\"},{\"arch\":\"arm64\",\"artifact_digest_hex\":\"a5a30a0fd407fc34a09223df7c2560022daf7d8f3f4252f5f763fb4dd9cb1065\",\"name\":\"permanu-env\",\"path\":\"arm64/permanu-env\",\"version\":\"2.1.0\"},{\"arch\":\"amd64\",\"artifact_digest_hex\":\"8ef5dbf0b98a80108f9f4b3c6b66bd7e0a4c936e2d6c42ea056e4f7202eda599\",\"name\":\"permanu-runner\",\"path\":\"amd64/permanu-runner\",\"version\":\"2.1.0\"},{\"arch\":\"arm64\",\"artifact_digest_hex\":\"a9964497d655e0e8240e5550b1392a0cd4680297d42143f746b1a4915f8b5c0d\",\"name\":\"permanu-runner\",\"path\":\"arm64/permanu-runner\",\"version\":\"2.1.0\"}],\"release_keys\":[{\"key_id\":\"RE1jopVSq8Moy0jDftg6Kg\",\"label\":\"Permanu TEST release key (rotated)\",\"spki\":\"MCowBQYDK2VwAyEAGZtqVq+kKLsm+LOjTwv8MyMHrGU4692o51PChact9zc=\"},{\"key_id\":\"cl98Xxg2voSKlukyuAPKJg\",\"label\":\"Permanu TEST release key (release)\",\"spki\":\"MCowBQYDK2VwAyEAxUG8N6ZYv4fm4+BLDKpGKrVaGRXdQjEdXbvfEADrd2k=\"}],\"version\":2}",
+      "manifest_sig": "{\"alg\":\"Ed25519\",\"key_id\":\"cl98Xxg2voSKlukyuAPKJg\",\"sig\":\"oNjknkDrfHE4rc18Ej-Bw7d1naWEyOBYtdMgb5bD4ZmMn7jo72EnO2Cb4cZR--_t3BCf7utpK4sRLMUPpsLzAg\",\"version\":1}",
+      "release_keys": {
+        "version": 1,
+        "keys": [
+          {
+            "key_id": "cl98Xxg2voSKlukyuAPKJg",
+            "alg": "Ed25519",
+            "spki": "MCowBQYDK2VwAyEAxUG8N6ZYv4fm4+BLDKpGKrVaGRXdQjEdXbvfEADrd2k=",
+            "label": "Permanu TEST release key (release)",
+            "added_at": "2026-09-01T08:00:00Z",
+            "added_by": null
+          },
+          {
+            "key_id": "RE1jopVSq8Moy0jDftg6Kg",
+            "alg": "Ed25519",
+            "spki": "MCowBQYDK2VwAyEAGZtqVq+kKLsm+LOjTwv8MyMHrGU4692o51PChact9zc=",
+            "label": "Permanu TEST release key (rotated)",
+            "added_at": "2026-09-23T10:00:00Z",
+            "added_by": {
+              "plan_id": "01a0cdb5-3500-7001-8000-00000000000b",
+              "plan_digest_hex": "f6a50c66742dd3864c5ab9a39dc519275d135144bbe4eb5f8ac468b6969afcc9"
+            }
+          }
+        ],
+        "revocations": []
+      },
+      "staged_digests_hex": {
+        "permanu-agent": "e10e11e9a895b71e006e52acb2f8af1faa198062942ee1cfb02a61078b7b191a",
+        "permanu-runner": "8ef5dbf0b98a80108f9f4b3c6b66bd7e0a4c936e2d6c42ea056e4f7202eda599",
+        "permanu-env": "baddb48a415805b84fdd5553efd5376d61555021a89f7db75391897d61074da5",
+        "dwaar": "dc2ffed1fc999b259c6dce9bb95e80ac29e6be359185d29bebb94f2cf8ba60cb"
+      },
+      "mode": "test",
+      "expect": "E_EXEC_PRECONDITION"
+    },
+    {
+      "name": "ok_artifact_downgrade_allowed",
+      "action": {
+        "kind": "agent.update",
+        "params": {
+          "version": "2.1.0",
+          "artifact_digest_hex": "e10e11e9a895b71e006e52acb2f8af1faa198062942ee1cfb02a61078b7b191a",
+          "bundle_manifest_digest_hex": "16b57bf3062edbeb3d8583d2b672e1c321a33a39b9efcf81afee82d781661fe1",
+          "allow_downgrade": true
+        }
+      },
+      "arch": "amd64",
+      "installed_version": "2.2.0",
+      "manifest": "{\"components\":[{\"arch\":\"amd64\",\"artifact_digest_hex\":\"dc2ffed1fc999b259c6dce9bb95e80ac29e6be359185d29bebb94f2cf8ba60cb\",\"name\":\"dwaar\",\"path\":\"amd64/dwaar\",\"version\":\"2.1.0\"},{\"arch\":\"arm64\",\"artifact_digest_hex\":\"5e5b51ddc42089bf76d75b94868585cd909307bd035c21969408d903a7c5556b\",\"name\":\"dwaar\",\"path\":\"arm64/dwaar\",\"version\":\"2.1.0\"},{\"arch\":\"amd64\",\"artifact_digest_hex\":\"e10e11e9a895b71e006e52acb2f8af1faa198062942ee1cfb02a61078b7b191a\",\"name\":\"permanu-agent\",\"path\":\"amd64/permanu-agent\",\"version\":\"2.1.0\"},{\"arch\":\"arm64\",\"artifact_digest_hex\":\"a4bc871a4c9c21b2e855ff3ac6a981789229aa9b773bd72151b48c747e54fa98\",\"name\":\"permanu-agent\",\"path\":\"arm64/permanu-agent\",\"version\":\"2.1.0\"},{\"arch\":\"amd64\",\"artifact_digest_hex\":\"baddb48a415805b84fdd5553efd5376d61555021a89f7db75391897d61074da5\",\"name\":\"permanu-env\",\"path\":\"amd64/permanu-env\",\"version\":\"2.1.0\"},{\"arch\":\"arm64\",\"artifact_digest_hex\":\"a5a30a0fd407fc34a09223df7c2560022daf7d8f3f4252f5f763fb4dd9cb1065\",\"name\":\"permanu-env\",\"path\":\"arm64/permanu-env\",\"version\":\"2.1.0\"},{\"arch\":\"amd64\",\"artifact_digest_hex\":\"8ef5dbf0b98a80108f9f4b3c6b66bd7e0a4c936e2d6c42ea056e4f7202eda599\",\"name\":\"permanu-runner\",\"path\":\"amd64/permanu-runner\",\"version\":\"2.1.0\"},{\"arch\":\"arm64\",\"artifact_digest_hex\":\"a9964497d655e0e8240e5550b1392a0cd4680297d42143f746b1a4915f8b5c0d\",\"name\":\"permanu-runner\",\"path\":\"arm64/permanu-runner\",\"version\":\"2.1.0\"}],\"release_keys\":[{\"key_id\":\"RE1jopVSq8Moy0jDftg6Kg\",\"label\":\"Permanu TEST release key (rotated)\",\"spki\":\"MCowBQYDK2VwAyEAGZtqVq+kKLsm+LOjTwv8MyMHrGU4692o51PChact9zc=\"},{\"key_id\":\"cl98Xxg2voSKlukyuAPKJg\",\"label\":\"Permanu TEST release key (release)\",\"spki\":\"MCowBQYDK2VwAyEAxUG8N6ZYv4fm4+BLDKpGKrVaGRXdQjEdXbvfEADrd2k=\"}],\"version\":2}",
+      "manifest_sig": "{\"alg\":\"Ed25519\",\"key_id\":\"cl98Xxg2voSKlukyuAPKJg\",\"sig\":\"oNjknkDrfHE4rc18Ej-Bw7d1naWEyOBYtdMgb5bD4ZmMn7jo72EnO2Cb4cZR--_t3BCf7utpK4sRLMUPpsLzAg\",\"version\":1}",
+      "release_keys": {
+        "version": 1,
+        "keys": [
+          {
+            "key_id": "cl98Xxg2voSKlukyuAPKJg",
+            "alg": "Ed25519",
+            "spki": "MCowBQYDK2VwAyEAxUG8N6ZYv4fm4+BLDKpGKrVaGRXdQjEdXbvfEADrd2k=",
+            "label": "Permanu TEST release key (release)",
+            "added_at": "2026-09-01T08:00:00Z",
+            "added_by": null
+          },
+          {
+            "key_id": "RE1jopVSq8Moy0jDftg6Kg",
+            "alg": "Ed25519",
+            "spki": "MCowBQYDK2VwAyEAGZtqVq+kKLsm+LOjTwv8MyMHrGU4692o51PChact9zc=",
+            "label": "Permanu TEST release key (rotated)",
+            "added_at": "2026-09-23T10:00:00Z",
+            "added_by": {
+              "plan_id": "01a0cdb5-3500-7001-8000-00000000000b",
+              "plan_digest_hex": "f6a50c66742dd3864c5ab9a39dc519275d135144bbe4eb5f8ac468b6969afcc9"
+            }
+          }
+        ],
+        "revocations": []
+      },
+      "staged_digests_hex": {
+        "permanu-agent": "e10e11e9a895b71e006e52acb2f8af1faa198062942ee1cfb02a61078b7b191a",
+        "permanu-runner": "8ef5dbf0b98a80108f9f4b3c6b66bd7e0a4c936e2d6c42ea056e4f7202eda599",
+        "permanu-env": "baddb48a415805b84fdd5553efd5376d61555021a89f7db75391897d61074da5",
+        "dwaar": "dc2ffed1fc999b259c6dce9bb95e80ac29e6be359185d29bebb94f2cf8ba60cb"
+      },
+      "mode": "test",
+      "expect": "OK"
+    },
+    {
+      "name": "artifact_downgrade_below_prerelease",
+      "action": {
+        "kind": "agent.update",
+        "params": {
+          "version": "2.1.0",
+          "artifact_digest_hex": "e10e11e9a895b71e006e52acb2f8af1faa198062942ee1cfb02a61078b7b191a",
+          "bundle_manifest_digest_hex": "16b57bf3062edbeb3d8583d2b672e1c321a33a39b9efcf81afee82d781661fe1",
+          "allow_downgrade": false
+        }
+      },
+      "arch": "amd64",
+      "installed_version": "2.1.1-rc.1",
+      "manifest": "{\"components\":[{\"arch\":\"amd64\",\"artifact_digest_hex\":\"dc2ffed1fc999b259c6dce9bb95e80ac29e6be359185d29bebb94f2cf8ba60cb\",\"name\":\"dwaar\",\"path\":\"amd64/dwaar\",\"version\":\"2.1.0\"},{\"arch\":\"arm64\",\"artifact_digest_hex\":\"5e5b51ddc42089bf76d75b94868585cd909307bd035c21969408d903a7c5556b\",\"name\":\"dwaar\",\"path\":\"arm64/dwaar\",\"version\":\"2.1.0\"},{\"arch\":\"amd64\",\"artifact_digest_hex\":\"e10e11e9a895b71e006e52acb2f8af1faa198062942ee1cfb02a61078b7b191a\",\"name\":\"permanu-agent\",\"path\":\"amd64/permanu-agent\",\"version\":\"2.1.0\"},{\"arch\":\"arm64\",\"artifact_digest_hex\":\"a4bc871a4c9c21b2e855ff3ac6a981789229aa9b773bd72151b48c747e54fa98\",\"name\":\"permanu-agent\",\"path\":\"arm64/permanu-agent\",\"version\":\"2.1.0\"},{\"arch\":\"amd64\",\"artifact_digest_hex\":\"baddb48a415805b84fdd5553efd5376d61555021a89f7db75391897d61074da5\",\"name\":\"permanu-env\",\"path\":\"amd64/permanu-env\",\"version\":\"2.1.0\"},{\"arch\":\"arm64\",\"artifact_digest_hex\":\"a5a30a0fd407fc34a09223df7c2560022daf7d8f3f4252f5f763fb4dd9cb1065\",\"name\":\"permanu-env\",\"path\":\"arm64/permanu-env\",\"version\":\"2.1.0\"},{\"arch\":\"amd64\",\"artifact_digest_hex\":\"8ef5dbf0b98a80108f9f4b3c6b66bd7e0a4c936e2d6c42ea056e4f7202eda599\",\"name\":\"permanu-runner\",\"path\":\"amd64/permanu-runner\",\"version\":\"2.1.0\"},{\"arch\":\"arm64\",\"artifact_digest_hex\":\"a9964497d655e0e8240e5550b1392a0cd4680297d42143f746b1a4915f8b5c0d\",\"name\":\"permanu-runner\",\"path\":\"arm64/permanu-runner\",\"version\":\"2.1.0\"}],\"release_keys\":[{\"key_id\":\"RE1jopVSq8Moy0jDftg6Kg\",\"label\":\"Permanu TEST release key (rotated)\",\"spki\":\"MCowBQYDK2VwAyEAGZtqVq+kKLsm+LOjTwv8MyMHrGU4692o51PChact9zc=\"},{\"key_id\":\"cl98Xxg2voSKlukyuAPKJg\",\"label\":\"Permanu TEST release key (release)\",\"spki\":\"MCowBQYDK2VwAyEAxUG8N6ZYv4fm4+BLDKpGKrVaGRXdQjEdXbvfEADrd2k=\"}],\"version\":2}",
+      "manifest_sig": "{\"alg\":\"Ed25519\",\"key_id\":\"cl98Xxg2voSKlukyuAPKJg\",\"sig\":\"oNjknkDrfHE4rc18Ej-Bw7d1naWEyOBYtdMgb5bD4ZmMn7jo72EnO2Cb4cZR--_t3BCf7utpK4sRLMUPpsLzAg\",\"version\":1}",
+      "release_keys": {
+        "version": 1,
+        "keys": [
+          {
+            "key_id": "cl98Xxg2voSKlukyuAPKJg",
+            "alg": "Ed25519",
+            "spki": "MCowBQYDK2VwAyEAxUG8N6ZYv4fm4+BLDKpGKrVaGRXdQjEdXbvfEADrd2k=",
+            "label": "Permanu TEST release key (release)",
+            "added_at": "2026-09-01T08:00:00Z",
+            "added_by": null
+          },
+          {
+            "key_id": "RE1jopVSq8Moy0jDftg6Kg",
+            "alg": "Ed25519",
+            "spki": "MCowBQYDK2VwAyEAGZtqVq+kKLsm+LOjTwv8MyMHrGU4692o51PChact9zc=",
+            "label": "Permanu TEST release key (rotated)",
+            "added_at": "2026-09-23T10:00:00Z",
+            "added_by": {
+              "plan_id": "01a0cdb5-3500-7001-8000-00000000000b",
+              "plan_digest_hex": "f6a50c66742dd3864c5ab9a39dc519275d135144bbe4eb5f8ac468b6969afcc9"
+            }
+          }
+        ],
+        "revocations": []
+      },
+      "staged_digests_hex": {
+        "permanu-agent": "e10e11e9a895b71e006e52acb2f8af1faa198062942ee1cfb02a61078b7b191a",
+        "permanu-runner": "8ef5dbf0b98a80108f9f4b3c6b66bd7e0a4c936e2d6c42ea056e4f7202eda599",
+        "permanu-env": "baddb48a415805b84fdd5553efd5376d61555021a89f7db75391897d61074da5",
+        "dwaar": "dc2ffed1fc999b259c6dce9bb95e80ac29e6be359185d29bebb94f2cf8ba60cb"
+      },
+      "mode": "test",
+      "expect": "E_EXEC_PRECONDITION"
+    },
+    {
+      "name": "ok_artifact_same_version_reinstall",
+      "action": {
+        "kind": "agent.update",
+        "params": {
+          "version": "2.1.0",
+          "artifact_digest_hex": "e10e11e9a895b71e006e52acb2f8af1faa198062942ee1cfb02a61078b7b191a",
+          "bundle_manifest_digest_hex": "16b57bf3062edbeb3d8583d2b672e1c321a33a39b9efcf81afee82d781661fe1",
+          "allow_downgrade": false
+        }
+      },
+      "arch": "amd64",
+      "installed_version": "2.1.0",
+      "manifest": "{\"components\":[{\"arch\":\"amd64\",\"artifact_digest_hex\":\"dc2ffed1fc999b259c6dce9bb95e80ac29e6be359185d29bebb94f2cf8ba60cb\",\"name\":\"dwaar\",\"path\":\"amd64/dwaar\",\"version\":\"2.1.0\"},{\"arch\":\"arm64\",\"artifact_digest_hex\":\"5e5b51ddc42089bf76d75b94868585cd909307bd035c21969408d903a7c5556b\",\"name\":\"dwaar\",\"path\":\"arm64/dwaar\",\"version\":\"2.1.0\"},{\"arch\":\"amd64\",\"artifact_digest_hex\":\"e10e11e9a895b71e006e52acb2f8af1faa198062942ee1cfb02a61078b7b191a\",\"name\":\"permanu-agent\",\"path\":\"amd64/permanu-agent\",\"version\":\"2.1.0\"},{\"arch\":\"arm64\",\"artifact_digest_hex\":\"a4bc871a4c9c21b2e855ff3ac6a981789229aa9b773bd72151b48c747e54fa98\",\"name\":\"permanu-agent\",\"path\":\"arm64/permanu-agent\",\"version\":\"2.1.0\"},{\"arch\":\"amd64\",\"artifact_digest_hex\":\"baddb48a415805b84fdd5553efd5376d61555021a89f7db75391897d61074da5\",\"name\":\"permanu-env\",\"path\":\"amd64/permanu-env\",\"version\":\"2.1.0\"},{\"arch\":\"arm64\",\"artifact_digest_hex\":\"a5a30a0fd407fc34a09223df7c2560022daf7d8f3f4252f5f763fb4dd9cb1065\",\"name\":\"permanu-env\",\"path\":\"arm64/permanu-env\",\"version\":\"2.1.0\"},{\"arch\":\"amd64\",\"artifact_digest_hex\":\"8ef5dbf0b98a80108f9f4b3c6b66bd7e0a4c936e2d6c42ea056e4f7202eda599\",\"name\":\"permanu-runner\",\"path\":\"amd64/permanu-runner\",\"version\":\"2.1.0\"},{\"arch\":\"arm64\",\"artifact_digest_hex\":\"a9964497d655e0e8240e5550b1392a0cd4680297d42143f746b1a4915f8b5c0d\",\"name\":\"permanu-runner\",\"path\":\"arm64/permanu-runner\",\"version\":\"2.1.0\"}],\"release_keys\":[{\"key_id\":\"RE1jopVSq8Moy0jDftg6Kg\",\"label\":\"Permanu TEST release key (rotated)\",\"spki\":\"MCowBQYDK2VwAyEAGZtqVq+kKLsm+LOjTwv8MyMHrGU4692o51PChact9zc=\"},{\"key_id\":\"cl98Xxg2voSKlukyuAPKJg\",\"label\":\"Permanu TEST release key (release)\",\"spki\":\"MCowBQYDK2VwAyEAxUG8N6ZYv4fm4+BLDKpGKrVaGRXdQjEdXbvfEADrd2k=\"}],\"version\":2}",
+      "manifest_sig": "{\"alg\":\"Ed25519\",\"key_id\":\"cl98Xxg2voSKlukyuAPKJg\",\"sig\":\"oNjknkDrfHE4rc18Ej-Bw7d1naWEyOBYtdMgb5bD4ZmMn7jo72EnO2Cb4cZR--_t3BCf7utpK4sRLMUPpsLzAg\",\"version\":1}",
+      "release_keys": {
+        "version": 1,
+        "keys": [
+          {
+            "key_id": "cl98Xxg2voSKlukyuAPKJg",
+            "alg": "Ed25519",
+            "spki": "MCowBQYDK2VwAyEAxUG8N6ZYv4fm4+BLDKpGKrVaGRXdQjEdXbvfEADrd2k=",
+            "label": "Permanu TEST release key (release)",
+            "added_at": "2026-09-01T08:00:00Z",
+            "added_by": null
+          },
+          {
+            "key_id": "RE1jopVSq8Moy0jDftg6Kg",
+            "alg": "Ed25519",
+            "spki": "MCowBQYDK2VwAyEAGZtqVq+kKLsm+LOjTwv8MyMHrGU4692o51PChact9zc=",
+            "label": "Permanu TEST release key (rotated)",
+            "added_at": "2026-09-23T10:00:00Z",
+            "added_by": {
+              "plan_id": "01a0cdb5-3500-7001-8000-00000000000b",
+              "plan_digest_hex": "f6a50c66742dd3864c5ab9a39dc519275d135144bbe4eb5f8ac468b6969afcc9"
+            }
+          }
+        ],
+        "revocations": []
+      },
+      "staged_digests_hex": {
+        "permanu-agent": "e10e11e9a895b71e006e52acb2f8af1faa198062942ee1cfb02a61078b7b191a",
+        "permanu-runner": "8ef5dbf0b98a80108f9f4b3c6b66bd7e0a4c936e2d6c42ea056e4f7202eda599",
+        "permanu-env": "baddb48a415805b84fdd5553efd5376d61555021a89f7db75391897d61074da5",
+        "dwaar": "dc2ffed1fc999b259c6dce9bb95e80ac29e6be359185d29bebb94f2cf8ba60cb"
+      },
+      "mode": "test",
+      "expect": "OK"
+    }
+  ]
+}

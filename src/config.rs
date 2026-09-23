@@ -280,6 +280,11 @@ pub struct LocalConfig {
     /// send spans without `docker0` or the nftables table. `None` in
     /// production, where OTLP binds only to the Docker bridge gateway (9.5).
     pub dev_otlp_loopback: Option<(u16, u16)>,
+    /// agent-protocol.md 13: staged artifact sets
+    /// (`/var/lib/permanu/staging/<bundle_manifest_digest_hex>/`).
+    pub staging_root: PathBuf,
+    /// signed-plan.md 3.9: the pinned release keys (read only here).
+    pub release_keys_path: PathBuf,
 }
 
 pub const DEFAULT_LOCAL_SOCKET_PATH: &str = "/run/permanu/agent.sock";
@@ -312,6 +317,8 @@ impl LocalConfig {
             file_owner_uid: 0,
             telemetry_root: PathBuf::from(crate::local::telemetry::DEFAULT_ROOT),
             dev_otlp_loopback: None,
+            staging_root: PathBuf::from(crate::local::artifacts::DEFAULT_STAGING_ROOT),
+            release_keys_path: PathBuf::from(crate::local::artifacts::DEFAULT_RELEASE_KEYS),
         };
         #[cfg(feature = "dev-paths")]
         if let Some(root) = lookup("PERMANU_AGENT_DEV_ROOT").and_then(|v| dev_root(&v)) {
@@ -350,6 +357,8 @@ impl LocalConfig {
             // SAFETY: geteuid has no preconditions.
             file_owner_uid: unsafe { libc::geteuid() },
             telemetry_root: root.join("telemetry"),
+            staging_root: root.join("staging"),
+            release_keys_path: root.join("etc/release-keys.json"),
             ..self
         }
     }

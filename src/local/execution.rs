@@ -148,15 +148,16 @@ fn exec_of(kind: &str, params: &Value) -> Exec {
         "restart" => Exec::Ops(&["restart_release"]),
         "operation.cancel" => Exec::Ops(&["cancel_execution"]),
         // v1.0.4 (D-040): agent.update runs its own op; install_artifact
-        // serves component.update only.
-        "agent.update" => Exec::Ops(&["update_agent"]),
+        // serves component.update only. v1.0.7 (D-051): the runner's
+        // stage_artifact_verify copies and verifies the staged set first.
+        "agent.update" => Exec::Ops(&["stage_artifact_verify", "update_agent"]),
         "component.update"
             if matches!(
                 params["component"].as_str(),
                 Some("dwaar" | "runner" | "permanu-env")
             ) =>
         {
-            Exec::Ops(&["install_artifact"])
+            Exec::Ops(&["stage_artifact_verify", "install_artifact"])
         }
         // v1.0.7 (D-051): release keys through the same trust-file op.
         "key.add" | "key.revoke" | "release_key.add" | "release_key.revoke" => {
@@ -359,6 +360,9 @@ pub struct ChangeCore {
     /// One reconciliation pass at a time, so a pass that returns has
     /// emitted every event of the lines it read.
     reconciling: tokio::sync::Mutex<()>,
+    /// Artifact staging (`artifacts.v1`, D-051): once set, updates are
+    /// admitted when their set is staged instead of refused (D-046).
+    pub staging: std::sync::OnceLock<Arc<super::artifacts::Artifacts>>,
 }
 
 /// (failure_code, error, error_code) of an action.
@@ -422,6 +426,7 @@ impl ChangeCore {
             failures: Mutex::new(HashMap::new()),
             held: Mutex::new(HashMap::new()),
             reconciling: tokio::sync::Mutex::new(()),
+            staging: std::sync::OnceLock::new(),
         })
     }
 
@@ -1860,12 +1865,16 @@ mod tests {
             exec_of("operation.cancel", &none),
             Exec::Ops(&["cancel_execution"])
         );
-        // v1.0.4 (D-040): agent.update has its own op.
-        assert_eq!(exec_of("agent.update", &none), Exec::Ops(&["update_agent"]));
+        // v1.0.4 (D-040): agent.update has its own op; v1.0.7 (D-051):
+        // stage_artifact_verify is the first op of both updates.
+        assert_eq!(
+            exec_of("agent.update", &none),
+            Exec::Ops(&["stage_artifact_verify", "update_agent"])
+        );
         for component in ["dwaar", "runner", "permanu-env"] {
             assert_eq!(
                 exec_of("component.update", &json!({"component": component})),
-                Exec::Ops(&["install_artifact"]),
+                Exec::Ops(&["stage_artifact_verify", "install_artifact"]),
                 "{component}"
             );
         }

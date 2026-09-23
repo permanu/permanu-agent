@@ -50,7 +50,7 @@ const MAX_ALERT_EVENTS: usize = 2_000;
 
 type BoxStream<T> = Pin<Box<dyn Stream<Item = Result<T, Status>> + Send>>;
 
-fn page_size(page: Option<&PageRequest>) -> usize {
+pub(crate) fn page_size(page: Option<&PageRequest>) -> usize {
     match page.map_or(0, |p| p.page_size as usize) {
         0 => DEFAULT_PAGE,
         n => n.min(MAX_PAGE),
@@ -107,7 +107,7 @@ fn range_of(range: Option<&TimeRange>) -> (Option<i64>, Option<i64>) {
 }
 
 /// Lists one page of `kind` newest first and decodes it.
-fn seq_page<M: prost::Message + Default>(
+pub(crate) fn seq_page<M: prost::Message + Default>(
     ops: &OpsStore,
     kind: RecordKind,
     subject: Option<&str>,

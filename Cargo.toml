@@ -15,6 +15,8 @@ age = { version = "=0.12.1", default-features = false }
 base64 = "0.22"
 bollard = "0.21"
 curve25519-dalek = { version = "4.1", default-features = false }
+# Release manifest signatures (signed-plan.md 3.9): strict RFC 8032 verify.
+ed25519-dalek = { version = "=2.2.0", default-features = false, features = ["std"] }
 futures = "0.3"
 futures-core = "0.3"
 futures-util = "0.3"
