@@ -34,26 +34,27 @@ pub fn reason_for(code: PlanCode) -> ErrorReason {
         P::TouchIdRequired => R::TouchIdRequired,
         P::KindForbidden => R::ActionNotPermitted,
         P::KeyScope => R::KeyScope,
-        P::RuleUnknown
-        | P::RuleRevoked
-        | P::RuleWindow
-        | P::RuleScope
-        | P::RuleLimit
-        | P::RuleEvidence
-        | P::RuleSpec => R::RuleRejected,
+        // v2.0.6 (contracts v1.0.6, agent-protocol.md section 5).
+        P::RuleUnknown => R::RuleUnknown,
+        P::RuleScope => R::RuleScope,
+        P::RuleRevoked | P::RuleWindow | P::RuleLimit | P::RuleEvidence | P::RuleSpec => {
+            R::RuleRejected
+        }
         P::Bootstrap => R::BootstrapRejected,
         P::ExecPrecondition => R::ExecPrecondition,
         P::TrustStoreInvalid => R::TrustStoreInvalid,
         P::StoreQuarantined => R::StoreQuarantined,
         P::Internal => R::Internal,
-        // Runner binding codes (section 14): the admitted action cannot be
-        // bound in its current state.
-        P::PlanRequired
-        | P::PlanNotAdmitted
-        | P::PlanWindow
-        | P::PlanAction
-        | P::PlanArgs
-        | P::PlanConsumed => R::ExecPrecondition,
+        // Runner execution codes (sections 14.2-14.4), v2.0.6.
+        P::ScopeMismatch => R::ScopeMismatch,
+        P::PlanWindow => R::PlanWindow,
+        P::PlanConsumed => R::PlanConsumed,
+        P::PlanNotAdmitted => R::PlanNotAdmitted,
+        P::RollbackTargetUnknown => R::RollbackTargetUnknown,
+        P::NotSupportedYet => R::NotSupportedYet,
+        // A runner code the section 5 table does not list is INTERNAL; the
+        // exact code travels in `error_code`.
+        P::PlanRequired | P::PlanAction | P::PlanArgs => R::Internal,
     }
 }
 
@@ -71,13 +72,15 @@ pub fn grpc_code_for(reason: ErrorReason) -> Code {
         | R::ForceForbidden
         | R::TouchIdRequired
         | R::RuleRejected
+        | R::RuleUnknown
+        | R::RuleScope
         | R::BootstrapRejected
         | R::StandingRuleMismatch => Code::PermissionDenied,
         R::PlanReplayed => Code::AlreadyExists,
         R::BaseMismatch | R::Conflict => Code::Aborted,
         R::CursorExpired | R::ResumeTokenExpired => Code::OutOfRange,
         R::LimitExceeded | R::RateLimited => Code::ResourceExhausted,
-        R::CapabilityMissing => Code::Unimplemented,
+        R::CapabilityMissing | R::NotSupportedYet => Code::Unimplemented,
         R::Internal => Code::Internal,
         _ => Code::FailedPrecondition,
     }
@@ -207,10 +210,61 @@ mod tests {
                 Code::FailedPrecondition,
             ),
             (PlanCode::Internal, ErrorReason::Internal, Code::Internal),
+            // v2.0.6 (contracts v1.0.6): runner codes have their own
+            // reasons instead of INTERNAL / RULE_REJECTED.
             (
                 PlanCode::PlanWindow,
-                ErrorReason::ExecPrecondition,
+                ErrorReason::PlanWindow,
                 Code::FailedPrecondition,
+            ),
+            (
+                PlanCode::ScopeMismatch,
+                ErrorReason::ScopeMismatch,
+                Code::FailedPrecondition,
+            ),
+            (
+                PlanCode::PlanConsumed,
+                ErrorReason::PlanConsumed,
+                Code::FailedPrecondition,
+            ),
+            (
+                PlanCode::PlanNotAdmitted,
+                ErrorReason::PlanNotAdmitted,
+                Code::FailedPrecondition,
+            ),
+            (
+                PlanCode::RollbackTargetUnknown,
+                ErrorReason::RollbackTargetUnknown,
+                Code::FailedPrecondition,
+            ),
+            (
+                PlanCode::RuleUnknown,
+                ErrorReason::RuleUnknown,
+                Code::PermissionDenied,
+            ),
+            (
+                PlanCode::RuleScope,
+                ErrorReason::RuleScope,
+                Code::PermissionDenied,
+            ),
+            (
+                PlanCode::RuleRevoked,
+                ErrorReason::RuleRejected,
+                Code::PermissionDenied,
+            ),
+            (
+                PlanCode::NotSupportedYet,
+                ErrorReason::NotSupportedYet,
+                Code::Unimplemented,
+            ),
+            // A runner code the section 5 table does not list is INTERNAL
+            // (the exact code travels in error_code).
+            (PlanCode::PlanArgs, ErrorReason::Internal, Code::Internal),
+            (PlanCode::PlanAction, ErrorReason::Internal, Code::Internal),
+            (
+                PlanCode::PlanRequired,
+                ErrorReason::Internal,
+                Code::Internal,
             ),
         ];
         for (code, reason, grpc) in rows {

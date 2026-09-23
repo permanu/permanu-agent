@@ -139,6 +139,11 @@ pub struct FakeRunner {
     /// Drop the follow connection after its lines, without a `result` (a
     /// transient failure the agent must recover from).
     pub follow_breaks: AtomicBool,
+    /// Close the `cancel_execution` connection after the consumed-log lines
+    /// are written, without its wire `result` (v1.0.6, section 14.6).
+    pub drop_cancel_result: AtomicBool,
+    /// Actions a `cancel_execution` closed (v1.0.6, D-048).
+    closed: Mutex<HashSet<(String, u32)>>,
     consumed: Mutex<HashSet<(String, u32)>>,
     ops: Mutex<HashMap<(String, u32), Vec<String>>>,
     finished: Mutex<HashSet<(String, u32)>>,
@@ -254,34 +259,47 @@ impl FakeRunner {
         first
     }
 
-    /// `cancel_execution` (sections 14.3, 14.6, v1.0.5 D-044): ends every
-    /// unfinished action of the target `cancelled`, cleaning up a deploy's
-    /// prepared, unactivated candidate first; returns the wire `cancelled`
-    /// list.
+    /// `cancel_execution` (sections 14.3, 14.6, v1.0.5 D-044, v1.0.6
+    /// D-048): first closes every unfinished action of the target (a
+    /// `cancel_execution` op line under it; not one whose `activate_release`
+    /// started), then per closed action cleans up a deploy's prepared,
+    /// unactivated candidate and writes its one `cancelled` result; returns
+    /// the wire `cancelled` list.
     fn cancel_target(&self, target: &str) -> Vec<Value> {
         let Some((digest, plan, count)) = self.admitted(target) else {
             return Vec::new();
         };
-        let mut cancelled = Vec::new();
-        for index in 0..count as u32 {
-            if self
-                .finished
-                .lock()
-                .unwrap()
-                .contains(&(target.to_owned(), index))
-            {
-                continue;
-            }
-            let action = &plan["actions"][index as usize];
-            let ops = self
-                .ops
+        let ops_of = |index: u32| {
+            self.ops
                 .lock()
                 .unwrap()
                 .get(&(target.to_owned(), index))
                 .cloned()
-                .unwrap_or_default();
-            let prepared = ops.iter().any(|o| o == "prepare_release")
-                && !ops.iter().any(|o| o == "activate_release");
+                .unwrap_or_default()
+        };
+        let mut closing = Vec::new();
+        for index in 0..count as u32 {
+            let key = (target.to_owned(), index);
+            if self.finished.lock().unwrap().contains(&key)
+                || ops_of(index).iter().any(|o| o == "activate_release")
+            {
+                continue;
+            }
+            self.append(
+                "op",
+                target,
+                &digest,
+                index,
+                json!({"op": "cancel_execution"}),
+            );
+            self.closed.lock().unwrap().insert(key);
+            closing.push(index);
+        }
+        let mut cancelled = Vec::new();
+        for index in closing {
+            let action = &plan["actions"][index as usize];
+            let ops = ops_of(index);
+            let prepared = ops.iter().any(|o| o == "prepare_release");
             let cleanup = if action["kind"] == "deploy" && prepared {
                 self.append(
                     "op",
@@ -414,6 +432,14 @@ impl FakeRunner {
             .as_str()
             .unwrap_or_default();
         let index = request["plan"]["action_index"].as_u64().unwrap_or_default() as u32;
+        if self
+            .closed
+            .lock()
+            .unwrap()
+            .contains(&(plan_id.to_owned(), index))
+        {
+            return refuse("E_PLAN_CONSUMED", "closed by cancel_execution");
+        }
         if !self
             .consumed
             .lock()
@@ -461,6 +487,9 @@ impl FakeRunner {
         let key = (plan_id.to_owned(), index);
         if !self.consumed.lock().unwrap().contains(&key) {
             return refuse("E_PLAN_NOT_ADMITTED", "not bound");
+        }
+        if self.closed.lock().unwrap().contains(&key) {
+            return refuse("E_PLAN_CONSUMED", "closed by cancel_execution");
         }
         if self.finished.lock().unwrap().contains(&key) {
             return refuse("E_PLAN_WINDOW", "action finished");
@@ -591,6 +620,9 @@ impl FakeRunner {
                 return;
             }
             let response = self.handle(request).await;
+            if op == "cancel_execution" && self.drop_cancel_result.load(Ordering::SeqCst) {
+                return;
+            }
             if response["ok"] == true && !op.is_empty() {
                 let progress = json!({"type": "progress", "op": op, "at": at,
                                       "message": "working"});
@@ -725,6 +757,8 @@ impl Harness {
             logs: Mutex::new(HashMap::new()),
             follow_lines: Mutex::new(HashMap::new()),
             follow_breaks: AtomicBool::new(false),
+            drop_cancel_result: AtomicBool::new(false),
+            closed: Mutex::new(HashSet::new()),
             consumed: Mutex::new(HashSet::new()),
             ops: Mutex::new(HashMap::new()),
             finished: Mutex::new(HashSet::new()),

@@ -36,8 +36,8 @@ use crate::admissions::{
     ReconcileEffect, INPUT_KINDS,
 };
 use crate::proto::agent::v2::{
-    deploy_status_event::Phase, event, operation_event, DeployStatusEvent, EventKind, Operation,
-    OperationEvent, OperationState, OperationStep, Scope, StepLog, TrustChangedEvent,
+    deploy_status_event::Phase, event, operation_event, DeployStatusEvent, ErrorReason, EventKind,
+    Operation, OperationEvent, OperationState, OperationStep, Scope, StepLog, TrustChangedEvent,
 };
 use crate::signed_plan::jcs::parse_strict;
 use crate::signed_plan::text::timestamp as parse_ts;
@@ -210,15 +210,18 @@ struct Outcome {
     outcome: &'static str,
     failure_code: String,
     error: String,
+    /// The runner (or section 6.1) code of the failure, v2.0.6
+    /// `OperationStep.error_code`.
+    error_code: String,
+    /// The deploy reached `activate_release`, past the point of no return:
+    /// a cancel does not close it (v1.0.6, D-048), so it ends through its
+    /// own ops.
+    activated: bool,
 }
 
 impl Outcome {
     fn succeeded() -> Self {
-        Self {
-            outcome: "succeeded",
-            failure_code: String::new(),
-            error: String::new(),
-        }
+        Self::with("succeeded", "", "")
     }
 
     fn with(outcome: &'static str, failure_code: &str, error: impl Into<String>) -> Self {
@@ -226,8 +229,51 @@ impl Outcome {
             outcome,
             failure_code: failure_code.to_owned(),
             error: error.into(),
+            error_code: String::new(),
+            activated: false,
         }
     }
+
+    /// A failed runner call: its described message and exact code.
+    fn runner(outcome: &'static str, failure_code: &str, failure: &RunnerFailure) -> Self {
+        Self {
+            error_code: failure.code.clone(),
+            ..Self::with(outcome, failure_code, describe(failure))
+        }
+    }
+
+    fn activated(mut self) -> Self {
+        self.activated = true;
+        self
+    }
+}
+
+/// A failed start phase of a deploy (`prepare_release`, `verify_health`).
+struct StartFailure {
+    failure_code: String,
+    message: String,
+    error_code: String,
+    /// An earlier release may be restored (not a failed prepare).
+    restorable: bool,
+    /// The runner refused `prepare_release` with a contract code before it
+    /// created anything (F-23: a refused input fold): no recovery runs.
+    refused: bool,
+}
+
+/// v2.0.6: the `ErrorReason` for a step's `error_code`; a code outside the
+/// agent-protocol.md section 5 table is `INTERNAL`.
+fn reason_of_code(error_code: &str) -> ErrorReason {
+    if error_code.is_empty() {
+        return ErrorReason::Unspecified;
+    }
+    reason_for(PlanCode::parse(error_code).unwrap_or(PlanCode::Internal))
+}
+
+/// A runner refusal with a signed-plan or runner binding code (sections
+/// 6.1, 14.2-14.4, 14.7): the runner stopped at its checks, before the op
+/// changed anything on the server.
+fn refused_by_check(failure: &RunnerFailure) -> bool {
+    PlanCode::parse(&failure.code).is_some_and(|code| code != PlanCode::Internal)
 }
 
 /// A submission as it arrives over gRPC.
@@ -260,10 +306,21 @@ pub struct ChangeCore {
     cancelled: Mutex<HashSet<String>>,
     /// Plans with an executor running (one per plan).
     running: Mutex<HashSet<String>>,
-    /// (failure_code, error) the executor saw for an action, for the final
-    /// step when the runner's `result` line ends it.
-    failures: Mutex<HashMap<(String, u32), (String, String)>>,
+    /// (failure_code, error, error_code) the executor saw for an action,
+    /// for the final step when the runner's `result` line ends it.
+    failures: Mutex<HashMap<(String, u32), Failure>>,
+    /// Plans whose operation the executor ends itself (a cancel, v1.0.6
+    /// D-048): the reconciler records their result lines but leaves their
+    /// final steps and `finished` to the executor; the value lists the
+    /// actions it skipped.
+    held: Mutex<HashMap<String, Vec<u32>>>,
+    /// One reconciliation pass at a time, so a pass that returns has
+    /// emitted every event of the lines it read.
+    reconciling: tokio::sync::Mutex<()>,
 }
+
+/// (failure_code, error, error_code) of an action.
+type Failure = (String, String, String);
 
 pub struct ChangeCoreParts {
     pub store: Arc<AdmissionStore>,
@@ -321,6 +378,8 @@ impl ChangeCore {
             cancelled: Mutex::new(HashSet::new()),
             running: Mutex::new(HashSet::new()),
             failures: Mutex::new(HashMap::new()),
+            held: Mutex::new(HashMap::new()),
+            reconciling: tokio::sync::Mutex::new(()),
         })
     }
 
@@ -556,6 +615,21 @@ impl ChangeCore {
         error: &str,
         failure_code: &str,
     ) {
+        self.step_coded(record, action, name, state, error, failure_code, "");
+    }
+
+    /// `step` with the failure's runner code and its reason (v2.0.6).
+    #[allow(clippy::too_many_arguments)]
+    fn step_coded(
+        &self,
+        record: &AdmissionRecord,
+        action: Option<&ActionRecord>,
+        name: &str,
+        state: OperationState,
+        error: &str,
+        failure_code: &str,
+        error_code: &str,
+    ) {
         let action_index = action.map_or(0, |a| a.action_index);
         let now = Some(unix_timestamp(self.now()));
         let step = OperationStep {
@@ -579,6 +653,8 @@ impl ChangeCore {
                 .and_then(|a| a.deployment_id.clone())
                 .unwrap_or_default(),
             failure_code: failure_code.to_owned(),
+            error_code: error_code.to_owned(),
+            error_reason: reason_of_code(error_code) as i32,
         };
         self.record(&record.operation_id, operation_event::Event::Step(step));
     }
@@ -728,7 +804,7 @@ impl ChangeCore {
         action: &ActionRecord,
         outcome: &str,
     ) {
-        let (failure_code, error) = locked(&self.failures)
+        let (failure_code, error, error_code) = locked(&self.failures)
             .get(&(record.plan_id.clone(), action.action_index))
             .cloned()
             .unwrap_or_default();
@@ -744,11 +820,19 @@ impl ChangeCore {
             _ => (OperationState::Failed, Phase::Failed, ""),
         };
         let message = if error.is_empty() { message } else { &error };
-        let code = match outcome {
-            "failed" | "rolled_back" => failure_code.as_str(),
-            _ => "",
+        let (code, error_code) = match outcome {
+            "failed" | "rolled_back" => (failure_code.as_str(), error_code.as_str()),
+            _ => ("", ""),
         };
-        self.step(record, Some(action), outcome, state, message, code);
+        self.step_coded(
+            record,
+            Some(action),
+            outcome,
+            state,
+            message,
+            code,
+            error_code,
+        );
         self.deploy_status(record, plan, action, phase, message, code);
     }
 
@@ -789,6 +873,15 @@ impl ChangeCore {
             return;
         }
         self.execute_inner(plan_id).await;
+        // A hold the executor did not end through `complete` (it stopped
+        // early) must not keep the operation from finishing.
+        if self.release_held(plan_id) {
+            if let Ok(Some(record)) = self.store.admission(plan_id) {
+                if record.finished_at.is_some() {
+                    self.finished(&record);
+                }
+            }
+        }
         locked(&self.running).remove(plan_id);
     }
 
@@ -850,6 +943,12 @@ impl ChangeCore {
                 .get(&action.action_index)
                 .cloned()
                 .unwrap_or_default();
+            if action.kind != "operation.cancel" && done.iter().any(|d| d == "cancel_execution") {
+                // v1.0.6 (D-048): a cancel closed this action; it has no next
+                // op and its one `cancelled` result line ends it.
+                locked(&self.cancelled).insert(plan_id.to_owned());
+                break;
+            }
             let outcome = match exec_of(&action.kind, params) {
                 Exec::Agent => Some(self.apply_agent_action(&action, params)),
                 Exec::NotImplemented => Some(Outcome::with(
@@ -871,7 +970,7 @@ impl ChangeCore {
                 }),
             };
             if let Some(outcome) = outcome {
-                if self.is_cancelled(plan_id) {
+                if self.is_cancelled(plan_id) && !outcome.activated {
                     break;
                 }
                 failed |= outcome.outcome != "succeeded";
@@ -907,29 +1006,53 @@ impl ChangeCore {
     ) {
         locked(&self.failures).insert(
             (record.plan_id.clone(), action.action_index),
-            (outcome.failure_code.clone(), outcome.error.clone()),
+            (
+                outcome.failure_code.clone(),
+                outcome.error.clone(),
+                outcome.error_code.clone(),
+            ),
         );
         // The runner's result line wins (section 14.5).
         self.reconcile_once().await;
-        match self.store.finish_action(
+        let recorded = match self.store.finish_action(
             &record.plan_id,
             action.action_index,
             outcome.outcome,
             self.now(),
         ) {
-            Ok(true) => {}
-            Ok(false) => return,
+            Ok(recorded) => recorded,
             Err(err) => {
                 warn!(error = %err, "could not record the action outcome");
-                return;
+                false
             }
+        };
+        if recorded {
+            self.final_step(record, plan, action, outcome.outcome);
         }
-        self.final_step(record, plan, action, outcome.outcome);
+        let held = self.release_held(&record.plan_id);
+        if !recorded && !held {
+            return;
+        }
         if let Ok(Some(fresh)) = self.store.admission(&record.plan_id) {
             if fresh.finished_at.is_some() {
                 self.finished(&fresh);
             }
         }
+    }
+
+    /// Ends the hold on a plan: the final steps of the result lines the
+    /// reconciler recorded for it come now, from the executor (v1.0.6,
+    /// D-048). False when the plan was not held.
+    fn release_held(&self, plan_id: &str) -> bool {
+        let Some(skipped) = locked(&self.held).remove(plan_id) else {
+            return false;
+        };
+        for index in skipped {
+            if let Some((record, plan, action)) = self.action_context(plan_id, index) {
+                self.final_step(&record, &plan, &action, &action.outcome);
+            }
+        }
+        true
     }
 
     /// `bind_plan` (section 14.2). An action already consumed (resume) or a
@@ -971,9 +1094,9 @@ impl ChangeCore {
                 Ok(())
             }
             Err(failure) => {
-                let message = describe(&failure);
-                warn!(plan_id = %record.plan_id, action = action.action_index, %message, "runner bind failed");
-                Err(Outcome::with("failed", "", message))
+                let outcome = Outcome::runner("failed", "", &failure);
+                warn!(plan_id = %record.plan_id, action = action.action_index, message = %outcome.error, "runner bind failed");
+                Err(outcome)
             }
         }
     }
@@ -1024,13 +1147,14 @@ impl ChangeCore {
             }
             Err(failure) => {
                 if !self.is_cancelled(&record.plan_id) {
-                    self.step(
+                    self.step_coded(
                         record,
                         Some(action),
                         op,
                         OperationState::Failed,
                         &describe(failure),
                         &op_failure_code(&action.kind, op, failure),
+                        &failure.code,
                     );
                 }
             }
@@ -1049,7 +1173,7 @@ impl ChangeCore {
     ) -> Outcome {
         let params = &plan["actions"][action.action_index as usize]["params"];
         if action.kind == "operation.cancel" {
-            return self.run_cancel(record, plan, action, params, done).await;
+            return self.run_cancel(record, action, params, done).await;
         }
         for op in ops {
             if done.iter().any(|d| d == op) {
@@ -1061,10 +1185,10 @@ impl ChangeCore {
                 self.timing.op_timeout
             };
             if let Err(failure) = self.op(record, plan, action, op, timeout).await {
-                return Outcome::with(
+                return Outcome::runner(
                     "failed",
                     &op_failure_code(&action.kind, op, &failure),
-                    describe(&failure),
+                    &failure,
                 );
             }
         }
@@ -1080,44 +1204,88 @@ impl ChangeCore {
     }
 
     /// `operation.cancel` (section 6.2): the named plan stops before its next
-    /// step; the runner's `cancel_execution` ends its unfinished actions
-    /// `cancelled`. The flag is set first so the plan's executor cannot start
-    /// another step while the cancel is in flight.
+    /// step; the runner's `cancel_execution` closes its unfinished actions
+    /// and ends each `cancelled` with its cleanup in the one `result` line
+    /// (v1.0.6, D-048). The flag is set first so the plan's executor cannot
+    /// start another step while the cancel is in flight.
+    ///
+    /// Event order (signed-plan.md 14.6): the cancelled plan's cleanup and
+    /// final steps and its `finished` (from the consumed log), then this
+    /// step's list of cancelled actions and its completion; the caller's
+    /// `complete` emits this operation's `finished` last. This plan is held
+    /// so the reconciler cannot finish it first from the runner's `result`
+    /// line for the cancel action.
     async fn run_cancel(
         &self,
         record: &AdmissionRecord,
-        plan: &Value,
         action: &ActionRecord,
         params: &Value,
         done: &[String],
     ) -> Outcome {
         let target = params["plan_id"].as_str().unwrap_or_default().to_owned();
         let newly = locked(&self.cancelled).insert(target.clone());
+        locked(&self.held)
+            .entry(record.plan_id.clone())
+            .or_default();
+        let mut wire = None;
         if !done.iter().any(|d| d == "cancel_execution") {
-            match self
-                .op_result(
-                    record,
-                    plan,
-                    action,
-                    "cancel_execution",
-                    self.timing.op_timeout,
-                )
-                .await
+            self.step(
+                record,
+                Some(action),
+                "cancel_execution",
+                OperationState::Running,
+                "",
+                "",
+            );
+            match runner::run_op(
+                self.runner.as_ref(),
+                "cancel_execution",
+                &plan_ref(record, action),
+                self.timing.op_timeout,
+            )
+            .await
             {
-                Ok(result) => self.log_cancelled(record, action, &result),
-                Err(failure) => {
-                    if newly {
-                        locked(&self.cancelled).remove(&target);
+                Ok(result) => {
+                    for line in &result.progress {
+                        self.log_line(record, action, "cancel_execution", line);
                     }
-                    return Outcome::with("failed", "", describe(&failure));
+                    wire = Some(result.result);
+                }
+                Err(failure) => {
+                    self.reconcile_once().await;
+                    if !self.runner_succeeded(record, action) {
+                        if newly {
+                            locked(&self.cancelled).remove(&target);
+                        }
+                        self.step_coded(
+                            record,
+                            Some(action),
+                            "cancel_execution",
+                            OperationState::Failed,
+                            &describe(&failure),
+                            "",
+                            &failure.code,
+                        );
+                        return Outcome::runner("failed", "", &failure);
+                    }
+                    // The runner wrote the cancel's result line, so every
+                    // line of the cancel is in the consumed log (14.8).
+                    warn!(canceller = %record.plan_id, error = %failure.message, "cancel_execution result lost; the consumed log has it");
                 }
             }
         }
         self.reconcile_once().await;
+        let mut listed = Vec::new();
         if let Ok(Some(cancelled)) = self.store.admission(&target) {
             let cancelled_plan = plan_of(&cancelled);
+            let ops = self.logged_ops(&cancelled).await;
             for victim in self.store.actions(&target).unwrap_or_default() {
-                if victim.finished_at.is_none() {
+                // An action whose activate_release started is not closed by
+                // the cancel; its own ops end it (D-048).
+                let activated = ops
+                    .get(&victim.action_index)
+                    .is_some_and(|ops| ops.iter().any(|op| op == "activate_release"));
+                if victim.finished_at.is_none() && !activated {
                     self.complete(
                         &cancelled,
                         &cancelled_plan,
@@ -1127,19 +1295,82 @@ impl ChangeCore {
                     .await;
                 }
             }
+            listed = self.cancelled_in_log(&cancelled).await;
         }
+        let list = wire
+            .as_ref()
+            .and_then(|result| result["cancelled"].as_array().cloned())
+            .unwrap_or(listed);
+        self.log_cancelled(record, action, &list);
+        self.step(
+            record,
+            Some(action),
+            "cancel_execution",
+            OperationState::Succeeded,
+            "",
+            "",
+        );
         info!(canceller = %record.plan_id, target = %target, "operation cancelled");
         Outcome::succeeded()
     }
 
-    /// The `cancel_execution` result lists each cancelled action as
-    /// `{action_index, deployment_id, cleanup}` (v1.0.5, D-044); it is logged
-    /// on the cancel's step. The cancelled plan's own steps come from the
-    /// consumed log, which is authoritative (section 14.5).
-    fn log_cancelled(&self, record: &AdmissionRecord, action: &ActionRecord, result: &Value) {
-        let Some(cancelled) = result["cancelled"].as_array() else {
-            return;
+    /// Whether the runner's `result` line ended this action `succeeded`.
+    fn runner_succeeded(&self, record: &AdmissionRecord, action: &ActionRecord) -> bool {
+        self.store
+            .actions(&record.plan_id)
+            .unwrap_or_default()
+            .iter()
+            .any(|a| {
+                a.action_index == action.action_index
+                    && a.finished_at.is_some()
+                    && a.outcome == "succeeded"
+            })
+    }
+
+    /// The wire `cancelled` list rebuilt from the consumed log's `cancelled`
+    /// result lines of the cancelled plan (v1.0.6, section 14.6), in
+    /// `action_index` order.
+    async fn cancelled_in_log(&self, cancelled: &AdmissionRecord) -> Vec<Value> {
+        let path = self.consumed_log.clone();
+        let owner = self.consumed_log_owner;
+        let Ok(read) = tokio::task::spawn_blocking(move || read_consumed_log(&path, owner)).await
+        else {
+            return Vec::new();
         };
+        let actions = self.store.actions(&cancelled.plan_id).unwrap_or_default();
+        let mut entries: Vec<(u32, Value)> = read
+            .lines
+            .iter()
+            .filter(|line| {
+                line.event == "result"
+                    && line.plan_id == cancelled.plan_id
+                    && line.plan_digest_hex == cancelled.plan_digest_hex
+                    && line.outcome.as_deref() == Some("cancelled")
+            })
+            .map(|line| {
+                let deployment_id = actions
+                    .iter()
+                    .find(|a| a.action_index == line.action_index)
+                    .and_then(|a| a.deployment_id.clone());
+                (
+                    line.action_index,
+                    serde_json::json!({
+                        "action_index": line.action_index,
+                        "deployment_id": deployment_id,
+                        "cleanup": line.cleanup.as_deref().unwrap_or("none"),
+                    }),
+                )
+            })
+            .collect();
+        entries.sort_by_key(|(index, _)| *index);
+        entries.dedup_by_key(|(index, _)| *index);
+        entries.into_iter().map(|(_, entry)| entry).collect()
+    }
+
+    /// The cancelled list `{action_index, deployment_id, cleanup}` (v1.0.5,
+    /// D-044) as step logs on the cancel's step. The cancelled plan's own
+    /// steps come from the consumed log, which is authoritative (14.5).
+    fn log_cancelled(&self, record: &AdmissionRecord, action: &ActionRecord, cancelled: &[Value]) {
         for entry in cancelled.iter().take(MAX_LOGGED_CANCELLED) {
             let index = entry["action_index"].as_u64().unwrap_or_default();
             let cleanup = entry["cleanup"]
@@ -1177,8 +1408,6 @@ impl ChangeCore {
             return Outcome::with("failed", "", "failure path already ran");
         }
         let current = Mutex::new("prepare_release");
-        // Err: (failure code, message, whether an earlier release may be
-        // restored).
         let start = async {
             for op in ["prepare_release", "verify_health"] {
                 if ran(op) {
@@ -1189,12 +1418,14 @@ impl ChangeCore {
                     .op(record, plan, action, op, self.timing.start_timeout)
                     .await
                 {
-                    let restorable = op != "prepare_release" || timed_out(op, &failure);
-                    return Err((
-                        op_failure_code("deploy", op, &failure),
-                        describe(&failure),
-                        restorable,
-                    ));
+                    let prepare = op == "prepare_release" && !timed_out(op, &failure);
+                    return Err(StartFailure {
+                        failure_code: op_failure_code("deploy", op, &failure),
+                        message: describe(&failure),
+                        error_code: failure.code.clone(),
+                        restorable: !prepare,
+                        refused: prepare && refused_by_check(&failure),
+                    });
                 }
                 if self.is_cancelled(&record.plan_id) {
                     return Ok(());
@@ -1219,15 +1450,31 @@ impl ChangeCore {
                     &message,
                     "start",
                 );
-                Some(("start".to_owned(), message, true))
+                Some(StartFailure {
+                    failure_code: "start".to_owned(),
+                    message,
+                    error_code: String::new(),
+                    restorable: true,
+                    refused: false,
+                })
             }
         };
         if self.is_cancelled(&record.plan_id) {
             return Outcome::with("cancelled", "", "");
         }
-        let (code, message, restorable) = match failure {
-            Some(failure) => failure,
-            None if ran("activate_release") => return Outcome::succeeded(),
+        let (failure, activated) = match failure {
+            // F-23: the runner refused prepare_release at its checks (for
+            // example a refused input fold, E_SCOPE_MISMATCH), so there is
+            // no candidate to clean up; the deploy fails `prepare` with the
+            // runner's reason, not `recovery`.
+            Some(failure) if failure.refused => {
+                return Outcome {
+                    error_code: failure.error_code,
+                    ..Outcome::with("failed", &failure.failure_code, failure.message)
+                };
+            }
+            Some(failure) => (failure, false),
+            None if ran("activate_release") => return Outcome::succeeded().activated(),
             None => match self
                 .op(
                     record,
@@ -1238,21 +1485,28 @@ impl ChangeCore {
                 )
                 .await
             {
-                Ok(()) => return Outcome::succeeded(),
+                Ok(()) => return Outcome::succeeded().activated(),
                 Err(failure) => (
-                    op_failure_code("deploy", "activate_release", &failure),
-                    describe(&failure),
+                    StartFailure {
+                        failure_code: op_failure_code("deploy", "activate_release", &failure),
+                        message: describe(&failure),
+                        error_code: failure.code.clone(),
+                        restorable: true,
+                        refused: false,
+                    },
                     true,
                 ),
             },
         };
-        if self.is_cancelled(&record.plan_id) {
+        // A cancel closes an action only before its activate_release
+        // (D-048); after it, the recovery still runs.
+        if !activated && self.is_cancelled(&record.plan_id) {
             return Outcome::with("cancelled", "", "");
         }
         let service_id = plan["actions"][action.action_index as usize]["params"]["service_id"]
             .as_str()
             .unwrap_or_default();
-        let previous = restorable
+        let previous = failure.restorable
             && self
                 .store
                 .has_previous_release(record, service_id)
@@ -1267,17 +1521,29 @@ impl ChangeCore {
         // code.
         locked(&self.failures).insert(
             (record.plan_id.clone(), action.action_index),
-            (code.clone(), message.clone()),
+            (
+                failure.failure_code.clone(),
+                failure.message.clone(),
+                failure.error_code.clone(),
+            ),
         );
-        match self
+        let ended = match self
             .op(record, plan, action, recovery, self.timing.op_timeout)
             .await
         {
-            Ok(()) => Outcome::with(outcome, &code, message),
-            Err(failure) => {
-                warn!(plan_id = %record.plan_id, op = recovery, error = %describe(&failure), "recovery op failed");
-                Outcome::with("failed", "recovery", describe(&failure))
+            Ok(()) => Outcome {
+                error_code: failure.error_code,
+                ..Outcome::with(outcome, &failure.failure_code, failure.message)
+            },
+            Err(recovery_failure) => {
+                warn!(plan_id = %record.plan_id, op = recovery, error = %describe(&recovery_failure), "recovery op failed");
+                Outcome::runner("failed", "recovery", &recovery_failure)
             }
+        };
+        if activated {
+            ended.activated()
+        } else {
+            ended
         }
     }
 
@@ -1299,6 +1565,7 @@ impl ChangeCore {
 
     /// One pass over the consumed log plus the execution-window sweep.
     pub async fn reconcile_once(&self) {
+        let _pass = self.reconciling.lock().await;
         let path = self.consumed_log.clone();
         let owner = self.consumed_log_owner;
         let Ok(read) = tokio::task::spawn_blocking(move || read_consumed_log(&path, owner)).await
@@ -1360,6 +1627,10 @@ impl ChangeCore {
                 outcome,
                 cleanup,
             } => {
+                if let Some(skipped) = locked(&self.held).get_mut(&plan_id) {
+                    skipped.push(action_index);
+                    return;
+                }
                 if let Some((record, plan, action)) = self.action_context(&plan_id, action_index) {
                     if let Some(cleanup) = cleanup {
                         self.cancel_cleanup_step(&record, &action, &cleanup);
@@ -1368,6 +1639,9 @@ impl ChangeCore {
                 }
             }
             ReconcileEffect::AdmissionFinished { plan_id, .. } => {
+                if locked(&self.held).contains_key(&plan_id) {
+                    return;
+                }
                 if let Ok(Some(record)) = self.store.admission(&plan_id) {
                     self.finished(&record);
                 }
@@ -1435,7 +1709,12 @@ impl ChangeCore {
     pub fn operation(&self, record: &AdmissionRecord) -> Operation {
         let actions = self.store.actions(&record.plan_id).unwrap_or_default();
         let steps = self.recorded_steps(&record.operation_id);
+        // A held plan (v1.0.6, D-048) is still running until its executor
+        // emits the last events and `finished`, even when the runner's
+        // result line already ended it in the store.
+        let held = locked(&self.held).contains_key(&record.plan_id);
         let state = match record.outcome.as_str() {
+            _ if held => OperationState::Running,
             "succeeded" => OperationState::Succeeded,
             "failed" | "expired" => OperationState::Failed,
             "cancelled" => OperationState::Cancelled,
@@ -1448,12 +1727,12 @@ impl ChangeCore {
             }
             _ => OperationState::Queued,
         };
-        let error = steps
-            .iter()
-            .rev()
-            .find(|s| !s.error.is_empty())
-            .map(|s| s.error.clone())
-            .unwrap_or_default();
+        // The step that ended the operation: the last one with an error
+        // (v2.0.6: its code and reason too).
+        let ending = steps.iter().rev().find(|s| !s.error.is_empty());
+        let error = ending.map(|s| s.error.clone()).unwrap_or_default();
+        let error_code = ending.map(|s| s.error_code.clone()).unwrap_or_default();
+        let error_reason = ending.map_or(ErrorReason::Unspecified as i32, |s| s.error_reason);
         Operation {
             id: record.operation_id.clone(),
             plan_digest_hex: record.plan_digest_hex.clone(),
@@ -1465,7 +1744,7 @@ impl ChangeCore {
                 .filter_map(|a| a.consumed_at.as_deref().or(a.finished_at.as_deref()))
                 .min()
                 .and_then(ts),
-            finished_at: record.finished_at.as_deref().and_then(ts),
+            finished_at: record.finished_at.as_deref().filter(|_| !held).and_then(ts),
             authorized_key_ids: record.signer_key_ids.clone(),
             standing_rule_id: record.rule_id.clone().unwrap_or_default(),
             steps,
@@ -1476,6 +1755,8 @@ impl ChangeCore {
                 "engine".to_owned()
             },
             plan_id: record.plan_id.clone(),
+            error_code,
+            error_reason,
         }
     }
 }

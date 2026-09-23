@@ -1,4 +1,4 @@
-//! Contract vectors (contracts-v1.0.5): JCS, digests, signatures, the trust
+//! Contract vectors (contracts-v1.0.6): JCS, digests, signatures, the trust
 //! store, every policy case through the full ordered verifier (steps 1–12)
 //! and the bootstrap cases.
 

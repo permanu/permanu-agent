@@ -127,7 +127,8 @@ impl ChangeSvc {
                 &format!(
                     "not_supported_yet: {action} waits for the M2 artifact trust root (D-046)"
                 ),
-                ErrorReason::CapabilityMissing,
+                // v2.0.6: its own reason (was CAPABILITY_MISSING).
+                ErrorReason::NotSupportedYet,
             ));
         }
         let admission = self
