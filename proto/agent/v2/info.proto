@@ -45,6 +45,19 @@ message HelloResponse {
   //                       v1.0.2 columns; ListAdmissions and GetStateHead.
   //   "age.v1"          - AgentInfo.age_recipient is set and the runner
   //                       decrypts SignedPlan.sealed_secrets (D-027).
+  // v2.0.3 adds (contracts v1.0.3):
+  //   "deployment_ids.v1"   - admits signed-plan v1.0.3 deploy.deployment_id
+  //                           and rollback.to_deployment_id (to_release_id
+  //                           alias), copies them into
+  //                           admission_actions.deployment_id and never mints
+  //                           one (D-035). An engine requires it before it
+  //                           submits a deploy or rollback.
+  //   "logs.containers.v1"  - QueryLogs serves APP and SERVICE sources,
+  //                           including follow, from the runner's read-only
+  //                           ops list_containers, container_logs and
+  //                           container_logs_follow, without the telemetry
+  //                           store (D-036). The engine reads server logs only
+  //                           through QueryLogs, never over SSH.
   repeated string capabilities = 3;
   ServerFacts server = 4;
   TrustedKeysSummary trusted_keys = 5;
