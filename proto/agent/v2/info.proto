@@ -63,19 +63,41 @@ message AgentInfo {
   // quarantined every mutating RPC fails with AGENT_QUARANTINED.
   bool quarantined = 6;
   string quarantine_reason = 7;
-  // Stable server identity (machine-id derived). Signed plans must name it.
+  // The server id: the server_id of /etc/permanu/trusted-keys.json, written
+  // once by the server.add bootstrap from the engine's UUIDv7 (signed-plan.md
+  // 7.2, 7.3). "" before bootstrap (trusted_keys.state = ABSENT). Signed plans
+  // must name it in targets.
   string server_id = 8;
   // Hex SHA-256 of each SSH host public key blob (/etc/ssh/ssh_host_*_key.pub).
   // A server.add plan's ssh_host_key_digest_hex must be one of them.
   repeated string ssh_host_key_digests_hex = 9;
+  // v2.0.1. The agent's age X25519 recipient ("age1..."). The engine seals
+  // secret.set and alert.channel values to it; the plan signs the SHA-256 of
+  // the binary age ciphertext (signed-plan.md 3.2, Sealed secrets). The
+  // identity is generated at first start and never leaves the server.
+  string age_recipient = 10;
 }
 
 message TrustedKeysSummary {
-  // Lowercase hex SHA-256 over the canonical trusted-keys file.
+  // Lowercase hex SHA-256 of JCS(parsed trusted-keys.json) (signed-plan.md
+  // 7.2). "" when the file is absent or cannot be parsed.
   string fingerprint_digest_hex = 1;
   uint32 key_count = 2;
   // Monotonic generation, bumped on every add/revoke.
   uint64 generation = 3;
+  // v2.0.1. Trust state of the file.
+  enum TrustState {
+    TRUST_STATE_UNSPECIFIED = 0;
+    // No file: bootstrap state; only a server.add plan is accepted.
+    TRUST_STATE_ABSENT = 1;
+    // Loaded and passed every signed-plan.md 7.2 rule.
+    TRUST_STATE_VALID = 2;
+    // Present but failed a rule; every admission fails TRUST_STORE_INVALID.
+    TRUST_STATE_INVALID = 3;
+  }
+  TrustState state = 4;
+  // Which 7.2 rule failed when state = INVALID; empty otherwise.
+  string invalid_reason = 5;
 }
 
 message ClockInfo {

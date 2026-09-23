@@ -148,6 +148,16 @@ message Keepalive {
   google.protobuf.Timestamp agent_time = 1;
 }
 
+// RESYNC_REQUIRED: events were lost. The client refetches with
+// StateService.GetStateSnapshot and continues from its resume_token. The
+// engine reports it to the app as an Engine API reset event
+// (code RESYNC_REQUIRED, same reasons).
 message ResyncRequired {
+  // "resume_gap": resume_token older than the retained window (100k events
+  // or 24 h) or unknown. "overflow" (v2.0.1): this subscriber fell behind and
+  // its queued events were dropped.
   string reason = 1;
+  // v2.0.1. Kinds whose events were lost; empty = all kinds of the
+  // subscription.
+  repeated EventKind kinds = 2;
 }

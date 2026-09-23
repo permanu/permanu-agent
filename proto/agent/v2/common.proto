@@ -51,6 +51,12 @@ message SignedPlan {
   // <= 16 KiB, at most 64. Missing, extra or mismatched specs fail
   // SPEC_MISMATCH (E_SPEC_MISMATCH).
   repeated bytes specs_jcs = 2;
+  // v2.0.1. Binary age v1 ciphertexts (each <= 64 KiB, at most 64) of the
+  // secret.set and alert.channel.create/update actions, sealed to every
+  // target's AgentInfo.age_recipient. Each must match exactly one
+  // *ciphertext_digest_hex the plan names (SHA-256), with none missing or
+  // extra, else EXEC_PRECONDITION (signed-plan.md 3.2, Sealed secrets).
+  repeated bytes sealed_secrets = 3;
 }
 
 // OperationRef identifies the asynchronous operation created by an accepted
@@ -172,4 +178,7 @@ enum ErrorReason {
   // admissions.db was recreated and the 1200 s quarantine is running
   // (signed-plan.md 6.3).
   ERROR_REASON_STORE_QUARANTINED = 32;     // FAILED_PRECONDITION
+  // v2.0.1. The agent could not read or write its own store or files
+  // (runner code E_INTERNAL). Nothing was admitted or executed; retry.
+  ERROR_REASON_INTERNAL = 33;              // INTERNAL
 }
