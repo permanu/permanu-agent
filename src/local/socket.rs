@@ -1,19 +1,27 @@
-//! The v2 unix socket (agent-protocol.md section 1): `root:permanu`, mode
-//! 0660, directory 0750. The listener refuses to start when the path is a
-//! symlink or the resulting ownership/mode differs. On a server the socket
-//! comes from `permanu-agent.socket` (section 8) and is adopted, not bound.
+//! The v2 unix socket (agent-protocol.md sections 1 and 8):
+//! `/run/permanu/agent.sock`, `permanu-agent:permanu`, mode 0660, created by
+//! `permanu-agent.socket` and passed to the sandboxed agent (`LISTEN_PID`,
+//! `LISTEN_FDS=1`, fd 3). The agent adopts it only when it is a listening
+//! unix stream socket at the configured path with the expected owner, mode
+//! and group, in a directory nobody else can write; without socket
+//! activation a production agent refuses to start. Binding the socket
+//! itself exists only for development (`dev-paths`) and tests.
 
 use std::{
     ffi::CString,
     fs,
     io::{self, ErrorKind},
-    os::unix::fs::{DirBuilderExt, FileTypeExt, MetadataExt, PermissionsExt},
+    os::unix::fs::{FileTypeExt, MetadataExt},
     path::Path,
 };
+
+#[cfg(any(test, feature = "dev-paths"))]
+use std::os::unix::fs::{DirBuilderExt, PermissionsExt};
 
 use tokio::net::UnixListener;
 
 pub const SOCKET_MODE: u32 = 0o660;
+#[cfg(any(test, feature = "dev-paths"))]
 pub const DIR_MODE: u32 = 0o750;
 
 /// Resolves a user name to its uid (`permanu-agent` for the store files).
@@ -75,7 +83,9 @@ pub fn resolve_group(name: &str) -> io::Result<u32> {
 }
 
 /// Binds the socket at `path`, owned by the current euid and `gid` (when
-/// given) with mode 0660, and verifies the result.
+/// given) with mode 0660, and verifies the result. Development and tests
+/// only: a server's socket comes from systemd.
+#[cfg(any(test, feature = "dev-paths"))]
 pub fn bind(path: &Path, gid: Option<u32>) -> io::Result<UnixListener> {
     let parent = path
         .parent()
@@ -113,18 +123,37 @@ pub fn bind(path: &Path, gid: Option<u32>) -> io::Result<UnixListener> {
 pub const LISTEN_FDS_START: std::os::fd::RawFd = 3;
 
 /// Takes the socket systemd passed (`permanu-agent.socket`,
-/// agent-protocol.md section 8) when the agent was socket-activated, else
-/// binds `path` itself (dev paths, tests).
+/// agent-protocol.md section 8). Without socket activation only a
+/// development build (`dev-paths`) binds `path` itself.
 pub fn listen(path: &Path, gid: Option<u32>) -> io::Result<UnixListener> {
     let listen_pid = std::env::var("LISTEN_PID").ok();
     let listen_fds = std::env::var("LISTEN_FDS").ok();
-    match activation_fd(
+    let fd = activation_fd(
         listen_pid.as_deref(),
         listen_fds.as_deref(),
         std::process::id(),
-    )? {
+    )?;
+    listen_on(fd, path, gid)
+}
+
+/// `listen` with the activation descriptor already resolved.
+pub fn listen_on(
+    fd: Option<std::os::fd::RawFd>,
+    path: &Path,
+    gid: Option<u32>,
+) -> io::Result<UnixListener> {
+    match fd {
         Some(fd) => adopt(fd, path, gid),
+        #[cfg(feature = "dev-paths")]
         None => bind(path, gid),
+        #[cfg(not(feature = "dev-paths"))]
+        None => Err(io::Error::new(
+            ErrorKind::NotFound,
+            format!(
+                "no socket activation for {}: start the agent through permanu-agent.socket",
+                path.display()
+            ),
+        )),
     }
 }
 
@@ -175,6 +204,10 @@ pub fn adopt(fd: std::os::fd::RawFd, path: &Path, gid: Option<u32>) -> io::Resul
         }
         Ok(value)
     };
+    #[cfg(target_os = "linux")]
+    if int_option(libc::SO_DOMAIN)? != libc::AF_UNIX {
+        return Err(refuse(path, "activated socket is not a unix socket"));
+    }
     if int_option(libc::SO_TYPE)? != libc::SOCK_STREAM {
         return Err(refuse(path, "activated socket is not a stream socket"));
     }
@@ -192,6 +225,7 @@ pub fn adopt(fd: std::os::fd::RawFd, path: &Path, gid: Option<u32>) -> io::Resul
         ));
     }
     verify_socket(path, gid)?;
+    verify_socket_dir(path)?;
     // SAFETY: fcntl on a descriptor this function owns.
     if unsafe { libc::fcntl(std_listener.as_raw_fd(), libc::F_SETFD, libc::FD_CLOEXEC) } != 0 {
         return Err(io::Error::last_os_error());
@@ -200,6 +234,29 @@ pub fn adopt(fd: std::os::fd::RawFd, path: &Path, gid: Option<u32>) -> io::Resul
     UnixListener::from_std(std_listener)
 }
 
+/// The activated socket's directory (`/run/permanu`, `root:root 0755`):
+/// owned by root or the agent and writable by nobody else, so nobody can
+/// replace the socket under it.
+fn verify_socket_dir(path: &Path) -> io::Result<()> {
+    let dir = path
+        .parent()
+        .filter(|p| !p.as_os_str().is_empty())
+        .ok_or_else(|| io::Error::new(ErrorKind::InvalidInput, "socket path has no parent"))?;
+    let meta = fs::symlink_metadata(dir)?;
+    if meta.file_type().is_symlink() || !meta.is_dir() {
+        return Err(refuse(dir, "is not a directory"));
+    }
+    if meta.mode() & 0o022 != 0 {
+        return Err(refuse(dir, "is group- or world-writable"));
+    }
+    // SAFETY: geteuid has no preconditions.
+    if meta.uid() != 0 && meta.uid() != unsafe { libc::geteuid() } {
+        return Err(refuse(dir, "is owned by another user"));
+    }
+    Ok(())
+}
+
+#[cfg(any(test, feature = "dev-paths"))]
 fn prepare_dir(dir: &Path, gid: Option<u32>) -> io::Result<()> {
     match fs::symlink_metadata(dir) {
         Err(err) if err.kind() == ErrorKind::NotFound => {
@@ -404,6 +461,45 @@ mod tests {
 
         let udp = std::net::UdpSocket::bind("127.0.0.1:0").unwrap();
         assert!(adopt(udp.into_raw_fd(), &path, None).is_err());
+        fs::remove_dir_all(base).unwrap();
+    }
+
+    // agent-protocol.md section 8: production serves only the socket that
+    // permanu-agent.socket passes; binding one itself is a dev-paths
+    // feature.
+    #[cfg(not(feature = "dev-paths"))]
+    #[tokio::test]
+    async fn production_refuses_to_run_without_socket_activation() {
+        let base = temp_dir("noact");
+        let path = base.join("agent.sock");
+        let err = listen_on(None, &path, None).unwrap_err();
+        assert!(err.to_string().contains("socket activation"), "{err}");
+        assert!(!path.exists(), "no socket is bound");
+        fs::remove_dir_all(base).unwrap();
+    }
+
+    #[cfg(feature = "dev-paths")]
+    #[tokio::test]
+    async fn dev_paths_bind_without_socket_activation() {
+        let base = temp_dir("devbind");
+        let path = base.join("run").join("agent.sock");
+        let _listener = listen_on(None, &path, None).unwrap();
+        assert!(fs::symlink_metadata(&path).unwrap().file_type().is_socket());
+        fs::remove_dir_all(base).unwrap();
+    }
+
+    #[tokio::test]
+    async fn refuses_an_activated_socket_in_a_writable_directory() {
+        use std::os::fd::IntoRawFd;
+        let base = temp_dir("adoptdir");
+        let dir = base.join("run");
+        fs::create_dir(&dir).unwrap();
+        let path = dir.join("agent.sock");
+        let listener = std::os::unix::net::UnixListener::bind(&path).unwrap();
+        fs::set_permissions(&path, fs::Permissions::from_mode(SOCKET_MODE)).unwrap();
+        fs::set_permissions(&dir, fs::Permissions::from_mode(0o777)).unwrap();
+        let err = listen_on(Some(listener.into_raw_fd()), &path, None).unwrap_err();
+        assert!(err.to_string().contains("writable"), "{err}");
         fs::remove_dir_all(base).unwrap();
     }
 
