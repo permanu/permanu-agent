@@ -37,6 +37,14 @@ message HelloResponse {
   // "telemetry.metrics", "telemetry.analytics", "schedules.cron", "backups",
   // "alerts", "webhooks", "builds.server", "shell", "swarm". Clients must
   // gate UI and calls on these; missing ones return UNIMPLEMENTED.
+  // v2.0.2 adds (agent-protocol.md section 2):
+  //   "signed_plans.v1" - admits signed-plan v1 envelopes (SubmitSignedPlan,
+  //                       VerifySignedPlan, CancelOperation) and drives their
+  //                       execution through the runner (signed-plan.md 14.6).
+  //   "admissions.v1"   - admissions.db schema of signed-plan.md 6.4 with the
+  //                       v1.0.2 columns; ListAdmissions and GetStateHead.
+  //   "age.v1"          - AgentInfo.age_recipient is set and the runner
+  //                       decrypts SignedPlan.sealed_secrets (D-027).
   repeated string capabilities = 3;
   ServerFacts server = 4;
   TrustedKeysSummary trusted_keys = 5;
@@ -71,10 +79,13 @@ message AgentInfo {
   // Hex SHA-256 of each SSH host public key blob (/etc/ssh/ssh_host_*_key.pub).
   // A server.add plan's ssh_host_key_digest_hex must be one of them.
   repeated string ssh_host_key_digests_hex = 9;
-  // v2.0.1. The agent's age X25519 recipient ("age1..."). The engine seals
-  // secret.set and alert.channel values to it; the plan signs the SHA-256 of
-  // the binary age ciphertext (signed-plan.md 3.2, Sealed secrets). The
-  // identity is generated at first start and never leaves the server.
+  // v2.0.1. The age X25519 recipient ("age1...") of this server. The engine
+  // seals secret.set and alert.channel values to it; the plan signs the
+  // SHA-256 of the binary age ciphertext (signed-plan.md 3.2, Sealed
+  // secrets). v2.0.2 (D-027): the agent reads it from
+  // /var/lib/permanu/agent/age-recipient (root:root 0644); the identity
+  // (age-identity, root:root 0400) is created by the installer, never leaves
+  // the server, and only the runner decrypts with it.
   string age_recipient = 10;
 }
 

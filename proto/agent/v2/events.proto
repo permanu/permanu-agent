@@ -94,6 +94,11 @@ message DeployStatusEvent {
   Phase phase = 5;
   string message = 6;
   string operation_id = 7;
+  // v2.0.2. plan.environment_id of the deploying plan (UUIDv7).
+  string environment_id = 8;
+  // v2.0.2. Engine API DeployFailureCode when phase is FAILED or
+  // ROLLED_BACK ("start" after the start timeout); empty otherwise.
+  string failure_code = 9;
 }
 
 message HealthEvent {
