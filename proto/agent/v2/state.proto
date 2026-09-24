@@ -8,6 +8,115 @@ import "google/protobuf/timestamp.proto";
 import "agent/v2/common.proto";
 import "agent/v2/events.proto";
 
+// DatabaseService (v2.1.6, contracts v1.1.6, D-064; capability
+// "database.v1") reads a database service's tables and rows through the
+// runner op db_query (signed-plan.md 14.3): a read-only transaction with
+// statement_timeout 5 s and at most 500 rows, every schema, table and column
+// name checked against the live catalog and quoted, every filter value a bound
+// parameter. There is no SQL field. Rows are not redacted and may hold secret
+// values: the engine serves them only to the app (Engine API services.db.rows
+// / services.db.tables), never to an agent or MCP tool.
+service DatabaseService {
+  rpc ListTables(ListTablesRequest) returns (ListTablesResponse);
+  rpc QueryRows(QueryRowsRequest) returns (QueryRowsResponse);
+}
+
+message ListTablesRequest {
+  // A database service (service_kind database) on this server.
+  string resource_id = 1;
+  // Schema name; "" = "public".
+  string schema = 2;
+}
+
+message DbTable {
+  string schema = 1;
+  string name = 2;
+  // pg_class.reltuples, 0 when unknown.
+  uint64 rows_estimate = 3;
+  uint64 size_bytes = 4;
+}
+
+message ListTablesResponse {
+  // At most 1000.
+  repeated DbTable tables = 1;
+}
+
+message DbFilter {
+  enum Op {
+    OP_UNSPECIFIED = 0;
+    OP_EQ = 1;
+    OP_NE = 2;
+    OP_LT = 3;
+    OP_LTE = 4;
+    OP_GT = 5;
+    OP_GTE = 6;
+    OP_LIKE = 7;     // value: a string pattern of at most 256 bytes
+    OP_IS_NULL = 8;  // value: bool_value true (IS NULL) or false (IS NOT NULL)
+  }
+  string column = 1;
+  Op op = 2;
+  // Bound as a parameter and cast to the column's type.
+  oneof value {
+    bool null_value = 3;
+    string string_value = 4;
+    double number_value = 5;
+    bool bool_value = 6;
+  }
+}
+
+message DbOrder {
+  enum Dir {
+    DIR_UNSPECIFIED = 0; // ascending
+    DIR_ASC = 1;
+    DIR_DESC = 2;
+  }
+  string column = 1;
+  Dir dir = 2;
+}
+
+message QueryRowsRequest {
+  string resource_id = 1;
+  // "" = "public".
+  string schema = 2;
+  string table = 3;
+  // At most 64, in output order; empty = every column in catalog order.
+  repeated string columns = 4;
+  // At most 16, AND-ed.
+  repeated DbFilter filters = 5;
+  // At most 4; empty = the primary key ascending, else no order.
+  repeated DbOrder order_by = 6;
+  // 1-500 (0 = 100); the runner caps it at 500.
+  uint32 limit = 7;
+  // next_cursor of the previous page of the same request; "" = first page.
+  string cursor = 8;
+}
+
+message DbColumn {
+  string name = 1;
+  // PostgreSQL type name (format_type), e.g. "integer", "text".
+  string type = 2;
+}
+
+message DbCell {
+  // True for SQL NULL (text is then empty).
+  bool is_null = 1;
+  // The value's PostgreSQL text form, cut at 4096 bytes.
+  string text = 2;
+  bool truncated = 3;
+}
+
+message DbRow {
+  repeated DbCell cells = 1;
+}
+
+message QueryRowsResponse {
+  repeated DbColumn columns = 1;
+  // At most limit (500) rows.
+  repeated DbRow rows = 2;
+  // "" on the last page.
+  string next_cursor = 3;
+}
+
 // StateService returns the server's current runtime state. All RPCs are
 // read-only. GetStateSnapshot is what a client calls after
 // EventService.Subscribe delivers RESYNC_REQUIRED: it returns health,

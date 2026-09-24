@@ -15,9 +15,18 @@ import "agent/v2/common.proto";
 //
 // The target comes only from the signed plan: params.service_id names the
 // service (the agent picks one of its running containers itself) and null
-// means a host login shell as the permanu user (capability "shell.host").
+// means a host login shell as the permanu-shell user (capability
+// "shell.host"). v2.1.6 (contracts v1.1.6, D-064): a host shell's plan is
+// server-level (no project_id, environment or environment_id; this server in
+// targets); the earlier project-level form is still admitted (deprecated).
 // The client cannot name a container or a command. The session is audited
 // and ends at params.ttl_seconds (max 900 s) or after 15 min idle.
+// v2.1.7 (contracts v1.1.7, D-065): at most 4 shells (service and host) per
+// agent; the 5th ShellOpen ends the stream with RESOURCE_EXHAUSTED +
+// LIMIT_EXCEEDED before the plan is admitted, and the runner refuses a 5th
+// per server with E_SHELL_LIMIT (LIMIT_EXCEEDED). A host shell runs in the
+// transient systemd unit permanu-shell-<plan_id>.service (agent-protocol.md
+// section 8).
 service ShellService {
   rpc Shell(stream ShellClientFrame) returns (stream ShellServerFrame);
 }
@@ -62,8 +71,16 @@ message ShellOpened {
   string container_name = 6;
 }
 
+// v2.1.7 (contracts v1.1.7, D-065): the values come from the runner's
+// shell_open result line (signed-plan.md 14.8). reason "exited": the shell
+// ended by itself; then either exit_code is its exit status and signal is
+// empty, or signal names the signal that killed it (exit_code 0, ignored).
+// Any other reason: exit_code is ignored and signal names the signal that
+// ended the shell when known, else empty. The engine's shell exit event is
+// {exit_code, signal} with null for an ignored or empty value.
 message ShellExit {
   int32 exit_code = 1;
+  // A signal name such as "SIGKILL" or "SIGHUP"; empty when none.
   string signal = 2;
   // "exited" | "expired" | "idle_timeout" | "client_closed" | "error"
   string reason = 3;
