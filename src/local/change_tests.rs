@@ -1406,6 +1406,9 @@ async fn cancel_stops_a_running_deploy_and_returns_the_cancel_operation() {
     assert_eq!(cleanup.state, OperationState::Succeeded as i32);
     assert_eq!(cleanup.failure_code, "");
     assert_eq!(op.state, OperationState::Cancelled as i32);
+    // D-064 #7: a cancelled operation carries CANCELLED (runner E_CANCELLED).
+    assert_eq!(op.error_reason, ErrorReason::Cancelled as i32);
+    assert_eq!(op.error_code, "E_CANCELLED");
     // The cancel plan's own step logs what the runner cancelled, before its
     // `finished` (v1.0.6, D-048): no waiting once the cancel succeeded.
     let expected = format!(

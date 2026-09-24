@@ -326,7 +326,8 @@ fn reason_of_code(error_code: &str) -> ErrorReason {
 /// 6.1, 14.2-14.4, 14.7): the runner stopped at its checks, before the op
 /// changed anything on the server.
 fn refused_by_check(failure: &RunnerFailure) -> bool {
-    PlanCode::parse(&failure.code).is_some_and(|code| code != PlanCode::Internal)
+    PlanCode::parse(&failure.code)
+        .is_some_and(|code| !matches!(code, PlanCode::Internal | PlanCode::Cancelled))
 }
 
 /// A submission as it arrives over gRPC.
@@ -1928,7 +1929,14 @@ impl ChangeCore {
         let ending = steps.iter().rev().find(|s| !s.error.is_empty());
         let error = ending.map(|s| s.error.clone()).unwrap_or_default();
         let error_code = ending.map(|s| s.error_code.clone()).unwrap_or_default();
-        let error_reason = ending.map_or(ErrorReason::Unspecified as i32, |s| s.error_reason);
+        let mut error_code = error_code;
+        let mut error_reason = ending.map_or(ErrorReason::Unspecified as i32, |s| s.error_reason);
+        // D-064 #7: an operation a cancel ended carries CANCELLED (runner
+        // E_CANCELLED) when no step named another reason.
+        if state == OperationState::Cancelled && error_reason == ErrorReason::Unspecified as i32 {
+            error_reason = ErrorReason::Cancelled as i32;
+            error_code = PlanCode::Cancelled.as_str().to_owned();
+        }
         Operation {
             id: record.operation_id.clone(),
             plan_digest_hex: record.plan_digest_hex.clone(),

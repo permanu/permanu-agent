@@ -42,7 +42,13 @@ const FAILURE_REASONS: &[&str] = &[
     "cache_full",
     "buildkit_unavailable",
     "build_queue_full",
+    // v2.1.5 / v2.1.6 (D-063 #11, D-064 #7): a CANCELLED build or rule
+    // deploy (runner E_CANCELLED).
+    "cancelled",
 ];
+
+/// `ServerBuild.failure_reason` of a build or rule deploy a cancel ended.
+const CANCELLED: &str = "cancelled";
 
 /// An admitted, active rule as the pipeline uses it.
 #[derive(Debug, Clone)]
@@ -424,12 +430,23 @@ impl Hooks {
 
     /// Ends the remaining builds of a rule as failed.
     fn fail_builds(&self, builds: &mut [ServerBuild], failure: &BuildFailure) {
+        // D-064 #7: a cancel ends the builds CANCELLED; not a failure, so no
+        // WEBHOOK_BUILD_FAILED either.
+        let cancelled = failure.reason == CANCELLED;
+        let status = if cancelled {
+            ServerBuildStatus::Cancelled
+        } else {
+            ServerBuildStatus::Failed
+        };
         for build in builds.iter_mut() {
-            build.status = ServerBuildStatus::Failed as i32;
+            build.status = status as i32;
             build.failure_reason = failure.reason.clone();
             build.error = failure.error.clone();
             build.finished_at = Some(pts(self.now()));
             self.put_build(build);
+        }
+        if cancelled {
+            return;
         }
         if let Some(alerts) = &self.deps.alerts {
             let first = &builds[0];
@@ -527,11 +544,15 @@ impl Hooks {
         if result["ok"] != true {
             let error = &result["error"];
             let code = error["code"].as_str().unwrap_or("E_INTERNAL");
-            let reason = error["failure_reason"]
-                .as_str()
-                .filter(|r| FAILURE_REASONS.contains(r))
-                .unwrap_or_default()
-                .to_owned();
+            let reason = if code == PlanCode::Cancelled.as_str() {
+                CANCELLED
+            } else {
+                error["failure_reason"]
+                    .as_str()
+                    .filter(|r| FAILURE_REASONS.contains(r))
+                    .unwrap_or_default()
+            }
+            .to_owned();
             if reason == "buildkit_unavailable" {
                 self.buildkit_ok.store(false, Ordering::SeqCst);
             }
@@ -751,27 +772,15 @@ impl Hooks {
             },
         );
         let outcome = self.wait_finished(&admission.plan_id).await;
-        let (status, end) = match outcome.as_deref() {
-            Some("succeeded") => (ServerBuildStatus::Succeeded, RuleEnd::Deployed),
-            Some("rolled_back") => (
-                ServerBuildStatus::RolledBack,
-                RuleEnd::Failed("rolled_back".to_owned()),
-            ),
-            Some("cancelled") => (
-                ServerBuildStatus::Cancelled,
-                RuleEnd::Failed("cancelled".to_owned()),
-            ),
-            Some(other) => (ServerBuildStatus::Failed, RuleEnd::Failed(other.to_owned())),
-            None => (
-                ServerBuildStatus::Failed,
-                RuleEnd::Failed("deploy did not finish".to_owned()),
-            ),
-        };
+        let (status, end) = deploy_end(outcome.as_deref());
         for build in builds.iter_mut() {
             build.status = status as i32;
             build.finished_at = Some(pts(self.now()));
             if let RuleEnd::Failed(error) = &end {
                 build.error = error.clone();
+            }
+            if status == ServerBuildStatus::Cancelled {
+                build.failure_reason = CANCELLED.to_owned();
             }
             self.put_build(build);
         }
@@ -795,9 +804,47 @@ impl Hooks {
     }
 }
 
+/// The builds' status and the rule's end for the rule plan's outcome.
+fn deploy_end(outcome: Option<&str>) -> (ServerBuildStatus, RuleEnd) {
+    match outcome {
+        Some("succeeded") => (ServerBuildStatus::Succeeded, RuleEnd::Deployed),
+        Some("rolled_back") => (
+            ServerBuildStatus::RolledBack,
+            RuleEnd::Failed("rolled_back".to_owned()),
+        ),
+        Some("cancelled") => (
+            ServerBuildStatus::Cancelled,
+            RuleEnd::Failed(CANCELLED.to_owned()),
+        ),
+        Some(other) => (ServerBuildStatus::Failed, RuleEnd::Failed(other.to_owned())),
+        None => (
+            ServerBuildStatus::Failed,
+            RuleEnd::Failed("deploy did not finish".to_owned()),
+        ),
+    }
+}
+
 #[cfg(test)]
 mod unit_tests {
     use super::ref_matches;
+
+    /// D-064 #7: a rule deploy a cancel ended is CANCELLED, not FAILED.
+    #[test]
+    fn a_cancelled_rule_deploy_ends_its_builds_cancelled() {
+        use super::{deploy_end, RuleEnd, ServerBuildStatus};
+        assert_eq!(
+            deploy_end(Some("cancelled")),
+            (
+                ServerBuildStatus::Cancelled,
+                RuleEnd::Failed("cancelled".to_owned())
+            )
+        );
+        assert_eq!(
+            deploy_end(Some("succeeded")),
+            (ServerBuildStatus::Succeeded, RuleEnd::Deployed)
+        );
+        assert_eq!(deploy_end(None).0, ServerBuildStatus::Failed);
+    }
 
     #[test]
     fn a_long_build_stays_fresh_when_it_started_in_time() {

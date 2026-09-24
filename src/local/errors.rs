@@ -52,6 +52,10 @@ pub fn reason_for(code: PlanCode) -> ErrorReason {
         P::PlanNotAdmitted => R::PlanNotAdmitted,
         P::RollbackTargetUnknown => R::RollbackTargetUnknown,
         P::NotSupportedYet => R::NotSupportedYet,
+        // v2.1.5 / v2.1.6 (D-063 #11, D-064 #7): everywhere, never a failure.
+        P::Cancelled => R::Cancelled,
+        // v2.1.7 (D-065 #9): the runner's shell slots are all taken.
+        P::ShellLimit => R::LimitExceeded,
         // A runner code the section 5 table does not list is INTERNAL; the
         // exact code travels in `error_code`.
         P::PlanRequired | P::PlanAction | P::PlanArgs => R::Internal,
@@ -256,6 +260,18 @@ mod tests {
                 PlanCode::NotSupportedYet,
                 ErrorReason::NotSupportedYet,
                 Code::Unimplemented,
+            ),
+            // v2.1.5/v2.1.6 (D-063 #11, D-064 #7): E_CANCELLED is CANCELLED
+            // everywhere; v2.1.7 (D-065 #9): E_SHELL_LIMIT is LIMIT_EXCEEDED.
+            (
+                PlanCode::Cancelled,
+                ErrorReason::Cancelled,
+                Code::FailedPrecondition,
+            ),
+            (
+                PlanCode::ShellLimit,
+                ErrorReason::LimitExceeded,
+                Code::ResourceExhausted,
             ),
             // A runner code the section 5 table does not list is INTERNAL
             // (the exact code travels in error_code).
