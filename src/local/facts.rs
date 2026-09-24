@@ -25,7 +25,13 @@ use crate::{
 };
 
 const DWAAR_ADMIN_SOCKET: &str = "/run/dwaar/admin.sock";
-const DWAAR_BINARIES: [&str; 2] = ["/usr/local/bin/dwaar", "/usr/bin/dwaar"];
+/// The bundle's Dwaar first (agent-protocol.md 8 `/usr/lib/permanu/`), then
+/// the locations of a Dwaar installed by hand.
+const DWAAR_BINARIES: [&str; 3] = [
+    "/usr/lib/permanu/dwaar",
+    "/usr/local/bin/dwaar",
+    "/usr/bin/dwaar",
+];
 const DOCKER_BINARIES: [&str; 2] = ["/usr/bin/docker", "/usr/local/bin/docker"];
 const DOCKER_SOCKET: &str = "/var/run/docker.sock";
 const PROBE_TIMEOUT: Duration = Duration::from_secs(3);
@@ -605,6 +611,10 @@ mod tests {
     #[test]
     fn parses_version_output() {
         assert_eq!(parse_version_output("dwaar 0.4.2\nbuilt ...\n"), "0.4.2");
+        // The bundle installs Dwaar under /usr/lib/permanu (agent-protocol.md
+        // 8); the older locations are still probed after it.
+        assert_eq!(DWAAR_BINARIES[0], "/usr/lib/permanu/dwaar");
+        assert!(DWAAR_BINARIES.contains(&"/usr/local/bin/dwaar"));
         assert_eq!(parse_version_output(""), "");
     }
 }
