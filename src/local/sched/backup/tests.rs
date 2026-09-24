@@ -782,6 +782,8 @@ async fn a_cancelled_verification_keeps_its_runner_id_and_is_not_a_failure() {
     let ended = verifications(&f);
     assert_eq!(ended.len(), 1);
     assert_eq!(ended[0].runner_run_id, VERIFY_RUN);
+    // proto v2.1.8 (D-066 #4).
+    assert_eq!(ended[0].status, RestoreVerificationStatus::Cancelled as i32);
     assert_eq!(ended[0].error, "cancelled");
     assert!(ended[0].finished_at.is_some());
     let artifact: BackupArtifact = f
@@ -796,6 +798,56 @@ async fn a_cancelled_verification_keeps_its_runner_id_and_is_not_a_failure() {
         RestoreVerificationStatus::Passed as i32
     );
     assert!(f.sink.0.lock().unwrap().is_empty());
+}
+
+/// contracts v1.1.8 (D-066 #4): a plan-bound verification an
+/// `operation.cancel` stopped ends `CANCELLED` and leaves the artifact's
+/// `last_verification` as it was.
+#[tokio::test]
+async fn a_cancelled_manual_verification_is_cancelled_and_keeps_last_verification() {
+    for with_line in [true, false] {
+        let f = Fixture::new("backup-manual-verify-cancel", "2026-09-23T10:00:00Z");
+        f.record(1, &[policy(PG, "0 3 * * *", Value::Null)], "succeeded");
+        let s = scheduler(&f);
+        s.put_artifact(&BackupArtifact {
+            id: BACKUP_A.to_owned(),
+            policy_id: PG.to_owned(),
+            created_at: Some(pts(1)),
+            last_verification: RestoreVerificationStatus::Passed as i32,
+            ..Default::default()
+        });
+        let plan = f.record(
+            2,
+            &[json!({"kind": "backup.verify", "params": {"resource_id": PG, "backup_id": BACKUP_A}})],
+            "cancelled",
+        );
+        if with_line {
+            let mut line = verify_line(&plan, Value::Null, Value::Null);
+            line["outcome"] = json!("cancelled");
+            f.append_consumed(&line);
+        }
+        tick_at(&f, &s, "2026-09-23T10:01:00Z").await;
+        let ended = verifications(&f);
+        assert_eq!(ended.len(), 1, "with_line {with_line}");
+        assert_eq!(
+            ended[0].status,
+            RestoreVerificationStatus::Cancelled as i32,
+            "with_line {with_line}"
+        );
+        assert_eq!(ended[0].error, "cancelled");
+        let artifact: BackupArtifact = f
+            .deps
+            .ops
+            .get(RecordKind::Artifact, BACKUP_A)
+            .unwrap()
+            .decode()
+            .unwrap();
+        assert_eq!(
+            artifact.last_verification,
+            RestoreVerificationStatus::Passed as i32,
+            "with_line {with_line}"
+        );
+    }
 }
 
 /// contracts v1.1.6 (D-064 #8): a plan-bound verification takes the

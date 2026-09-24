@@ -1254,6 +1254,8 @@ impl BackupScheduler {
                 verification.status = match action.outcome.as_str() {
                     "" => RestoreVerificationStatus::Running,
                     "succeeded" => RestoreVerificationStatus::Passed,
+                    // proto v2.1.8 (D-066 #4).
+                    "cancelled" => RestoreVerificationStatus::Cancelled,
                     _ => RestoreVerificationStatus::Failed,
                 } as i32;
                 if action.outcome == "cancelled" {
@@ -1307,6 +1309,10 @@ impl BackupScheduler {
             answer["outcome"] = Value::from("failed");
         }
         apply_verify_result(verification, &Ok(answer));
+        if verification.status == RestoreVerificationStatus::Cancelled as i32 {
+            // D-064 #8 / D-066 #4: `last_verification` keeps its value.
+            return;
+        }
         if let Some(mut artifact) = self
             .deps
             .ops
@@ -1492,9 +1498,9 @@ fn apply_verify_result(
     result: &Result<Value, RunnerFailure>,
 ) {
     if verify_cancelled(result) {
-        // D-064 #8: RestoreVerificationStatus has no CANCELLED; FAILED
-        // with the error `cancelled`, never reported as a failure.
-        verification.status = RestoreVerificationStatus::Failed as i32;
+        // D-064 #8, proto v2.1.8 (D-066 #4): CANCELLED with the error
+        // `cancelled`, never reported as a failure.
+        verification.status = RestoreVerificationStatus::Cancelled as i32;
         verification.error = "cancelled".to_owned();
         return;
     }
