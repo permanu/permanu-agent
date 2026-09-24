@@ -233,4 +233,11 @@ enum ErrorReason {
   // none earlier in the same plan). Nothing was admitted. Engine API -32001
   // conflict, reason channel_missing.
   ERROR_REASON_CHANNEL_MISSING = 46;
+  // v2.1.8 (contracts v1.1.8, D-066, agent-protocol.md 3 and 5.1).
+  // INVALID_ARGUMENT from DatabaseService: the request names an unknown or
+  // refused schema (pg_catalog, information_schema, pg_toast, any pg_*),
+  // table (not a table or partitioned table) or column, or has a bad operator
+  // or value (DbFilter.number_value included); the message names the field.
+  // Engine API -32008 validation, reason validation.
+  ERROR_REASON_VALIDATION = 47;
 }
