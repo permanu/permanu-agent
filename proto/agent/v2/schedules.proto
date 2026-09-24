@@ -30,7 +30,9 @@ service ScheduleService {
   // RunCronJobNowRequest.cron_id exactly; otherwise FAILED_PRECONDITION /
   // EXEC_PRECONDITION (E_EXEC_PRECONDITION) and nothing runs.
   // Standing rules never authorize it (v1 rules allow deploy only).
-  // Overlap policy still applies.
+  // Overlap policy still applies. v2.1.5 (contracts v1.1.5, D-063): a manual
+  // run is a single attempt (attempt 1); the job's retries apply to
+  // scheduled runs only (agent-protocol.md 10.1).
   rpc RunCronJobNow(RunCronJobNowRequest) returns (RunCronJobNowResponse);
   // StreamCronRunLogs streams the output of one run (follow while running).
   rpc StreamCronRunLogs(StreamCronRunLogsRequest) returns (stream LogQueryResponse);
@@ -128,6 +130,11 @@ message CronRun {
   // v2.1.0. plan.id of the cron.create/update (or cron.run) admission this
   // attempt ran under.
   string plan_id = 16;
+  // v2.1.5 (contracts v1.1.5, D-063). The runner's run_id of this attempt
+  // (its first progress line and run / run_result lines, signed-plan.md
+  // 14.8); "" until the runner started it. An operation.cancel with this
+  // run_id stops only this attempt (Engine API cron.runs.cancel).
+  string runner_run_id = 17;
 }
 
 message ListCronJobsRequest {
