@@ -1158,6 +1158,25 @@ impl BackupScheduler {
                     self.record_manual_artifact(&action, &mut run, now);
                 }
                 self.record_run(&run, &slot);
+                // Section 10.3: `backup_failed` is any failed backup run; a
+                // run an admitted operation.cancel stopped is not a failure.
+                // Reported once: a finished run is skipped above.
+                let policy = self.state().defs.policies.get(&resource).cloned();
+                match (policy, action.outcome.as_str()) {
+                    (Some(policy), "succeeded") => self.report(
+                        &policy,
+                        event_condition::Kind::BackupFailed,
+                        false,
+                        "succeeded",
+                    ),
+                    (Some(policy), "failed") => self.report(
+                        &policy,
+                        event_condition::Kind::BackupFailed,
+                        true,
+                        "manual backup failed",
+                    ),
+                    _ => {}
+                }
             } else {
                 let existing = self.manual_row(RecordKind::Verification, &resource, &slot);
                 let mut verification =
