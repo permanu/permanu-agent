@@ -9,6 +9,8 @@
 //! (at least every second, 9.1); a maintenance task enforces retention every
 //! 60 s and checks the disk guard every 5 s.
 
+pub mod analytics;
+pub mod dwaar_metrics;
 pub mod ingest;
 pub mod journal;
 pub mod metrics;

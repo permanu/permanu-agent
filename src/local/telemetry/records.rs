@@ -19,6 +19,26 @@ pub const TAG_TRACE_SUMMARY: u8 = 2;
 /// `metrics`: a [`MetricSample`].
 pub const TAG_METRIC: u8 = 1;
 
+/// One stored 60 s Dwaar rollup (`analytics`, tag 1): the fields of
+/// `AnalyticsRow` (so an `AnalyticsRow` decoder still reads it) plus the
+/// ids of the service whose route host it counts (D-060, D-063 #9; empty
+/// for a host no service owns).
+#[derive(Clone, PartialEq, prost::Message)]
+pub struct StoredAnalyticsRow {
+    #[prost(message, optional, tag = "1")]
+    pub bucket_start: Option<prost_types::Timestamp>,
+    #[prost(message, repeated, tag = "2")]
+    pub dimensions: Vec<crate::proto::agent::v2::AnalyticsDimensionValue>,
+    #[prost(message, repeated, tag = "3")]
+    pub values: Vec<crate::proto::agent::v2::AnalyticsMeasureValue>,
+    #[prost(string, tag = "16")]
+    pub service_id: String,
+    #[prost(string, tag = "17")]
+    pub project_id: String,
+    #[prost(string, tag = "18")]
+    pub environment_id: String,
+}
+
 /// 9.4: lines longer than 16 KiB are split.
 pub const MAX_LINE_BYTES: usize = 16 * 1024;
 /// 9.4: JSON lines keep ≤ 32 top-level scalar fields, values ≤ 1 KiB.

@@ -870,16 +870,18 @@ impl TelemetryService for TelemetrySvc {
             .map(Response::new)
     }
 
-    /// The `dwaar.service` journal now feeds the `http` store and 60 s
-    /// rollups in the `analytics` store (contracts v1.1.2), but the rollups
-    /// are keyed by route host only: attributing them to a service needs a
-    /// route-host → service map no runner op returns yet, so the RPC stays
-    /// `CAPABILITY_MISSING` rather than answering rows it cannot scope.
+    /// The 60 s Dwaar rollups, each under the service of its route host
+    /// (`routes_map`, D-063 #9; capability `analytics.v1`).
     async fn query_analytics(
         &self,
-        _request: Request<AnalyticsQuery>,
+        request: Request<AnalyticsQuery>,
     ) -> Result<Response<Self::QueryAnalyticsStream>, Status> {
-        Err(capability_missing())
+        log_peer(&request, "QueryAnalytics");
+        let store = self.store.as_ref().ok_or_else(capability_missing)?;
+        store
+            .query_analytics(request.into_inner())
+            .await
+            .map(Response::new)
     }
 
     async fn get_telemetry_usage(

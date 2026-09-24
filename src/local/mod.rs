@@ -77,6 +77,9 @@ pub const PROTOCOL_VERSION_2_0: &str = "2.0";
 /// ingestion, the OTLP receiver and every `TelemetryService` RPC from the
 /// store.
 pub const CAPABILITY_TELEMETRY: &str = "telemetry.v1";
+/// v2.1.2 (contracts v1.1.2, D-060): `QueryAnalytics` from the store with
+/// `service_ids` (the rollups carry the service of their route host).
+pub const CAPABILITY_ANALYTICS: &str = "analytics.v1";
 /// agent-protocol.md section 2 (v2.0.2, D-033): the agent admits signed-plan
 /// v1 and drives execution; it serves the section 6.4 store with the v1.0.2
 /// columns; and, with a recipient, the runner decrypts sealed secrets.
@@ -379,6 +382,7 @@ fn capabilities(
     }
     if telemetry {
         ids.push(CAPABILITY_TELEMETRY.to_string());
+        ids.push(CAPABILITY_ANALYTICS.to_string());
     }
     if schedulers {
         ids.extend(sched::Schedulers::capabilities().map(str::to_owned));
@@ -985,8 +989,16 @@ fn start_telemetry(
     let routes = Arc::new(telemetry::routes::RoutesMap::default());
     tasks.push(routes.spawn(runner.clone()));
     tasks.push(spawn_routes_nudge(routes.clone(), core.events.clone()));
-    let mut ingest =
-        telemetry::ingest::LogIngest::new(store.clone(), runner.clone(), host).with_routes(routes);
+    // QA_M2 X1: `dwaar.*` series carry this server's id (read from the
+    // trust store; `server.add` may write it after the agent started).
+    let trust = core.trust.clone();
+    let server_id: telemetry::ingest::ServerIdFn = Arc::new(move || match trust.load() {
+        crate::signed_plan::trust::TrustState::Valid(store) => store.server_id,
+        _ => String::new(),
+    });
+    let mut ingest = telemetry::ingest::LogIngest::new(store.clone(), runner.clone(), host)
+        .with_routes(routes)
+        .with_server_id(server_id);
     if let Some(cron_runs) = cron_runs {
         ingest = ingest.with_cron_runs(cron_runs);
     }
@@ -1219,7 +1231,8 @@ mod tests {
                 "deployment_ids.v1",
                 "logs.containers.v1",
                 "service_kind.v1",
-                "telemetry.v1"
+                "telemetry.v1",
+                "analytics.v1"
             ]
         );
         let with_schedulers = capabilities("", false, true, false, false);
