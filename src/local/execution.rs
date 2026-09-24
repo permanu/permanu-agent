@@ -871,13 +871,10 @@ impl ChangeCore {
         action: &ActionRecord,
         outcome: &str,
     ) {
-        if outcome == "succeeded"
-            && matches!(action.kind.as_str(), "agent.update" | "component.update")
-        {
-            let params = &plan["actions"][action.action_index as usize]["params"];
+        if outcome == "succeeded" {
             if let (Some(staging), Some(digest)) = (
                 self.staging.get(),
-                params["bundle_manifest_digest_hex"].as_str(),
+                consumed_set(plan, action.action_index as usize),
             ) {
                 staging.consumed(digest);
             }
@@ -1999,10 +1996,51 @@ fn unix_timestamp(seconds: i64) -> prost_types::Timestamp {
     prost_types::Timestamp { seconds, nanos: 0 }
 }
 
+/// The staged set (`bundle_manifest_digest_hex`) that action `index` of
+/// `plan` installed from, when no later update action of the plan installs
+/// from it too: a succeeded action then consumes it.
+fn consumed_set(plan: &Value, index: usize) -> Option<&str> {
+    let actions = plan["actions"].as_array()?;
+    let is_update = |action: &Value| {
+        matches!(
+            action["kind"].as_str(),
+            Some("agent.update" | "component.update")
+        )
+    };
+    let action = actions.get(index).filter(|action| is_update(action))?;
+    let digest = action["params"]["bundle_manifest_digest_hex"].as_str()?;
+    let needed_later = actions[index + 1..].iter().any(|later| {
+        is_update(later) && later["params"]["bundle_manifest_digest_hex"].as_str() == Some(digest)
+    });
+    (!needed_later).then_some(digest)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use serde_json::json;
+
+    /// QA M2 run 2: one `servers.update_components` plan holds a
+    /// `component.update` and an `agent.update` of the same staged set; the
+    /// set is consumed only after the last action that installs from it
+    /// (else the agent's stage_artifact_verify found nothing and failed).
+    #[test]
+    fn a_staged_set_is_consumed_after_its_last_update_action() {
+        let set = "ab".repeat(32);
+        let other = "cd".repeat(32);
+        let update = |kind: &str, digest: &str| json!({"kind": kind, "params": {"bundle_manifest_digest_hex": digest}});
+        let plan = json!({"actions": [
+            update("component.update", &set),
+            update("agent.update", &set),
+            update("component.update", &other),
+            {"kind": "restart", "params": {}},
+        ]});
+        assert_eq!(consumed_set(&plan, 0), None);
+        assert_eq!(consumed_set(&plan, 1), Some(set.as_str()));
+        assert_eq!(consumed_set(&plan, 2), Some(other.as_str()));
+        assert_eq!(consumed_set(&plan, 3), None);
+        assert_eq!(consumed_set(&plan, 9), None);
+    }
 
     #[test]
     fn every_kind_has_its_contract_op_sequence() {
