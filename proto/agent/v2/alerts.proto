@@ -147,6 +147,11 @@ enum AlertState {
   ALERT_STATE_MUTED = 6;
 }
 
+// v2.1.7 (contracts v1.1.7, D-065): channels are sealed per server; each
+// server's alert.channel.create/update is its own plan with a ciphertext
+// sealed to that server's recipient. An admitted alert.channel.update of a
+// channel this server does not hold creates it. A rule sync naming a channel
+// the server does not hold is refused with CHANNEL_MISSING.
 message NotificationChannel {
   string id = 1;
   string name = 2;
