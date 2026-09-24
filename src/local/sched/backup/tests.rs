@@ -532,6 +532,51 @@ async fn manual_backups_are_recorded_from_their_admission() {
     );
 }
 
+/// agent-protocol.md 10.3 (contracts v1.1.5, D-063): `backup_failed` is "a
+/// failed or MISSED backup run", manual runs included: a failed manual run
+/// reports it once, and the next succeeded manual run resolves it (QA M2
+/// run 2: a manual backup to an unwritable destination notified nothing).
+#[tokio::test]
+async fn a_failed_manual_backup_reports_backup_failed_once() {
+    let f = Fixture::new("backup-manual-failed", "2026-09-23T10:00:00Z");
+    f.record(1, &[policy(PG, "0 3 * * *", Value::Null)], "succeeded");
+    let s = scheduler(&f);
+    let failed = f.record(
+        2,
+        &[json!({"kind": "backup.run", "params": {"resource_id": PG}})],
+        "",
+    );
+    tick_at(&f, &s, "2026-09-23T10:00:05Z").await;
+    f.finish(&failed, "failed");
+    tick_at(&f, &s, "2026-09-23T10:00:25Z").await;
+    tick_at(&f, &s, "2026-09-23T10:00:45Z").await;
+    let occurred = |f: &Fixture, occurred: bool| {
+        f.sink
+            .0
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|e| e.kind == Cond::BackupFailed && e.occurred == occurred)
+            .cloned()
+            .collect::<Vec<_>>()
+    };
+    let reported = occurred(&f, true);
+    assert_eq!(reported.len(), 1, "{reported:?}");
+    assert_eq!(reported[0].subject_id, PG);
+    assert_eq!(reported[0].source, "backup");
+    assert_eq!(backup_runs(&f)[0].status, BackupRunStatus::Failed as i32);
+    let succeeded = f.record(
+        3,
+        &[json!({"kind": "backup.run", "params": {"resource_id": PG}})],
+        "",
+    );
+    tick_at(&f, &s, "2026-09-23T10:01:05Z").await;
+    f.finish(&succeeded, "succeeded");
+    tick_at(&f, &s, "2026-09-23T10:01:25Z").await;
+    assert_eq!(occurred(&f, false).len(), 1);
+    assert_eq!(occurred(&f, true).len(), 1);
+}
+
 #[test]
 fn locations_follow_the_section_3_8_layout() {
     let dest = DestinationDef {
