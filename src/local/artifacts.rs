@@ -89,7 +89,7 @@ pub struct ReleaseMode {
 impl ReleaseMode {
     pub fn production() -> Self {
         Self {
-            trust_test_keys: cfg!(feature = "dev-paths"),
+            trust_test_keys: cfg!(any(feature = "dev-paths", feature = "test-release-keys")),
         }
     }
 }

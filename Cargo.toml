@@ -7,6 +7,9 @@ edition = "2021"
 # Development only, never in release builds: PERMANU_AGENT_DEV_ROOT moves every
 # local-mode path under an unprivileged dir for the engine smoke test.
 dev-paths = []
+# QA bundles only, never in release builds: trust the public TEST release keys
+# (D-051), like the runner's feature of the same name.
+test-release-keys = []
 
 [dependencies]
 anyhow = "1"
