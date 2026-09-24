@@ -137,6 +137,22 @@ impl AdmissionStore {
         Ok(())
     }
 
+    /// Moves a `pending` delivery to `status` atomically; false when another
+    /// path already moved it (or it does not exist). The single gate every
+    /// processing path passes, so a delivery is never processed twice.
+    pub fn claim_delivery(&self, delivery_id: &str, status: &str) -> Result<bool, StoreError> {
+        let claimed = self
+            .lock()
+            .query_row(
+                "UPDATE deliveries SET status = ?2 WHERE delivery_id = ?1 AND status = 'pending' \
+                 RETURNING delivery_id",
+                params![delivery_id, status],
+                |r| r.get::<_, String>(0),
+            )
+            .optional()?;
+        Ok(claimed.is_some())
+    }
+
     /// Records an unauthenticated delivery: never the body (section 6.4).
     /// At most [`MAX_REJECTED_ROWS`] rows are kept; beyond that only the
     /// caller's counter grows (a flood cannot fill the disk).
@@ -182,19 +198,17 @@ impl AdmissionStore {
     pub fn expire_deliveries(&self, now: i64) -> Result<Vec<String>, StoreError> {
         let conn = self.lock();
         let at = format_timestamp(now);
+        // One statement: a delivery claimed meanwhile is never expired.
         let expired = {
             let mut statement = conn.prepare(
-                "SELECT delivery_id FROM deliveries WHERE status = 'pending' AND expires_at <= ?1",
+                "UPDATE deliveries SET status = 'expired' WHERE status = 'pending' \
+                 AND expires_at <= ?1 RETURNING delivery_id",
             )?;
             let ids = statement
                 .query_map(params![at], |r| r.get::<_, String>(0))?
                 .collect::<Result<Vec<_>, _>>()?;
             ids
         };
-        conn.execute(
-            "UPDATE deliveries SET status = 'expired' WHERE status = 'pending' AND expires_at <= ?1",
-            params![at],
-        )?;
         conn.execute(
             "DELETE FROM rejected_deliveries WHERE received_at <= ?1",
             params![format_timestamp(now - REJECTED_RETENTION_SECONDS)],
@@ -416,6 +430,31 @@ mod tests {
             store.delivery_row("d-1").unwrap().unwrap().status,
             "building"
         );
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    /// Only one caller can move a delivery out of `pending`.
+    #[test]
+    fn a_pending_delivery_is_claimed_once() {
+        let (dir, store) = open("hooks-claim");
+        store
+            .insert_delivery(&delivery("d-1", &"a".repeat(64), "pending"))
+            .unwrap();
+        store
+            .insert_delivery(&delivery("d-2", &"b".repeat(64), "deployed"))
+            .unwrap();
+        assert!(store.claim_delivery("d-1", "building").unwrap());
+        assert!(!store.claim_delivery("d-1", "building").unwrap());
+        assert!(!store.claim_delivery("d-1", "stale").unwrap());
+        assert!(!store.claim_delivery("d-2", "building").unwrap());
+        assert!(!store.claim_delivery("d-3", "building").unwrap());
+        assert_eq!(
+            store.delivery_row("d-1").unwrap().unwrap().status,
+            "building"
+        );
+        // A claimed delivery never expires under it.
+        let after = timestamp("2026-09-30T10:00:00Z").unwrap();
+        assert!(store.expire_deliveries(after).unwrap().is_empty());
         std::fs::remove_dir_all(dir).unwrap();
     }
 

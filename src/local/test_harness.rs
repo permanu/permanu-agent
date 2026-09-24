@@ -171,6 +171,9 @@ pub struct FakeRunner {
     pub webhook_secrets: Mutex<HashMap<String, EnvironmentSecrets>>,
     /// The next `build_image` answers, in order (success when empty).
     pub build_answers: Mutex<Vec<Value>>,
+    /// Runs inside every `build_image` (a test's side effect mid-build).
+    #[allow(clippy::type_complexity)]
+    pub on_build: Mutex<Option<Box<dyn Fn() + Send>>>,
     /// The image digest a successful `build_image` reports.
     pub build_image_digest: Mutex<String>,
     /// Actions a `cancel_execution` closed (v1.0.6, D-048).
@@ -580,6 +583,9 @@ impl FakeRunner {
         {
             return refuse("E_PARSE", "build_image payload");
         }
+        if let Some(hook) = self.on_build.lock().unwrap().as_ref() {
+            hook();
+        }
         let queued = {
             let mut answers = self.build_answers.lock().unwrap();
             (!answers.is_empty()).then(|| answers.remove(0))
@@ -960,6 +966,7 @@ impl Harness {
             drop_cancel_result: AtomicBool::new(false),
             webhook_secrets: Mutex::new(HashMap::new()),
             build_answers: Mutex::new(Vec::new()),
+            on_build: Mutex::new(None),
             build_image_digest: Mutex::new("e".repeat(64)),
             closed: Mutex::new(HashSet::new()),
             consumed: Mutex::new(HashSet::new()),
