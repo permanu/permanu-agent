@@ -72,6 +72,9 @@ pub enum PlanCode {
     Cancelled,
     /// Runner (section 14.8, v1.0.15 D-065 #9): four shells are open.
     ShellLimit,
+    /// Not a signed-plan code (v1.0.15, D-065 #4): an alert rule names a
+    /// channel this server does not hold (agent-protocol.md 10.3).
+    ChannelMissing,
 }
 
 impl PlanCode {
@@ -118,6 +121,7 @@ impl PlanCode {
             Self::NotSupportedYet => "E_NOT_SUPPORTED_YET",
             Self::Cancelled => "E_CANCELLED",
             Self::ShellLimit => "E_SHELL_LIMIT",
+            Self::ChannelMissing => "CHANNEL_MISSING",
         }
     }
 
@@ -169,6 +173,7 @@ const ALL_CODES: &[PlanCode] = &[
     PlanCode::NotSupportedYet,
     PlanCode::Cancelled,
     PlanCode::ShellLimit,
+    PlanCode::ChannelMissing,
 ];
 
 #[cfg(test)]

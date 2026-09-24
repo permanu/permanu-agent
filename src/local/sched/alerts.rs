@@ -696,7 +696,15 @@ impl AlertEvaluator {
             channel_ids
                 .iter()
                 .filter(|id| seen.insert((*id).clone()))
-                .filter_map(|id| state.channels.get(id).cloned())
+                .filter_map(|id| {
+                    let channel = state.channels.get(id).cloned();
+                    if channel.is_none() {
+                        // QA_M2 G1: never drop a notification silently.
+                        warn!(channel_id = %id, event_id = %event.id,
+                            "alert notification not sent: this server does not hold the channel");
+                    }
+                    channel
+                })
                 .collect()
         };
         for channel in channels {

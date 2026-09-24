@@ -437,6 +437,7 @@ fn execution_preconditions(
     }
 
     check_input_composition(ctx, verified)?;
+    check_channels_held(ctx, actions)?;
     // agent-protocol.md 10.1, 10.2: the named job, service or destination.
     definitions::definition_preconditions(ctx.tx, &verified.plan)?;
 
@@ -516,6 +517,61 @@ fn execution_preconditions(
         }
     }
     Ok(supplied)
+}
+
+/// v1.0.15 (D-065 #4, agent-protocol.md 10.3): every channel an
+/// `alert.rule.create`/`update` spec names is held by this server (an
+/// admitted `alert.channel.create`/`update` with no later
+/// `alert.channel.delete`) or created or updated earlier in the same plan.
+fn check_channels_held(ctx: &TxContext<'_>, actions: &[Value]) -> Result<(), PlanCode> {
+    const CHANNEL_KINDS: &[&str] = &[
+        "alert.channel.create",
+        "alert.channel.update",
+        "alert.channel.delete",
+    ];
+    let rule_kind =
+        |a: &Value| a["kind"] == "alert.rule.create" || a["kind"] == "alert.rule.update";
+    if !actions.iter().any(rule_kind) {
+        return Ok(());
+    }
+    let mut held = BTreeSet::new();
+    let apply = |held: &mut BTreeSet<String>, kind: &str, channel: &str| {
+        if kind == "alert.channel.delete" {
+            held.remove(channel);
+        } else {
+            held.insert(channel.to_owned());
+        }
+    };
+    let admitted = definitions::admitted_actions(ctx.tx, CHANNEL_KINDS).map_err(internal)?;
+    for action in admitted.iter().rev().filter(|a| !a.void()) {
+        apply(
+            &mut held,
+            &action.kind,
+            action.params["channel_id"].as_str().unwrap_or_default(),
+        );
+    }
+    for action in actions {
+        let kind = action["kind"].as_str().unwrap_or_default();
+        let params = &action["params"];
+        if CHANNEL_KINDS.contains(&kind) {
+            apply(
+                &mut held,
+                kind,
+                params["channel_id"].as_str().unwrap_or_default(),
+            );
+        } else if rule_kind(action) {
+            let rule = crate::local::sched::alert_spec::parse(
+                params["alert_rule_id"].as_str().unwrap_or_default(),
+                params["name"].as_str().unwrap_or_default(),
+                params["spec"].as_str().unwrap_or_default(),
+            )
+            .map_err(|_| PlanCode::ExecPrecondition)?;
+            if rule.channel_ids.iter().any(|id| !held.contains(id)) {
+                return Err(PlanCode::ChannelMissing);
+            }
+        }
+    }
+    Ok(())
 }
 
 /// Input kinds never execute on their own on a server (section 3.2, D-028).
