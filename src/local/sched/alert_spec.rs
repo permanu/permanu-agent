@@ -285,6 +285,33 @@ pub fn parse(rule_id: &str, name: &str, spec: &str) -> Result<AlertRule, String>
     })
 }
 
+/// contracts v1.1.5 (D-063 #2, agent-protocol.md 10.3): the built-in event
+/// kinds this agent emits, so an event rule of one of them can fire.
+pub const EVALUATED_EVENTS: &[event_condition::Kind] = &[
+    event_condition::Kind::CronMissed,
+    event_condition::Kind::CronFailed,
+    event_condition::Kind::BackupFailed,
+    event_condition::Kind::DeployFailed,
+    event_condition::Kind::WebhookBuildFailed,
+    event_condition::Kind::RestoreVerificationFailed,
+    event_condition::Kind::TelemetryDropping,
+];
+
+/// False only for a valid event rule of a kind this agent does not
+/// evaluate (refused `EXEC_PRECONDITION`); any other spec passes here and is
+/// judged by [`parse`].
+pub fn event_kind_evaluated(spec: &str) -> bool {
+    match parse("rule", "rule", spec) {
+        Ok(AlertRule {
+            condition: Some(alert_rule::Condition::Event(condition)),
+            ..
+        }) => EVALUATED_EVENTS
+            .iter()
+            .any(|kind| *kind as i32 == condition.kind),
+        _ => true,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

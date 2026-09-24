@@ -270,6 +270,106 @@ async fn event_rules_fire_on_built_in_events_and_resolve_on_their_counterpart() 
     assert_eq!(state_of(&e), AlertState::Ok as i32);
 }
 
+/// contracts v1.1.5 (D-063 #2): a `deploy_failed` rule
+/// (`KIND_DEPLOY_FAILED`) fires on a deploy that ended `FAILED` or
+/// `ROLLED_BACK` in its scope and resolves when a deploy of the same
+/// service goes live; a cancelled deploy is not a failure.
+#[tokio::test]
+async fn deploy_failed_rules_follow_the_deploy_events() {
+    use crate::proto::agent::v2::{
+        deploy_status_event::Phase, event, DeployStatusEvent, EventKind,
+    };
+    let f = Fixture::new("alerts-deploy", "2026-09-23T10:00:00Z");
+    f.record(
+        1,
+        &[rule(
+            json!({"event": {"kind": "KIND_DEPLOY_FAILED", "scope": {"projectId": PROJECT}},
+                   "enabled": true}),
+        )],
+        "succeeded",
+    );
+    let e = evaluator(&f, Arc::new(FakeSource::default()));
+    let watch = e.spawn_deploy_watch();
+    let publish = |project: &str, phase: Phase| {
+        f.deps.events.publish(
+            EventKind::DeployStatus,
+            Scope {
+                project_id: project.to_owned(),
+                service_id: "svc".to_owned(),
+                ..Default::default()
+            },
+            event::Payload::Deploy(DeployStatusEvent {
+                deployment_id: "d".to_owned(),
+                project_id: project.to_owned(),
+                service_id: "svc".to_owned(),
+                phase: phase as i32,
+                message: "health check failed".to_owned(),
+                ..Default::default()
+            }),
+        );
+    };
+    let settled = |want: AlertState| {
+        let e = e.clone();
+        async move {
+            for _ in 0..200 {
+                e.settle().await;
+                if state_of(&e) == want as i32 {
+                    return true;
+                }
+                tokio::time::sleep(Duration::from_millis(5)).await;
+            }
+            false
+        }
+    };
+    publish("other-project", Phase::Failed);
+    publish(PROJECT, Phase::Cancelled);
+    publish(PROJECT, Phase::HealthChecking);
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    e.settle().await;
+    assert_eq!(state_of(&e), AlertState::Ok as i32);
+    publish(PROJECT, Phase::RolledBack);
+    assert!(settled(AlertState::Firing).await);
+    publish(PROJECT, Phase::Live);
+    assert!(settled(AlertState::Ok).await);
+    publish(PROJECT, Phase::Failed);
+    assert!(settled(AlertState::Firing).await);
+    watch.abort();
+}
+
+/// D-063 #2: the event kinds this agent evaluates; a rule of any other
+/// event kind is refused (`EXEC_PRECONDITION`).
+#[test]
+fn only_evaluated_event_kinds_are_accepted() {
+    use super::super::alert_spec::event_kind_evaluated;
+    for kind in [
+        "KIND_CRON_MISSED",
+        "KIND_CRON_FAILED",
+        "KIND_BACKUP_FAILED",
+        "KIND_DEPLOY_FAILED",
+        "KIND_WEBHOOK_BUILD_FAILED",
+        "KIND_RESTORE_VERIFICATION_FAILED",
+        "KIND_TELEMETRY_DROPPING",
+    ] {
+        let spec = json!({"event": {"kind": kind}}).to_string();
+        assert!(event_kind_evaluated(&spec), "{kind}");
+    }
+    for kind in [
+        json!("KIND_ROLLBACK"),
+        json!("KIND_CONTAINER_OOM"),
+        json!("KIND_CERT_EXPIRING"),
+        json!(11),
+    ] {
+        let spec = json!({"event": {"kind": kind}}).to_string();
+        assert!(!event_kind_evaluated(&spec), "{kind}");
+    }
+    // Metric and log rules, and specs that do not parse, are not event
+    // rules (the spec check refuses the latter on its own).
+    assert!(event_kind_evaluated(
+        &json!({"metric": {"metric": "host.cpu.percent"}}).to_string()
+    ));
+    assert!(event_kind_evaluated("{"));
+}
+
 #[tokio::test]
 async fn telemetry_dropping_is_built_in() {
     let f = Fixture::new("alerts-dropping", "2026-09-23T10:00:00Z");

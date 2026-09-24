@@ -5,7 +5,9 @@ use rusqlite::params;
 use serde_json::Value;
 
 use super::*;
-use crate::signed_plan::test_support::{plan_vector, temp_dir, test_trust, TestSigner, SERVER_A};
+use crate::signed_plan::test_support::{
+    plan_vector, temp_dir, test_trust, vector, TestSigner, SERVER_A,
+};
 use crate::signed_plan::text::timestamp;
 use crate::signed_plan::verify::Submitter;
 use crate::signed_plan::PlanCode;
@@ -1305,5 +1307,48 @@ fn build_started_is_read_from_the_consumed_log_after_a_restart() {
         store.build_window_of("svc", &"c".repeat(40)),
         (timestamp("2026-09-23T10:01:00Z"), Some(now()))
     );
+    fs::remove_dir_all(dir).unwrap();
+}
+
+/// contracts v1.1.5 (D-063 #2): an event rule of a kind this agent never
+/// evaluates is refused `EXEC_PRECONDITION` and writes nothing; one of the
+/// evaluated kinds (`deploy_failed`) is admitted.
+#[test]
+fn an_event_rule_of_an_unevaluated_kind_is_refused() {
+    let Some(owner) = TestSigner::load("owner") else {
+        eprintln!("skipped: docs keys.json not found");
+        return;
+    };
+    let dir = temp_dir("store-event-kind");
+    let (store, _) = AdmissionStore::open(&config(&dir), false, now()).unwrap();
+    let cases = vector("policy-cases");
+    let case = cases["cases"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|c| c["name"] == "ok_deployer_alert_rule_create")
+        .unwrap();
+    let base: Value = serde_json::from_str(case["input"].as_str().unwrap()).unwrap();
+    let plan_with = |tail: &str, kind: &str| {
+        let mut plan = base["plan"].clone();
+        plan["id"] = Value::String(format!("01a0cdb5-3500-7001-8000-{tail}"));
+        plan["nonce"] = Value::String(format!("{tail}AAAAAAAAAA"));
+        plan["actions"][0]["params"]["spec"] = Value::String(
+            serde_json::json!({"event": {"kind": kind}, "enabled": true}).to_string(),
+        );
+        owner.envelope(&plan)
+    };
+    let refused = plan_with("0000000000e1", "KIND_CONTAINER_OOM");
+    assert_eq!(
+        store
+            .admit(&test_trust(), &input(&refused, &[], now()))
+            .unwrap_err(),
+        PlanCode::ExecPrecondition
+    );
+    assert_eq!(store.count("admissions"), 0);
+    let admitted = plan_with("0000000000e2", "KIND_DEPLOY_FAILED");
+    store
+        .admit(&test_trust(), &input(&admitted, &[], now()))
+        .unwrap();
     fs::remove_dir_all(dir).unwrap();
 }

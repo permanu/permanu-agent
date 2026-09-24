@@ -474,6 +474,14 @@ fn execution_preconditions(
                 }
             }
             "operation.cancel" => check_cancel(ctx, params)?,
+            // contracts v1.1.5 (D-063 #2, agent-protocol.md 10.3): an event
+            // rule of a kind this agent never evaluates would never fire.
+            "alert.rule.create" | "alert.rule.update" => {
+                let spec = params["spec"].as_str().unwrap_or_default();
+                if !crate::local::sched::alert_spec::event_kind_evaluated(spec) {
+                    return Err(PlanCode::ExecPrecondition);
+                }
+            }
             // v1.0.3 (D-035): an id already admitted on this server names
             // another release; the agent never reuses one.
             "deploy" => {

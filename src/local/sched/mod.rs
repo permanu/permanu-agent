@@ -303,7 +303,12 @@ impl Schedulers {
 
     /// Starts the scheduler loops (aborted by the caller at shutdown).
     pub fn spawn(&self) -> Vec<tokio::task::JoinHandle<()>> {
-        vec![self.cron.spawn(), self.backups.spawn(), self.alerts.spawn()]
+        vec![
+            self.cron.spawn(),
+            self.backups.spawn(),
+            self.alerts.spawn(),
+            self.alerts.spawn_deploy_watch(),
+        ]
     }
 
     /// The capabilities these schedulers serve (agent-protocol.md 10).

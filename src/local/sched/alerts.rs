@@ -974,6 +974,50 @@ impl AlertEvaluator {
         }
     }
 
+    /// contracts v1.1.5 (D-063 #2): `KIND_DEPLOY_FAILED` from the deploy
+    /// events: a deploy that ended `FAILED` or `ROLLED_BACK` occurs, a deploy
+    /// of the service that went `LIVE` resolves it (`CANCELLED` is neither).
+    pub fn spawn_deploy_watch(self: &Arc<Self>) -> JoinHandle<()> {
+        let this = self.clone();
+        let mut live = self.deps.events.live();
+        tokio::spawn(async move {
+            loop {
+                match live.recv().await {
+                    Ok(event) => this.deploy_event(&event),
+                    Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {}
+                    Err(tokio::sync::broadcast::error::RecvError::Closed) => return,
+                }
+            }
+        })
+    }
+
+    fn deploy_event(&self, event: &crate::proto::agent::v2::Event) {
+        use crate::proto::agent::v2::deploy_status_event::Phase;
+        let Some(event::Payload::Deploy(deploy)) = &event.payload else {
+            return;
+        };
+        let occurred = match Phase::try_from(deploy.phase) {
+            Ok(Phase::Failed | Phase::RolledBack) => true,
+            Ok(Phase::Live) => false,
+            _ => return,
+        };
+        let scope = event.scope.clone().unwrap_or_default();
+        self.builtin(BuiltinEvent {
+            kind: event_condition::Kind::DeployFailed,
+            scope,
+            source: "deploy",
+            subject_id: deploy.service_id.clone(),
+            occurred,
+            standalone: false,
+            channel_ids: Vec::new(),
+            summary: if occurred {
+                format!("deploy failed: {}", deploy.message)
+            } else {
+                "deploy live".to_owned()
+            },
+        });
+    }
+
     /// Evaluates at :00 and :30 of every minute until aborted.
     pub fn spawn(self: &Arc<Self>) -> JoinHandle<()> {
         let this = self.clone();
