@@ -808,7 +808,19 @@ pub(crate) mod tests {
         })
     }
 
-    pub const T0: u64 = 1_790_000_000_000_000_000;
+    /// A recent time (one hour ago, fixed for the process). The store drops
+    /// records older than their retention (traces: 3 days), so a fixed date
+    /// makes these fixtures fail once it is that old.
+    pub fn t0() -> u64 {
+        static T0: std::sync::OnceLock<u64> = std::sync::OnceLock::new();
+        *T0.get_or_init(|| {
+            let now = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("clock after 1970")
+                .as_secs();
+            (now - 3_600) * 1_000_000_000
+        })
+    }
 
     pub fn otlp_span(trace: u8, id: u8, parent: u8, name: &str, error: bool) -> OtlpSpan {
         OtlpSpan {
@@ -817,8 +829,8 @@ pub(crate) mod tests {
             parent_span_id: if parent == 0 { vec![] } else { vec![parent; 8] },
             name: name.into(),
             kind: span::SpanKind::Server as i32,
-            start_time_unix_nano: T0 + u64::from(id) * 1_000,
-            end_time_unix_nano: T0 + 5_000_000,
+            start_time_unix_nano: t0() + u64::from(id) * 1_000,
+            end_time_unix_nano: t0() + 5_000_000,
             attributes: vec![
                 kv("http.request.header.authorization", "Bearer abc"),
                 kv("http.route", "/users"),
@@ -963,7 +975,7 @@ pub(crate) mod tests {
                 resource: resource("p1"),
                 scope_logs: vec![ScopeLogs {
                     log_records: vec![OtlpLog {
-                        time_unix_nano: T0,
+                        time_unix_nano: t0(),
                         severity_number: 17,
                         body: Some(AnyValue {
                             value: Some(any_value::Value::StringValue(
@@ -990,7 +1002,7 @@ pub(crate) mod tests {
                             unit: "1".into(),
                             data: Some(metric::Data::Gauge(Gauge {
                                 data_points: vec![NumberDataPoint {
-                                    time_unix_nano: T0,
+                                    time_unix_nano: t0(),
                                     value: Some(number_data_point::Value::AsInt(7)),
                                     attributes: vec![kv("queue", "mail")],
                                     ..Default::default()
@@ -1003,7 +1015,7 @@ pub(crate) mod tests {
                             unit: "ms".into(),
                             data: Some(metric::Data::Histogram(Histogram {
                                 data_points: vec![HistogramDataPoint {
-                                    time_unix_nano: T0,
+                                    time_unix_nano: t0(),
                                     bucket_counts: vec![1, 2, 3],
                                     explicit_bounds: vec![10.0, 100.0],
                                     sum: Some(500.0),

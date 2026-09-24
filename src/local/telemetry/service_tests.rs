@@ -325,7 +325,7 @@ async fn usage_traces_metrics_and_analytics() {
 
     let wide = TimeRange {
         start: Some(super::ingest::timestamp_of(
-            super::otlp::tests::T0 as i64 - NANOS,
+            super::otlp::tests::t0() as i64 - NANOS,
         )),
         end: None,
     };

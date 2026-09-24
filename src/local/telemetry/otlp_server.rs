@@ -1190,7 +1190,7 @@ impl Listeners {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::local::telemetry::otlp::tests::{otlp_span, trace_request};
+    use crate::local::telemetry::otlp::tests::{otlp_span, t0, trace_request};
     use crate::local::telemetry::store::{Kind, ScanSpec};
     use crate::local::telemetry::test_support;
     use crate::signed_plan::test_support::temp_dir;
@@ -1715,7 +1715,8 @@ mod tests {
             {"key": "permanu.project_id", "value": {"stringValue": "p1"}}]},
             "scopeSpans": [{"spans": [{"traceId": "08080808080808080808080808080808",
               "spanId": "0101010101010101", "name": "json span", "kind": 2,
-              "startTimeUnixNano": "1790000000000000000", "endTimeUnixNano": "1790000000100000000"}]}]}]});
+              "startTimeUnixNano": t0().to_string(),
+              "endTimeUnixNano": (t0() + 100_000_000).to_string()}]}]}]});
         let (status, _) = http_post(
             &listen.http_listen,
             "/v1/traces",
