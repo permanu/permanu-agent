@@ -476,6 +476,50 @@ async fn a_manual_run_keeps_the_runners_exit_code_and_outcome() {
     assert_eq!(run.status, CronRunStatus::TimedOut as i32);
 }
 
+/// contracts v1.1.5 (D-063 #3, agent-protocol.md 10.1): a manual run is a
+/// single attempt, whatever the job's `retries`; its failure ends the chain
+/// (and reports `CRON_FAILED`) with no retry.
+#[tokio::test]
+async fn a_failed_manual_run_is_never_retried() {
+    let f = Fixture::new("cron-manual-once", "2026-09-23T10:00:00Z");
+    f.record(
+        1,
+        &[cron("cron.create", "0 0 1 1 *", "skip", 3)],
+        "succeeded",
+    );
+    let s = scheduler(&f);
+    tick_at(&f, &s, "2026-09-23T10:00:05Z").await;
+    let manual = f.record(2, &[id_only("cron.run")], "");
+    s.record_manual(CRON, &manual, "op-2");
+    f.append_consumed(&json!({"v": 1, "seq": 2, "at": "2026-09-23T10:00:07Z",
+        "event": "run_result", "plan_id": manual, "plan_digest_hex": format!("{:064x}", 2),
+        "action_index": 0, "op": "run_cron", "scheduled_for": null, "attempt": 1,
+        "run_id": "rr-2", "outcome": "failed", "exit_code": 1}));
+    f.finish(&manual, "failed");
+    for now in [
+        "2026-09-23T10:00:15Z",
+        "2026-09-23T10:00:40Z",
+        "2026-09-23T10:02:00Z",
+        "2026-09-23T10:15:00Z",
+    ] {
+        tick_at(&f, &s, now).await;
+    }
+    let all = runs(&f);
+    assert_eq!(all.len(), 1, "{all:?}");
+    assert_eq!(all[0].status, CronRunStatus::Failed as i32);
+    assert!(all[0].next_retry_at.is_none());
+    assert!(f.runner.ops("run_cron").is_empty());
+    // The chain ended: a new manual run is allowed at once.
+    assert!(s.manual_allowed(CRON).is_ok());
+    assert!(f
+        .sink
+        .0
+        .lock()
+        .unwrap()
+        .iter()
+        .any(|e| e.kind == EventKindCond::CronFailed && e.occurred));
+}
+
 #[test]
 fn backoff_doubles_from_ten_seconds_up_to_ten_minutes() {
     assert_eq!(
