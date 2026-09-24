@@ -119,7 +119,7 @@ fn expected(expect: &str) -> Result<&'static str, PlanCode> {
 fn every_policy_case_returns_the_contract_code() {
     let cases = vector("policy-cases");
     let cases = cases["cases"].as_array().expect("cases");
-    assert_eq!(cases.len(), 194);
+    assert_eq!(cases.len(), 215);
     let mut mismatches = Vec::new();
     for case in cases {
         let name = case["name"].as_str().unwrap();

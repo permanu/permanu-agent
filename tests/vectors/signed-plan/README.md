@@ -20,3 +20,8 @@ holds three **public TEST Ed25519 release keys** (seeds included) and a sample `
 production builds refuse their key ids `cl98Xxg2voSKlukyuAPKJg`, `RE1jopVSq8Moy0jDftg6Kg` and
 `MA975uwluIeABZVJLGWMaA` (signed-plan.md §3.9). The real release key is generated offline by the user and never
 appears here. `artifact-cases.json` tests the artifact trust verification order (reference `verify_artifact`).
+
+v1.0.15 (contracts v1.1.7, D-065): `default-route-cases.json` fixes the default route host of a service (reference
+`default_route_host`): the plain `<label>.<a-b-c-d>.sslip.io` and, when another service's route on the same server
+already has that host, the label with `-` and the first 6 hex of SHA-256 of the `service_id` (Engine API
+`engine-api.md` Default routes).

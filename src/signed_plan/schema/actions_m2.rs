@@ -107,6 +107,9 @@ pub(super) fn optional_params_for(kind: &str) -> &'static [(&'static str, Shape)
         // v1.0.13 (D-063 #5, #10): a default route; the one run a cancel stops.
         "domain.add" => &[("source", Shape::Enum(&["custom", "default"]))],
         "operation.cancel" => &[("run_id", UUID7)],
+        // v1.0.14 (D-064 #11): the pinned private CA of an S3-compatible
+        // endpoint (reference `_ca_pem`).
+        "backup.destination.set" => &[("ca_pem", Shape::Custom(ca_pem))],
         _ => &[],
     }
 }
@@ -231,10 +234,78 @@ pub(super) const SERVER_KINDS_M2: &[&str] = &[
     "webhook.host.set",
 ];
 
+/// Largest `backup.destination.set` `ca_pem` (v1.0.14, D-064 #11).
+const CA_PEM_MAX: usize = 16_384;
+
+/// `ca_pem`: 1–8 PEM `CERTIFICATE` blocks and nothing else (LF line ends,
+/// base64 lines of at most 64 characters, each block decoding to DER), at
+/// most 16384 bytes.
+fn ca_pem(value: &Value) -> bool {
+    const BEGIN: &str = "-----BEGIN CERTIFICATE-----\n";
+    const END: &str = "-----END CERTIFICATE-----\n";
+    let Some(mut rest) = value.as_str() else {
+        return false;
+    };
+    if rest.is_empty() || rest.len() > CA_PEM_MAX {
+        return false;
+    }
+    let mut blocks = 0;
+    while !rest.is_empty() {
+        let Some(body_and_more) = rest.strip_prefix(BEGIN) else {
+            return false;
+        };
+        let Some(end) = body_and_more.find(END) else {
+            return false;
+        };
+        if !pem_body(&body_and_more[..end]) {
+            return false;
+        }
+        rest = &body_and_more[end + END.len()..];
+        blocks += 1;
+    }
+    (1..=8).contains(&blocks)
+}
+
+/// A PEM block body: lines of 1–64 base64 characters ending in LF, only the
+/// last one padded, decoding to a DER SEQUENCE.
+fn pem_body(body: &str) -> bool {
+    let Some(lines) = body.strip_suffix('\n') else {
+        return false;
+    };
+    let lines: Vec<&str> = lines.split('\n').collect();
+    let last = lines.len() - 1;
+    let shaped = lines.iter().enumerate().all(|(index, line)| {
+        let data = if index == last {
+            line.trim_end_matches('=')
+        } else {
+            line
+        };
+        (1..=64).contains(&line.len())
+            && line.len() - data.len() <= 2
+            && data
+                .bytes()
+                .all(|byte| byte.is_ascii_alphanumeric() || byte == b'+' || byte == b'/')
+    });
+    shaped
+        && STANDARD
+            .decode(lines.concat())
+            .is_ok_and(|der| der.first() == Some(&0x30))
+}
+
 /// `backup.destination.set` (D-049): which optional fields each
 /// destination kind carries.
 fn destination_shape(params: &Value) -> bool {
     let endpoint = params["endpoint"].as_str();
+    // v1.0.14 (D-064 #11): `ca_pem` only for an S3-API destination with its
+    // own `https://` endpoint.
+    if params.get("ca_pem").is_some()
+        && (!matches!(
+            params["destination_kind"].as_str(),
+            Some("r2" | "s3" | "b2")
+        ) || endpoint.is_none())
+    {
+        return false;
+    }
     let credential = !params["credential_ciphertext_digest_hex"].is_null();
     let bucket = !params["bucket"].is_null();
     let region = !params["region"].is_null();
