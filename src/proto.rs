@@ -10,6 +10,8 @@ pub mod agent {
         #![allow(dead_code)]
         // Generated from the proto comments, which are prose, not markdown.
         #![allow(clippy::doc_lazy_continuation, clippy::doc_overindented_list_items)]
+        // prost names oneof variants after their fields (DbCell.value: *_value).
+        #![allow(clippy::enum_variant_names)]
         tonic::include_proto!("permanu.agent.v2");
     }
 }

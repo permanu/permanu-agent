@@ -65,7 +65,7 @@ pub struct AnalyticsPlan {
 
 /// Checks a query; `now_sec` ends a range without an end.
 pub fn plan(query: &AnalyticsQuery, now_sec: i64) -> Result<AnalyticsPlan, Status> {
-    let range = query.range.clone().unwrap_or_default();
+    let range = query.range.unwrap_or_default();
     let to_sec = range.end.as_ref().map_or(now_sec, |t| t.seconds);
     let from_sec = range.start.as_ref().map_or(to_sec - 3_600, |t| t.seconds);
     if from_sec >= to_sec {

@@ -306,15 +306,15 @@ async fn the_fifth_concurrent_shell_is_refused_before_admission() {
     let mut again = None;
     for _ in 0..100 {
         match open(&h, open_frame(fifth.clone())).await {
-            Ok(mut session) => match session.rx.message().await {
-                Ok(Some(ShellServerFrame {
+            Ok(mut session) => {
+                if let Ok(Some(ShellServerFrame {
                     frame: Some(shell_server_frame::Frame::Opened(_)),
-                })) => {
+                })) = session.rx.message().await
+                {
                     again = Some(session);
                     break;
                 }
-                _ => {}
-            },
+            }
             Err(status) => assert_eq!(status.code(), Code::ResourceExhausted),
         }
         tokio::time::sleep(Duration::from_millis(20)).await;
