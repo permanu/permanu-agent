@@ -725,6 +725,13 @@ impl CronScheduler {
                 run.runner_run_id = chain.run.runner_run_id.clone();
             }
         }
+        // `cancel_running` stops the runner process that holds the run, so
+        // the call ends without a `result` line; the run's consumed-log
+        // `run_result` (signed-plan.md 14.3) is then its end.
+        let result = match result {
+            Err(failure) => self.scheduled_result(&run.runner_run_id).ok_or(failure),
+            answered => answered,
+        };
         let retryable = apply_result(&mut run, &result);
         run.finished_at = Some(pts(now));
         let still_defined = self.state().jobs.contains_key(&job.cron_id);
@@ -927,6 +934,19 @@ impl CronScheduler {
                     && line["plan_digest_hex"] == action.plan_digest_hex.as_str()
                     && line["action_index"].as_u64() == u64::try_from(action.action_index).ok()
             })
+    }
+
+    /// The runner's `run_result` line of the run `runner_run_id`, read with
+    /// the consumed-log trust checks (none while the id is unknown).
+    fn scheduled_result(&self, runner_run_id: &str) -> Option<Value> {
+        if runner_run_id.is_empty() {
+            return None;
+        }
+        let consumed = self.deps.consumed_log.as_ref()?;
+        crate::admissions::run_results(&consumed.path, consumed.owner_uid, "run_cron")
+            .into_iter()
+            .rev()
+            .find(|line| line["run_id"] == runner_run_id)
     }
 
     /// `RunCronJobNow` (section 10.1): the overlap policy applies to manual

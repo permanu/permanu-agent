@@ -52,6 +52,10 @@ impl Clock for TestClock {
     }
 }
 
+/// An answer that makes [`FakeRunner`] close the connection without a
+/// `result` line.
+pub const LOST: &str = "__lost__";
+
 /// Answers per op, in order; the last answer repeats. Records every
 /// request.
 #[derive(Default)]
@@ -126,6 +130,11 @@ impl Runner for FakeRunner {
         } else {
             queue.front().cloned().unwrap_or_else(|| json!({}))
         };
+        if result == json!(LOST) {
+            // The runner process ended before its `result` line (it was
+            // stopped by `cancel_running`, section 14.3).
+            return Err(RunnerFailure::transport("runner closed without a result"));
+        }
         if result.get("ok").is_none() {
             result["ok"] = json!(true);
         }
