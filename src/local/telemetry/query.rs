@@ -1380,6 +1380,8 @@ fn evaluate(
     // raw series -> step start -> window
     let mut raw: BTreeMap<Labels, BTreeMap<i64, Window>> = BTreeMap::new();
     let mut prev: BTreeMap<Labels, (i64, f64)> = BTreeMap::new();
+    // Raw series whose samples are deltas, not cumulative.
+    let mut delta: BTreeMap<Labels, bool> = BTreeMap::new();
     let mut kind = 0;
     let mut unit = String::new();
     let mut bounds: Vec<f64> = Vec::new();
@@ -1407,6 +1409,7 @@ fn evaluate(
             continue;
         }
         let bucket = from + (ts - from).div_euclid(plan.step) * plan.step;
+        delta.insert(sample.labels.clone(), !sample.cumulative);
         let w = raw
             .entry(sample.labels.clone())
             .or_default()
@@ -1416,6 +1419,15 @@ fn evaluate(
         if !sample.counts.is_empty() {
             w.hist.push((ts, sample.counts.clone()));
         }
+    }
+    if plan.aggregation == MetricAggregation::Rate {
+        previous_samples(
+            snapshot,
+            plan,
+            from.saturating_sub(lookback),
+            &raw,
+            &mut prev,
+        )?;
     }
     let histogram = kind == metric_descriptor::Kind::Histogram as i32;
     if matches!(
@@ -1440,16 +1452,22 @@ fn evaluate(
                 .collect()
         };
         let mut last = prev.get(&labels).copied();
+        let is_delta = delta.get(&labels).copied().unwrap_or(false);
         let mut last_hist: Option<Vec<u64>> = None;
         for (bucket, mut w) in windows {
             w.values.sort_by_key(|(ts, _)| *ts);
             let values: Vec<f64> = match plan.aggregation {
                 MetricAggregation::Rate => {
+                    // QA_M2 run 3 X1: the increase is taken from the series'
+                    // previous stored sample; a series' first sample and the
+                    // first after a reset count from zero (never dropped).
                     let mut increase = 0.0;
                     for &(ts, v) in &w.values {
-                        if let Some((_, pv)) = last {
-                            increase += if v >= pv { v - pv } else { v };
-                        }
+                        increase += match last {
+                            _ if is_delta => v,
+                            Some((_, pv)) if v >= pv => v - pv,
+                            _ => v,
+                        };
                         last = Some((ts, v));
                     }
                     vec![increase / (plan.step as f64 / NANOS as f64)]
@@ -1547,6 +1565,45 @@ fn evaluate(
         });
     }
     Ok((out, truncated))
+}
+
+/// Fills `prev` with the last stored sample before `before` of every raw
+/// series in `raw` that has none yet, scanning backwards (bounded by the
+/// metrics retention) and stopping once every such series has one. A series
+/// with no earlier sample is new: its first sample counts from zero.
+fn previous_samples(
+    snapshot: &Snapshot,
+    plan: &MetricPlan,
+    before: i64,
+    raw: &BTreeMap<Labels, BTreeMap<i64, Window>>,
+    prev: &mut BTreeMap<Labels, (i64, f64)>,
+) -> Result<(), Status> {
+    let mut missing: BTreeSet<&Labels> = raw.keys().filter(|l| !prev.contains_key(*l)).collect();
+    if missing.is_empty() || before == i64::MIN {
+        return Ok(());
+    }
+    let spec = ScanSpec {
+        direction: Direction::Backward,
+        to_ts: before - 1,
+        ..Default::default()
+    };
+    for record in snapshot.scan(spec) {
+        let record = record.map_err(|e| Status::internal(format!("telemetry read failed: {e}")))?;
+        if record.tag != TAG_METRIC {
+            continue;
+        }
+        let Ok(sample) = MetricSample::decode(record.payload.as_slice()) else {
+            continue;
+        };
+        if !plan.matches(&sample) || !missing.remove(&sample.labels) {
+            continue;
+        }
+        prev.insert(sample.labels, (record.ts_nanos, sample.value));
+        if missing.is_empty() {
+            break;
+        }
+    }
+    Ok(())
 }
 
 fn aggregate(aggregation: MetricAggregation, values: &[f64]) -> Option<f64> {
