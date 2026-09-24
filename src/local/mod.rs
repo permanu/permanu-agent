@@ -12,6 +12,7 @@
 pub mod age_recipient;
 pub mod artifacts;
 pub mod change;
+pub mod database;
 pub mod errors;
 pub mod events;
 pub mod execution;
@@ -51,6 +52,7 @@ use crate::{
         artifact_service_server::ArtifactServiceServer,
         backup_service_server::BackupServiceServer,
         change_service_server::ChangeServiceServer,
+        database_service_server::DatabaseServiceServer,
         event_service_server::EventServiceServer,
         info_service_server::{InfoService, InfoServiceServer},
         schedule_service_server::ScheduleServiceServer,
@@ -376,6 +378,8 @@ fn capabilities(
         CAPABILITY_DEPLOYMENT_IDS.to_string(),
         CAPABILITY_LOGS_CONTAINERS.to_string(),
         CAPABILITY_SERVICE_KIND.to_string(),
+        // v2.1.6 (D-064 #1): DatabaseService over the runner's db_query.
+        database::CAPABILITY_DATABASE.to_string(),
     ];
     if !age_recipient.is_empty() {
         ids.push(CAPABILITY_AGE.to_string());
@@ -563,6 +567,13 @@ impl LocalServer {
         let state_svc = StateServiceServer::new(StateSvc { probe: self.probe })
             .max_decoding_message_size(MAX_MESSAGE_BYTES)
             .max_encoding_message_size(MAX_MESSAGE_BYTES);
+        // v2.1.6 (D-064 #1): database rows over the runner's `db_query`.
+        let database_svc = DatabaseServiceServer::new(database::DatabaseSvc::new(
+            self.core.runner.clone(),
+            self.core.store.clone(),
+        ))
+        .max_decoding_message_size(MAX_MESSAGE_BYTES)
+        .max_encoding_message_size(MAX_MESSAGE_BYTES);
         let events = self.core.events.clone();
         let bus = events.clone();
         let shutdown = async move {
@@ -644,6 +655,7 @@ impl LocalServer {
             .layer(presence::PresenceLayer(self.presence.clone()))
             .add_service(info_svc)
             .add_service(state_svc)
+            .add_service(database_svc)
             .add_service(change_svc)
             .add_service(shell_svc)
             .add_service(event_svc)
@@ -1208,7 +1220,8 @@ mod tests {
                 "admissions.v1",
                 "deployment_ids.v1",
                 "logs.containers.v1",
-                "service_kind.v1"
+                "service_kind.v1",
+                "database.v1"
             ]
         );
         assert_eq!(
@@ -1219,6 +1232,7 @@ mod tests {
                 "deployment_ids.v1",
                 "logs.containers.v1",
                 "service_kind.v1",
+                "database.v1",
                 "age.v1"
             ]
         );
@@ -1231,6 +1245,7 @@ mod tests {
                 "deployment_ids.v1",
                 "logs.containers.v1",
                 "service_kind.v1",
+                "database.v1",
                 "telemetry.v1",
                 "analytics.v1"
             ]
@@ -1328,6 +1343,7 @@ mod tests {
                 "deployment_ids.v1",
                 "logs.containers.v1",
                 "service_kind.v1",
+                "database.v1",
                 "age.v1"
             ]
         );
