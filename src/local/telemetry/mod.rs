@@ -409,10 +409,16 @@ impl Telemetry {
                 (u, rate)
             })
             .collect();
+        let spool_bytes = self
+            .kinds
+            .iter()
+            .map(|k| k.queued.load(Ordering::SeqCst) as u64)
+            .sum();
         TelemetryUsageReport {
             kinds,
             disk_free_bytes: guard.free_bytes,
             ingest_paused: guard.paused,
+            spool_bytes,
         }
     }
 
@@ -469,6 +475,8 @@ pub struct TelemetryUsageReport {
     pub kinds: Vec<(store::Usage, f64)>,
     pub disk_free_bytes: u64,
     pub ingest_paused: bool,
+    /// Bytes accepted into the ingest queues, not yet written (D-063 #13).
+    pub spool_bytes: u64,
 }
 
 /// Token bucket (ingest rate limits, 9.4 and 9.5).
@@ -601,6 +609,23 @@ mod tests {
         t.sync().await;
         assert_eq!(t.usage().kinds[0].0.records, 2);
         assert!(t.degraded_reasons().contains(&"otlp_unbound"));
+        t.close();
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    /// D-063 #13: `spool_bytes` counts bytes accepted but not yet written.
+    #[tokio::test(flavor = "current_thread")]
+    async fn usage_reports_spool_bytes_until_written() {
+        let dir = temp_dir("tel-spool");
+        let t = test_support::open(dir.join("telemetry"));
+        assert_eq!(t.usage().spool_bytes, 0);
+        let p = Producer::Project("p1".into());
+        // The writer cannot run before the next await on this runtime.
+        t.submit(Kind::Logs, p.clone(), 1, 1, vec![1; 100], false);
+        t.submit(Kind::Traces, p, 1, 1, vec![2; 23], false);
+        assert_eq!(t.usage().spool_bytes, 123);
+        t.sync().await;
+        assert_eq!(t.usage().spool_bytes, 0);
         t.close();
         std::fs::remove_dir_all(dir).unwrap();
     }

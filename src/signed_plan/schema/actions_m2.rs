@@ -104,6 +104,9 @@ pub(super) fn optional_params_for(kind: &str) -> &'static [(&'static str, Shape)
             ("db_credentials_ref", DB_CREDENTIALS),
             ("channel_ids", Shape::Set(&UUID7, 0, 16)),
         ],
+        // v1.0.13 (D-063 #5, #10): a default route; the one run a cancel stops.
+        "domain.add" => &[("source", Shape::Enum(&["custom", "default"]))],
+        "operation.cancel" => &[("run_id", UUID7)],
         _ => &[],
     }
 }
@@ -201,9 +204,20 @@ pub(super) fn params_for(kind: &str) -> Option<&'static [(&'static str, Shape)]>
         ],
         "repo.credential.delete" => &[("repo", Shape::Pattern(text::repo))],
         // v1.0.11 (D-061): the hostname Dwaar routes /hooks/* on.
-        "webhook.host.set" => &[("webhook_host", Shape::Pattern(text::hostname))],
+        // v1.0.13 (D-063 #4): or a public IPv4 address.
+        "webhook.host.set" => &[("webhook_host", Shape::Pattern(webhook_host))],
         _ => return None,
     })
+}
+
+/// `webhook.host.set` host: a hostname, or (v1.0.13, D-063 #4) a public
+/// IPv4 address; any other dotted quad fails `E_PARSE`.
+fn webhook_host(value: &str) -> bool {
+    if text::ipv4_shaped(value) {
+        text::public_ipv4(value)
+    } else {
+        text::hostname(value)
+    }
 }
 
 /// Server-level kinds added in v1.0.7 (section 3.2).
@@ -252,6 +266,14 @@ pub(super) fn action_rules_hold(plan: &Value, kind: &str, params: &Value) -> boo
                 && params["verify_schedule"].as_str().is_none_or(cron_parses)
         }
         "env.protection.set" => params["environment"] == plan["environment"],
+        // v1.0.13 (D-063 #5): a default route is an sslip.io host with ACME.
+        "domain.add" => {
+            params
+                .get("source")
+                .is_none_or(|source| source != "default")
+                || (params["tls"] == "acme"
+                    && params["hostname"].as_str().is_some_and(text::default_route))
+        }
         "backup.destination.set" => destination_shape(params),
         "release_key.add" => params["spki"]
             .as_str()
