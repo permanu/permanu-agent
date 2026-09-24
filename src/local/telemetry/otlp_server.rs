@@ -18,11 +18,21 @@
 //! - Limits: 100 requests/s per source address (burst 200), request ≤ 4 MiB
 //!   on the wire and ≤ 16 MiB decompressed; excess is HTTP 429 with
 //!   `Retry-After` / gRPC `RESOURCE_EXHAUSTED`.
+//! - Connection limits (contracts v1.1.5, D-063 #17): at most 64 concurrent
+//!   connections over both listeners (further ones are closed at accept),
+//!   a request body read completely within 30 s (HTTP 408 and close / gRPC
+//!   `DEADLINE_EXCEEDED`) and at most 16 MiB of request data in flight per
+//!   connection (the HTTP/2 connection window; HTTP/1.1 reads one ≤ 4 MiB
+//!   body at a time). Every cut-off client is counted
+//!   ([`Telemetry::otlp_connections_refused`]).
 
+use std::future::Future;
 use std::io::Read;
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::path::PathBuf;
+use std::pin::Pin;
 use std::sync::{Arc, Mutex};
+use std::task::{Context, Poll};
 use std::time::{Duration, Instant};
 
 use http_body_util::{BodyExt, Full, Limited};
@@ -42,10 +52,13 @@ use opentelemetry_proto::tonic::collector::trace::v1::{
     ExportTracePartialSuccess, ExportTraceServiceRequest, ExportTraceServiceResponse,
 };
 use prost::Message;
+use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
 use tokio::net::{TcpListener, TcpStream};
-use tokio::sync::mpsc;
+use tokio::sync::{mpsc, OwnedSemaphorePermit, Semaphore};
 use tokio::task::JoinHandle;
 use tonic::codec::CompressionEncoding;
+use tonic::codegen::http;
+use tonic::transport::server::{Connected, TcpConnectInfo};
 use tracing::{info, warn};
 
 use super::otlp::{Outcome, TooMany};
@@ -59,6 +72,139 @@ const DECOMPRESSED_MAX: usize = 16 * 1024 * 1024;
 const SOURCE_RATE: f64 = 100.0;
 const SOURCE_BURST: f64 = 200.0;
 const RECHECK: Duration = Duration::from_secs(30);
+/// D-063 #17: request data in flight per connection (HTTP/2 window).
+pub const CONNECTION_IN_FLIGHT: u32 = 16 * 1024 * 1024;
+
+/// Connection limits of the OTLP listeners (D-063 #17).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct OtlpLimits {
+    /// Concurrent connections over both listeners together.
+    pub max_connections: usize,
+    /// A request body must be read completely within this.
+    pub body_read: Duration,
+}
+
+impl Default for OtlpLimits {
+    fn default() -> Self {
+        Self {
+            max_connections: 64,
+            body_read: Duration::from_secs(30),
+        }
+    }
+}
+
+/// A TCP connection holding one of the listeners' connection slots.
+struct Permitted {
+    stream: TcpStream,
+    _permit: OwnedSemaphorePermit,
+}
+
+impl AsyncRead for Permitted {
+    fn poll_read(
+        mut self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        buf: &mut ReadBuf<'_>,
+    ) -> Poll<std::io::Result<()>> {
+        Pin::new(&mut self.stream).poll_read(cx, buf)
+    }
+}
+
+impl AsyncWrite for Permitted {
+    fn poll_write(
+        mut self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        buf: &[u8],
+    ) -> Poll<std::io::Result<usize>> {
+        Pin::new(&mut self.stream).poll_write(cx, buf)
+    }
+
+    fn poll_flush(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<std::io::Result<()>> {
+        Pin::new(&mut self.stream).poll_flush(cx)
+    }
+
+    fn poll_shutdown(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<std::io::Result<()>> {
+        Pin::new(&mut self.stream).poll_shutdown(cx)
+    }
+
+    fn poll_write_vectored(
+        mut self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        bufs: &[std::io::IoSlice<'_>],
+    ) -> Poll<std::io::Result<usize>> {
+        Pin::new(&mut self.stream).poll_write_vectored(cx, bufs)
+    }
+
+    fn is_write_vectored(&self) -> bool {
+        self.stream.is_write_vectored()
+    }
+}
+
+impl Connected for Permitted {
+    type ConnectInfo = TcpConnectInfo;
+
+    fn connect_info(&self) -> TcpConnectInfo {
+        self.stream.connect_info()
+    }
+}
+
+/// gRPC: a call whose handling (reading and decoding the body included) is
+/// not done within the deadline answers `DEADLINE_EXCEEDED` (D-063 #17).
+#[derive(Clone)]
+struct BodyDeadline {
+    after: Duration,
+    telemetry: Option<Arc<Telemetry>>,
+}
+
+impl<S> tower::Layer<S> for BodyDeadline {
+    type Service = Deadline<S>;
+
+    fn layer(&self, inner: S) -> Deadline<S> {
+        Deadline {
+            inner,
+            deadline: self.clone(),
+        }
+    }
+}
+
+#[derive(Clone)]
+struct Deadline<S> {
+    inner: S,
+    deadline: BodyDeadline,
+}
+
+impl<S, B> tower::Service<http::Request<B>> for Deadline<S>
+where
+    S: tower::Service<http::Request<B>, Response = http::Response<tonic::body::Body>>,
+    S::Future: Send + 'static,
+{
+    type Response = http::Response<tonic::body::Body>;
+    type Error = S::Error;
+    type Future = Pin<Box<dyn Future<Output = Result<Self::Response, S::Error>> + Send>>;
+
+    fn poll_ready(&mut self, cx: &mut Context<'_>) -> Poll<Result<(), S::Error>> {
+        self.inner.poll_ready(cx)
+    }
+
+    fn call(&mut self, request: http::Request<B>) -> Self::Future {
+        let call = self.inner.call(request);
+        let BodyDeadline { after, telemetry } = self.deadline.clone();
+        Box::pin(async move {
+            match tokio::time::timeout(after, call).await {
+                Ok(result) => result,
+                Err(_) => {
+                    if let Some(telemetry) = telemetry {
+                        telemetry.count_otlp_refused();
+                    }
+                    warn!("OTLP gRPC request body not read in time");
+                    Ok(
+                        tonic::Status::deadline_exceeded("request body not read in time")
+                            .into_http(),
+                    )
+                }
+            }
+        })
+    }
+}
 
 /// A Docker bridge interface and its connected IPv4 subnet.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -260,6 +406,7 @@ pub fn accept_peer(net: &dyn Network, peer: IpAddr) -> bool {
 struct Receiver {
     telemetry: Arc<Telemetry>,
     sources: Arc<Mutex<Buckets>>,
+    body_read: Duration,
 }
 
 impl Receiver {
@@ -377,6 +524,16 @@ fn reply(status: StatusCode, content_type: &str, body: Vec<u8>) -> Response<Full
     response
 }
 
+/// An answer after which the connection is closed.
+fn closing(status: StatusCode) -> Response<Full<Bytes>> {
+    let mut response = plain(status);
+    response.headers_mut().insert(
+        hyper::header::CONNECTION,
+        hyper::header::HeaderValue::from_static("close"),
+    );
+    response
+}
+
 fn plain(status: StatusCode) -> Response<Full<Bytes>> {
     reply(
         status,
@@ -473,9 +630,15 @@ async fn handle_http(
     if !matches!(encoding.as_str(), "" | "identity" | "gzip") {
         return plain(StatusCode::UNSUPPORTED_MEDIA_TYPE);
     }
-    let body = match Limited::new(request.into_body(), WIRE_MAX).collect().await {
-        Ok(collected) => collected.to_bytes(),
-        Err(_) => return plain(StatusCode::PAYLOAD_TOO_LARGE),
+    let read = Limited::new(request.into_body(), WIRE_MAX).collect();
+    let body = match tokio::time::timeout(receiver.body_read, read).await {
+        Ok(Ok(collected)) => collected.to_bytes(),
+        Ok(Err(_)) => return plain(StatusCode::PAYLOAD_TOO_LARGE),
+        Err(_) => {
+            receiver.telemetry.count_otlp_refused();
+            warn!(%peer, "OTLP/HTTP request body not read in time");
+            return closing(StatusCode::REQUEST_TIMEOUT);
+        }
     };
     let body: Vec<u8> = if encoding == "gzip" {
         let mut out = Vec::new();
@@ -548,18 +711,40 @@ async fn handle_http(
     }
 }
 
-/// Accepts connections that pass the source check (9.5).
-async fn accept_checked(
-    listener: &TcpListener,
-    net: &Arc<dyn Network>,
-) -> Option<(TcpStream, SocketAddr)> {
+/// What both listeners share: the source check (9.5) and the connection
+/// slots (D-063 #17).
+#[derive(Clone)]
+struct Gate {
+    net: Arc<dyn Network>,
+    slots: Arc<Semaphore>,
+    telemetry: Arc<Telemetry>,
+}
+
+/// Accepts connections that pass the source check (9.5) while a connection
+/// slot is free; others are closed at once (and counted when over the cap).
+async fn accept_checked(listener: &TcpListener, gate: &Gate) -> Option<(Permitted, SocketAddr)> {
     loop {
         match listener.accept().await {
             Ok((stream, peer)) => {
-                if accept_peer(net.as_ref(), peer.ip()) {
-                    return Some((stream, peer));
+                if !accept_peer(gate.net.as_ref(), peer.ip()) {
+                    warn!(%peer, "OTLP connection refused: source is not on a Docker bridge");
+                    continue;
                 }
-                warn!(%peer, "OTLP connection refused: source is not on a Docker bridge");
+                match gate.slots.clone().try_acquire_owned() {
+                    Ok(permit) => {
+                        return Some((
+                            Permitted {
+                                stream,
+                                _permit: permit,
+                            },
+                            peer,
+                        ))
+                    }
+                    Err(_) => {
+                        gate.telemetry.count_otlp_refused();
+                        warn!(%peer, "OTLP connection refused: too many connections");
+                    }
+                }
             }
             Err(err) => {
                 warn!(error = %err, "OTLP accept failed");
@@ -569,9 +754,9 @@ async fn accept_checked(
     }
 }
 
-fn serve_http(listener: TcpListener, receiver: Receiver, net: Arc<dyn Network>) -> JoinHandle<()> {
+fn serve_http(listener: TcpListener, receiver: Receiver, gate: Gate) -> JoinHandle<()> {
     tokio::spawn(async move {
-        while let Some((stream, peer)) = accept_checked(&listener, &net).await {
+        while let Some((stream, peer)) = accept_checked(&listener, &gate).await {
             let receiver = receiver.clone();
             tokio::spawn(async move {
                 let service = hyper::service::service_fn(move |req| {
@@ -590,11 +775,15 @@ fn serve_http(listener: TcpListener, receiver: Receiver, net: Arc<dyn Network>) 
     })
 }
 
-fn serve_grpc(listener: TcpListener, receiver: Receiver, net: Arc<dyn Network>) -> JoinHandle<()> {
+fn serve_grpc(listener: TcpListener, receiver: Receiver, gate: Gate) -> JoinHandle<()> {
     tokio::spawn(async move {
-        let (tx, rx) = mpsc::channel::<std::io::Result<TcpStream>>(16);
+        let (tx, rx) = mpsc::channel::<std::io::Result<Permitted>>(16);
+        let deadline = BodyDeadline {
+            after: receiver.body_read,
+            telemetry: Some(gate.telemetry.clone()),
+        };
         let accept = tokio::spawn(async move {
-            while let Some((stream, _)) = accept_checked(&listener, &net).await {
+            while let Some((stream, _)) = accept_checked(&listener, &gate).await {
                 if tx.send(Ok(stream)).await.is_err() {
                     return;
                 }
@@ -603,6 +792,8 @@ fn serve_grpc(listener: TcpListener, receiver: Receiver, net: Arc<dyn Network>) 
         let limit = DECOMPRESSED_MAX;
         let result = tonic::transport::Server::builder()
             .concurrency_limit_per_connection(32)
+            .initial_connection_window_size(CONNECTION_IN_FLIGHT)
+            .layer(deadline)
             .add_service(
                 TraceServiceServer::new(receiver.clone())
                     .accept_compressed(CompressionEncoding::Gzip)
@@ -635,6 +826,7 @@ pub struct Listeners {
     pub gateway_iface: String,
     pub grpc_port: u16,
     pub http_port: u16,
+    pub limits: OtlpLimits,
 }
 
 struct Bound {
@@ -654,6 +846,7 @@ impl Listeners {
             gateway_iface: DEV_LOOPBACK_IFACE.to_owned(),
             grpc_port,
             http_port,
+            limits: OtlpLimits::default(),
         }
     }
 
@@ -687,10 +880,16 @@ impl Listeners {
         let receiver = Receiver {
             telemetry: self.telemetry.clone(),
             sources: Arc::new(Mutex::new(Buckets::default())),
+            body_read: self.limits.body_read,
+        };
+        let gate = Gate {
+            net: self.net.clone(),
+            slots: Arc::new(Semaphore::new(self.limits.max_connections)),
+            telemetry: self.telemetry.clone(),
         };
         let tasks = [
-            serve_grpc(grpc, receiver.clone(), self.net.clone()),
-            serve_http(http, receiver, self.net.clone()),
+            serve_grpc(grpc, receiver.clone(), gate.clone()),
+            serve_http(http, receiver, gate),
         ];
         Ok((Bound { addr, tasks }, listen))
     }
@@ -879,7 +1078,114 @@ mod tests {
             gateway_iface: "test-br".into(),
             grpc_port: 0,
             http_port: 0,
+            limits: OtlpLimits::default(),
         }
+    }
+
+    /// D-063 #17: the normative numbers.
+    #[test]
+    fn default_limits_are_the_contract_numbers() {
+        let limits = OtlpLimits::default();
+        assert_eq!(limits.max_connections, 64);
+        assert_eq!(limits.body_read, Duration::from_secs(30));
+        assert_eq!(CONNECTION_IN_FLIGHT, 16 * 1024 * 1024);
+    }
+
+    /// D-063 #17: connections over the cap (both listeners together) are
+    /// closed at accept and counted; a freed slot is reused.
+    #[tokio::test]
+    async fn connections_over_the_cap_are_closed_and_counted() {
+        let dir = temp_dir("otlp-cap");
+        let t = test_support::open(dir.join("telemetry"));
+        let mut l = listeners(t.clone(), Some("test-br"), true);
+        l.limits.max_connections = 2;
+        let bound = l.reconcile(None).await.expect("bound");
+        let listen = t.otlp();
+        let held_http = TcpStream::connect(&listen.http_listen).await.unwrap();
+        let held_grpc = TcpStream::connect(&listen.grpc_listen).await.unwrap();
+        // Let the accept loops take both slots.
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        let mut refused = TcpStream::connect(&listen.http_listen).await.unwrap();
+        let _ = refused
+            .write_all(b"POST /v1/traces HTTP/1.1\r\nHost: x\r\nContent-Length: 0\r\n\r\n")
+            .await;
+        let mut buf = Vec::new();
+        let read =
+            tokio::time::timeout(Duration::from_secs(2), refused.read_to_end(&mut buf)).await;
+        assert!(matches!(read, Ok(Ok(0)) | Ok(Err(_))), "{read:?}");
+        assert_eq!(t.otlp_connections_refused(), 1);
+
+        drop(held_http);
+        drop(held_grpc);
+        let mut status = 0;
+        for _ in 0..40 {
+            tokio::time::sleep(Duration::from_millis(50)).await;
+            status = http_post(&listen.http_listen, "/v1/traces", "text/plain", "x")
+                .await
+                .0;
+            if status != 0 {
+                break;
+            }
+        }
+        assert_eq!(status, 415);
+        bound.tasks.iter().for_each(JoinHandle::abort);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    /// D-063 #17: a body not read completely in time closes the connection.
+    #[tokio::test]
+    async fn a_slow_http_body_is_cut_off() {
+        let dir = temp_dir("otlp-slow");
+        let t = test_support::open(dir.join("telemetry"));
+        let mut l = listeners(t.clone(), Some("test-br"), true);
+        l.limits.body_read = Duration::from_millis(200);
+        let bound = l.reconcile(None).await.expect("bound");
+        let listen = t.otlp();
+        let mut stream = TcpStream::connect(&listen.http_listen).await.unwrap();
+        stream
+            .write_all(
+                b"POST /v1/traces HTTP/1.1\r\nHost: x\r\nContent-Type: application/json\r\nContent-Length: 100\r\n\r\n{",
+            )
+            .await
+            .unwrap();
+        let mut buf = Vec::new();
+        let read = tokio::time::timeout(Duration::from_secs(3), stream.read_to_end(&mut buf)).await;
+        assert!(matches!(read, Ok(Ok(_))), "{read:?}");
+        let text = String::from_utf8_lossy(&buf);
+        assert!(text.starts_with("HTTP/1.1 408"), "{text}");
+        assert_eq!(t.otlp_connections_refused(), 1);
+        bound.tasks.iter().for_each(JoinHandle::abort);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    /// D-063 #17: a gRPC call whose body is not read in time ends with
+    /// `DEADLINE_EXCEEDED`.
+    #[tokio::test]
+    async fn grpc_deadline_answers_deadline_exceeded() {
+        use tonic::codegen::http;
+        use tower::{Layer, Service, ServiceExt};
+        let never = tower::service_fn(|_: http::Request<tonic::body::Body>| async {
+            std::future::pending::<
+                Result<http::Response<tonic::body::Body>, std::convert::Infallible>,
+            >()
+            .await
+        });
+        let mut svc = BodyDeadline {
+            after: Duration::from_millis(50),
+            telemetry: None,
+        }
+        .layer(never);
+        let response = svc
+            .ready()
+            .await
+            .unwrap()
+            .call(http::Request::new(tonic::body::Body::empty()))
+            .await
+            .unwrap();
+        assert_eq!(
+            tonic::Status::from_header_map(response.headers()).map(|s| s.code()),
+            Some(tonic::Code::DeadlineExceeded)
+        );
     }
 
     #[cfg(feature = "dev-paths")]

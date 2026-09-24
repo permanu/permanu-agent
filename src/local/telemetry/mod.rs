@@ -97,6 +97,8 @@ pub struct Telemetry {
     runner_unreachable: AtomicBool,
     events: Option<EventBus>,
     started: Instant,
+    /// OTLP clients cut off by the connection limits (D-063 #17).
+    otlp_refused: AtomicU64,
 }
 
 /// What the rest of the agent needs to start telemetry.
@@ -127,6 +129,7 @@ impl Telemetry {
             runner_unreachable: AtomicBool::new(false),
             events: parts.events,
             started: Instant::now(),
+            otlp_refused: AtomicU64::new(0),
         });
         telemetry.check_disk();
         tokio::spawn(Self::writer(Arc::downgrade(&telemetry), rx));
@@ -243,6 +246,16 @@ impl Telemetry {
                 .fetch_add(n, Ordering::SeqCst);
             self.mark_drop();
         }
+    }
+
+    /// Counts an OTLP client cut off by the connection limits (D-063 #17).
+    pub fn count_otlp_refused(&self) {
+        self.otlp_refused.fetch_add(1, Ordering::SeqCst);
+    }
+
+    /// OTLP clients cut off by the connection limits since start.
+    pub fn otlp_connections_refused(&self) -> u64 {
+        self.otlp_refused.load(Ordering::SeqCst)
     }
 
     /// Resolves once everything submitted before it is stored and flushed.

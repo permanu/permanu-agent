@@ -991,6 +991,7 @@ fn start_telemetry(
             gateway_iface: telemetry::otlp_server::GATEWAY_IFACE.to_owned(),
             grpc_port: telemetry::otlp_server::GRPC_PORT,
             http_port: telemetry::otlp_server::HTTP_PORT,
+            limits: telemetry::otlp_server::OtlpLimits::default(),
         },
     };
     tasks.push(tokio::spawn(listeners.run()));
