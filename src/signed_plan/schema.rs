@@ -231,22 +231,49 @@ const SPEC_FIELDS: &[(&str, Shape)] = &[
 ];
 
 /// A `ServiceSpec` (section 3.7): every field of `SPEC_FIELDS`, plus the
-/// optional member `build` (v1.0.9, D-056), which is never `null`.
+/// optional members `build` (v1.0.9, D-056) and `routes` (v1.0.14, D-064),
+/// which are never `null`.
 pub(crate) const SPEC: Shape = Shape::Custom(spec_shape);
 
 fn spec_shape(value: &Value) -> bool {
     let Some(map) = value.as_object() else {
         return false;
     };
-    match map.get("build") {
-        None => check(&Shape::Object(SPEC_FIELDS), value),
-        Some(recipe) => {
-            let mut rest = map.clone();
-            rest.remove("build");
-            spec_build::build_recipe(recipe)
-                && check(&Shape::Object(SPEC_FIELDS), &Value::Object(rest))
+    let mut rest = map.clone();
+    if let Some(recipe) = rest.remove("build") {
+        if !spec_build::build_recipe(&recipe) {
+            return false;
         }
     }
+    // v1.0.14 (D-064 #9): the optional member `routes`, never `null`.
+    if let Some(routes) = rest.remove("routes") {
+        if !spec_routes(&routes) {
+            return false;
+        }
+    }
+    check(&Shape::Object(SPEC_FIELDS), &Value::Object(rest))
+}
+
+/// `ServiceSpec.routes` (v1.0.14, D-064 #9): 0–16 `{hostname, source}`
+/// sorted and unique by `hostname`; a `default` entry is a default route
+/// host, a `custom` one never ends in `.sslip.io` (reference `spec_routes`).
+fn spec_routes(value: &Value) -> bool {
+    const ROUTE: Shape = Shape::Object(&[
+        ("hostname", HOST),
+        ("source", Shape::Enum(&["default", "custom"])),
+    ]);
+    sorted_unique_objects(value, &ROUTE, 16, |route| {
+        route["hostname"].as_str().map(str::to_owned)
+    }) && value.as_array().is_some_and(|routes| {
+        routes.iter().all(|route| {
+            let host = route["hostname"].as_str().unwrap_or_default();
+            if route["source"] == "default" {
+                text::default_route(host)
+            } else {
+                !host.ends_with(".sslip.io")
+            }
+        })
+    })
 }
 
 fn image_repository(value: &Value) -> bool {

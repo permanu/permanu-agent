@@ -119,9 +119,11 @@ pub fn truncate_ip(text: &str) -> Option<String> {
 
 /// One Dwaar access-log line (its JSON request log), as far as the
 /// rollups need it.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, Default, PartialEq)]
 pub struct Access {
     pub host: String,
+    /// The request path (the `dwaar.*` `route_path` template's input).
+    pub path: String,
     pub method: String,
     pub status: u16,
     pub response_time_us: u64,
@@ -145,8 +147,15 @@ pub fn access_of(line: &str) -> Option<Access> {
     if host.is_empty() || host.len() > 253 {
         return None;
     }
+    let path: String = value["path"]
+        .as_str()
+        .unwrap_or_default()
+        .chars()
+        .take(2_048)
+        .collect();
     Some(Access {
         host,
+        path,
         method: value["method"].as_str().unwrap_or_default().to_owned(),
         status,
         response_time_us: value["response_time_us"].as_u64().unwrap_or_default(),
@@ -373,6 +382,7 @@ mod tests {
             client_ip: ip.to_owned(),
             user_agent: "ua".to_owned(),
             is_bot: bot,
+            ..Default::default()
         };
         let mut rollups = Rollups::new();
         let t = 1_790_000_040 + 40; // 40 s into a minute

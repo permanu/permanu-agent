@@ -226,4 +226,11 @@ enum ErrorReason {
   // operation.cancel stopped the build, run or step (runner code
   // E_CANCELLED). Engine API -32016 cancelled; not retried.
   ERROR_REASON_CANCELLED = 45;
+  // v2.1.7 (contracts v1.1.7, D-065, agent-protocol.md 10.3).
+  // FAILED_PRECONDITION from SubmitSignedPlan: an alert.rule.create/update
+  // names a channel this server does not hold (no admitted
+  // alert.channel.create/update without a later alert.channel.delete, and
+  // none earlier in the same plan). Nothing was admitted. Engine API -32001
+  // conflict, reason channel_missing.
+  ERROR_REASON_CHANNEL_MISSING = 46;
 }

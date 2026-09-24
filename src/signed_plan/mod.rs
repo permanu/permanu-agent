@@ -67,6 +67,14 @@ pub enum PlanCode {
     /// Runner (section 14.4, v1.0.6 D-046 clarification): M1 refuses
     /// `agent.update` and `component.update(runner|permanu-env)`.
     NotSupportedYet,
+    /// Runner (section 14.11, v1.0.13 D-063 #11): an admitted
+    /// `operation.cancel` stopped the op; not a failure.
+    Cancelled,
+    /// Runner (section 14.8, v1.0.15 D-065 #9): four shells are open.
+    ShellLimit,
+    /// Not a signed-plan code (v1.0.15, D-065 #4): an alert rule names a
+    /// channel this server does not hold (agent-protocol.md 10.3).
+    ChannelMissing,
 }
 
 impl PlanCode {
@@ -111,6 +119,9 @@ impl PlanCode {
             Self::ScopeMismatch => "E_SCOPE_MISMATCH",
             Self::RollbackTargetUnknown => "E_ROLLBACK_TARGET_UNKNOWN",
             Self::NotSupportedYet => "E_NOT_SUPPORTED_YET",
+            Self::Cancelled => "E_CANCELLED",
+            Self::ShellLimit => "E_SHELL_LIMIT",
+            Self::ChannelMissing => "CHANNEL_MISSING",
         }
     }
 
@@ -160,6 +171,9 @@ const ALL_CODES: &[PlanCode] = &[
     PlanCode::ScopeMismatch,
     PlanCode::RollbackTargetUnknown,
     PlanCode::NotSupportedYet,
+    PlanCode::Cancelled,
+    PlanCode::ShellLimit,
+    PlanCode::ChannelMissing,
 ];
 
 #[cfg(test)]
@@ -177,6 +191,9 @@ mod code_tests {
             ("E_SCOPE_MISMATCH", PlanCode::ScopeMismatch),
             ("E_ROLLBACK_TARGET_UNKNOWN", PlanCode::RollbackTargetUnknown),
             ("E_NOT_SUPPORTED_YET", PlanCode::NotSupportedYet),
+            // v1.0.13 (D-063 #11) and v1.0.15 (D-065 #9).
+            ("E_CANCELLED", PlanCode::Cancelled),
+            ("E_SHELL_LIMIT", PlanCode::ShellLimit),
         ] {
             assert_eq!(PlanCode::parse(text), Some(code));
         }

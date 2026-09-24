@@ -21,13 +21,14 @@ use super::store::{Cursor, Direction, Kind, Producer, RawRecord, ScanSpec, Snaps
 use super::Telemetry;
 use crate::local::status_with_reason;
 use crate::proto::agent::v2::{
-    attribute_filter, label_matcher, log_query_response, metric_descriptor, metric_query_response,
-    stream_status, trace_search_response, ErrorReason, GetTelemetryUsageResponse,
-    ListMetricsRequest, ListMetricsResponse, LogBatch, LogQuery, LogQueryResponse, LogRecord,
-    MetricAggregation, MetricDescriptor, MetricPoint, MetricQuery, MetricQueryResponse,
-    MetricSeries, MetricSeriesBatch, PageInfo, QueryDirection, RetentionPolicy, Scope, Span,
-    SpanStatusCode, StreamStatus, TelemetryKind, TelemetryUsage, Trace, TraceSearch,
-    TraceSearchResponse, TraceSummary, TraceSummaryBatch,
+    analytics_query_response, attribute_filter, label_matcher, log_query_response,
+    metric_descriptor, metric_query_response, stream_status, trace_search_response, AnalyticsQuery,
+    AnalyticsQueryResponse, AnalyticsRow, AnalyticsRowBatch, ErrorReason,
+    GetTelemetryUsageResponse, ListMetricsRequest, ListMetricsResponse, LogBatch, LogQuery,
+    LogQueryResponse, LogRecord, MetricAggregation, MetricDescriptor, MetricPoint, MetricQuery,
+    MetricQueryResponse, MetricSeries, MetricSeriesBatch, PageInfo, QueryDirection,
+    RetentionPolicy, Scope, Span, SpanStatusCode, StreamStatus, TelemetryKind, TelemetryUsage,
+    Trace, TraceSearch, TraceSearchResponse, TraceSummary, TraceSummaryBatch,
 };
 
 const NANOS: i64 = 1_000_000_000;
@@ -950,6 +951,94 @@ impl StoreQueries {
         Ok(Box::pin(tokio_stream::wrappers::ReceiverStream::new(rx)))
     }
 
+    /// `QueryAnalytics` (agent-protocol.md 9.7, [`super::analytics`]).
+    pub async fn query_analytics(
+        &self,
+        query: AnalyticsQuery,
+    ) -> Result<BoxStream<AnalyticsQueryResponse>, Status> {
+        let plan = Arc::new(super::analytics::plan(
+            &query,
+            now_nanos().div_euclid(NANOS),
+        )?);
+        let permit = self.history_slot().await?;
+        let (tx, rx) = mpsc::channel(16);
+        let this = self.clone();
+        tokio::spawn(async move {
+            let result: Result<(), Status> = async {
+                let status = |kind, message: &str| AnalyticsQueryResponse {
+                    frame: Some(analytics_query_response::Frame::Status(status_frame(
+                        kind, "", message, 0,
+                    ))),
+                };
+                let batch = |rows: Vec<AnalyticsRow>| AnalyticsQueryResponse {
+                    frame: Some(analytics_query_response::Frame::Batch(AnalyticsRowBatch {
+                        rows,
+                    })),
+                };
+                let snapshot = this.telemetry.snapshot(Kind::Analytics);
+                let p2 = plan.clone();
+                let rows = tokio::task::spawn_blocking(move || {
+                    super::analytics::evaluate(&snapshot, &p2, p2.from_sec, p2.to_sec)
+                })
+                .await
+                .map_err(|_| Status::internal("telemetry query failed"))??;
+                drop(permit);
+                for chunk in rows.chunks(BATCH_RECORDS) {
+                    if tx.send(Ok(batch(chunk.to_vec()))).await.is_err() {
+                        return Ok(());
+                    }
+                }
+                if !plan.follow {
+                    let _ = tx.send(Ok(status(stream_status::Kind::End, ""))).await;
+                    return Ok(());
+                }
+                if tx
+                    .send(Ok(status(stream_status::Kind::CaughtUp, "")))
+                    .await
+                    .is_err()
+                {
+                    return Ok(());
+                }
+                // Each bucket once it has closed and its last minute's
+                // rollup is written (60 s later) plus 10 s of lateness.
+                let step = plan.bucket;
+                let mut next = plan.from_sec
+                    + (plan.to_sec.min(now_nanos() / NANOS) - plan.from_sec).div_euclid(step)
+                        * step;
+                loop {
+                    let due = (next + step + 60) * NANOS + LATENESS.as_nanos() as i64;
+                    let wait = Duration::from_nanos((due - now_nanos()).max(0) as u64);
+                    tokio::select! {
+                        _ = tokio::time::sleep(wait) => {}
+                        _ = tx.closed() => return Ok(()),
+                    }
+                    let snapshot = this.telemetry.snapshot(Kind::Analytics);
+                    let p2 = plan.clone();
+                    let from = next;
+                    let rows = tokio::task::spawn_blocking(move || {
+                        super::analytics::evaluate(&snapshot, &p2, from, from + step)
+                    })
+                    .await
+                    .map_err(|_| Status::internal("telemetry query failed"))??;
+                    next += step;
+                    let frame = if rows.is_empty() {
+                        status(stream_status::Kind::Keepalive, "")
+                    } else {
+                        batch(rows)
+                    };
+                    if tx.send(Ok(frame)).await.is_err() {
+                        return Ok(());
+                    }
+                }
+            }
+            .await;
+            if let Err(status) = result {
+                let _ = tx.send(Err(status)).await;
+            }
+        });
+        Ok(Box::pin(tokio_stream::wrappers::ReceiverStream::new(rx)))
+    }
+
     pub async fn list_metrics(
         &self,
         request: ListMetricsRequest,
@@ -1039,6 +1128,7 @@ impl StoreQueries {
             ingest_paused: report.ingest_paused,
             redaction_rules_version: super::redaction::RULES_VERSION.to_owned(),
             spool_bytes: report.spool_bytes,
+            otlp_refused_total: report.otlp_refused_total,
         }
     }
 }

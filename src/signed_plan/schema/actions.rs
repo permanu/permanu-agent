@@ -390,13 +390,19 @@ fn scope_rules_hold(plan: &Value, kinds: &[&str]) -> bool {
     let has_project = !plan["project_id"].is_null();
     let has_environment = !plan["environment"].is_null();
     let no_services = plan["service_ids"].as_array().is_some_and(Vec::is_empty);
+    // v1.0.14 (D-064 #2): a host shell (`shell.open` with `service_id`
+    // null) is server-level; the v1.0.13 project-level form stays admitted.
+    let actions = plan["actions"].as_array().map_or(&[][..], Vec::as_slice);
+    let host_shell =
+        |action: &Value| action["kind"] == "shell.open" && action["params"]["service_id"].is_null();
+    let server_action =
+        |action: &Value| action["kind"].as_str().is_some_and(server_kind) || host_shell(action);
     if kinds.contains(&NEUTRAL_KIND) {
         kinds.len() == 1 && no_services && has_project == has_environment
-    } else if kinds.iter().any(|kind| server_kind(kind)) {
-        kinds.iter().all(|kind| server_kind(kind))
-            && !has_project
-            && !has_environment
-            && no_services
+    } else if kinds.iter().any(|kind| server_kind(kind))
+        || (!has_project && actions.iter().any(host_shell))
+    {
+        actions.iter().all(server_action) && !has_project && !has_environment && no_services
     } else {
         has_project && has_environment
     }

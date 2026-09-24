@@ -1352,3 +1352,79 @@ fn an_event_rule_of_an_unevaluated_kind_is_refused() {
         .unwrap();
     fs::remove_dir_all(dir).unwrap();
 }
+
+/// contracts v1.1.7 (D-065 #4, agent-protocol.md 10.3): an alert rule naming
+/// a channel this server does not hold is refused `CHANNEL_MISSING` and
+/// writes nothing; once an admitted `alert.channel.create` holds it (and no
+/// later `alert.channel.delete` dropped it), the same rule is admitted.
+#[test]
+fn an_alert_rule_naming_a_missing_channel_is_refused() {
+    let Some(owner) = TestSigner::load("owner") else {
+        eprintln!("skipped: docs keys.json not found");
+        return;
+    };
+    const CHANNEL: &str = "01a0cdb5-3500-70f2-8000-000000000009";
+    let dir = temp_dir("store-channel-missing");
+    let (store, _) = AdmissionStore::open(&config(&dir), false, now()).unwrap();
+    let cases = vector("policy-cases");
+    let case = cases["cases"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|c| c["name"] == "ok_deployer_alert_rule_create")
+        .unwrap();
+    let base: Value = serde_json::from_str(case["input"].as_str().unwrap()).unwrap();
+    let plan_with = |tail: &str| {
+        let mut plan = base["plan"].clone();
+        plan["id"] = Value::String(format!("01a0cdb5-3500-7001-8000-{tail}"));
+        plan["nonce"] = Value::String(format!("{tail}AAAAAAAAAA"));
+        let mut spec: Value =
+            serde_json::from_str(plan["actions"][0]["params"]["spec"].as_str().unwrap()).unwrap();
+        spec["channelIds"] = serde_json::json!([CHANNEL]);
+        plan["actions"][0]["params"]["spec"] = Value::String(spec.to_string());
+        owner.envelope(&plan)
+    };
+    let channel = |kind: &str| serde_json::json!({"kind": kind, "params": {"channel_id": CHANNEL}});
+    let refused = plan_with("0000000000f1");
+    assert_eq!(
+        store
+            .admit(&test_trust(), &input(&refused, &[], now()))
+            .unwrap_err(),
+        PlanCode::ChannelMissing
+    );
+    assert_eq!(store.count("admissions"), 0);
+    // Created, then deleted: still missing.
+    let server = ("", "", "");
+    definitions::tests::record(
+        &store,
+        1,
+        server,
+        &[channel("alert.channel.create")],
+        "succeeded",
+    );
+    definitions::tests::record(
+        &store,
+        2,
+        server,
+        &[channel("alert.channel.delete")],
+        "succeeded",
+    );
+    assert_eq!(
+        store
+            .admit(
+                &test_trust(),
+                &input(&plan_with("0000000000f2"), &[], now())
+            )
+            .unwrap_err(),
+        PlanCode::ChannelMissing
+    );
+    // Re-sealed for this server (D-065 #4): held again.
+    definitions::tests::record(&store, 3, server, &[channel("alert.channel.update")], "");
+    store
+        .admit(
+            &test_trust(),
+            &input(&plan_with("0000000000f3"), &[], now()),
+        )
+        .unwrap();
+    fs::remove_dir_all(dir).unwrap();
+}

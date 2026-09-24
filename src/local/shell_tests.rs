@@ -234,3 +234,205 @@ async fn the_first_frame_must_open_with_a_shell_only_plan() {
     assert!(h.core.store.admissions_after(0, 10).unwrap().is_empty());
     h.stop().await;
 }
+
+/// The shell plan of `tail` on the server's current head (every admission
+/// advances it).
+fn shell_plan_at_head(h: &Harness, owner: &TestSigner, tail: &str) -> SignedPlan {
+    let cases = vector("policy-cases");
+    let case = cases["cases"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|c| c["name"] == "ok_owner_shell_open")
+        .unwrap();
+    let base: Value = serde_json::from_str(case["input"].as_str().unwrap()).unwrap();
+    let mut plan = base["plan"].clone();
+    let head = h
+        .core
+        .store
+        .head(
+            plan["project_id"].as_str().unwrap(),
+            plan["environment"].as_str().unwrap(),
+        )
+        .map(|record| record.head_digest_hex)
+        .unwrap_or_else(|_| GENESIS_HEAD.to_owned());
+    plan["id"] = Value::String(format!("01a0cdb5-3500-7001-8000-{tail}"));
+    plan["nonce"] = Value::String(format!("{tail}AAAAAAAAAA"));
+    plan["base"]["heads"] = json!({ SERVER_A: head });
+    SignedPlan {
+        envelope_json: owner.envelope(&plan).into_bytes(),
+        ..Default::default()
+    }
+}
+
+/// contracts v1.1.7 (D-065 #9): at most 4 shells per agent; the 5th
+/// `ShellOpen` is `RESOURCE_EXHAUSTED` + `LIMIT_EXCEEDED` before admission,
+/// and a slot is free again once a session ends.
+#[tokio::test]
+async fn the_fifth_concurrent_shell_is_refused_before_admission() {
+    let Some(owner) = TestSigner::load("owner") else {
+        eprintln!("skipped: docs keys.json not found");
+        return;
+    };
+    let h = Harness::start("shell-limit", Some(&vector_trust())).await;
+    let mut sessions = Vec::new();
+    for n in 1..=4 {
+        let plan = shell_plan_at_head(&h, &owner, &format!("0000000005b{n}"));
+        let mut session = open(&h, open_frame(plan)).await.unwrap();
+        assert!(matches!(
+            next(&mut session).await,
+            shell_server_frame::Frame::Opened(_)
+        ));
+        sessions.push(session);
+    }
+    let fifth = shell_plan_at_head(&h, &owner, "0000000005b5");
+    let status = match open(&h, open_frame(fifth.clone())).await {
+        Ok(mut session) => session.rx.message().await.unwrap_err(),
+        Err(status) => status,
+    };
+    assert_eq!(status.code(), Code::ResourceExhausted);
+    assert_eq!(
+        status.metadata().get("permanu-error-reason").unwrap(),
+        "ERROR_REASON_LIMIT_EXCEEDED"
+    );
+    assert_eq!(h.core.store.admissions_after(0, 10).unwrap().len(), 4);
+    // One session ends: its slot is free again.
+    let mut first = sessions.remove(0);
+    first.tx = mpsc::channel(1).0;
+    assert!(matches!(
+        next(&mut first).await,
+        shell_server_frame::Frame::Exit(_)
+    ));
+    let mut again = None;
+    for _ in 0..100 {
+        match open(&h, open_frame(fifth.clone())).await {
+            Ok(mut session) => match session.rx.message().await {
+                Ok(Some(ShellServerFrame {
+                    frame: Some(shell_server_frame::Frame::Opened(_)),
+                })) => {
+                    again = Some(session);
+                    break;
+                }
+                _ => {}
+            },
+            Err(status) => assert_eq!(status.code(), Code::ResourceExhausted),
+        }
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    assert!(again.is_some(), "the freed slot opens a fifth session");
+    // Every client ends its stream, so the server can shut down.
+    sessions.extend(again);
+    for mut session in sessions {
+        session.tx = mpsc::channel(1).0;
+        assert!(matches!(
+            next(&mut session).await,
+            shell_server_frame::Frame::Exit(_)
+        ));
+    }
+    h.stop().await;
+}
+
+/// contracts v1.1.7 (D-065 #3): `ShellExit` relays the runner's
+/// `exit_code` and `signal`.
+#[tokio::test]
+async fn the_shell_exit_carries_the_runners_exit_code_and_signal() {
+    let Some(owner) = TestSigner::load("owner") else {
+        eprintln!("skipped: docs keys.json not found");
+        return;
+    };
+    let h = Harness::start("shell-exit-code", Some(&vector_trust())).await;
+    let plan = shell_plan_at_head(&h, &owner, "0000000005c1");
+    let mut session = open(&h, open_frame(plan)).await.unwrap();
+    assert!(matches!(
+        next(&mut session).await,
+        shell_server_frame::Frame::Opened(_)
+    ));
+    session
+        .tx
+        .send(frame(shell_client_frame::Frame::Stdin(
+            b"exit 3\n".to_vec(),
+        )))
+        .await
+        .unwrap();
+    let shell_server_frame::Frame::Exit(exit) = next(&mut session).await else {
+        panic!("exit");
+    };
+    assert_eq!(exit.reason, "exited");
+    assert_eq!(exit.exit_code, 3);
+    assert_eq!(exit.signal, "");
+    // Closed by the client: the runner names the signal that ended it.
+    let plan = shell_plan_at_head(&h, &owner, "0000000005c2");
+    let mut session = open(&h, open_frame(plan)).await.unwrap();
+    assert!(matches!(
+        next(&mut session).await,
+        shell_server_frame::Frame::Opened(_)
+    ));
+    session.tx = mpsc::channel(1).0;
+    let shell_server_frame::Frame::Exit(exit) = next(&mut session).await else {
+        panic!("exit");
+    };
+    assert_eq!(exit.reason, "client_closed");
+    assert_eq!(exit.exit_code, 0);
+    assert_eq!(exit.signal, "SIGHUP");
+    h.stop().await;
+}
+
+/// contracts v1.1.7 (D-065 #9): the runner's `E_SHELL_LIMIT` (a session
+/// left over from before an agent restart holds a slot) ends the stream
+/// with `RESOURCE_EXHAUSTED` + `LIMIT_EXCEEDED`.
+#[tokio::test]
+async fn the_runners_shell_limit_is_resource_exhausted() {
+    let Some(owner) = TestSigner::load("owner") else {
+        eprintln!("skipped: docs keys.json not found");
+        return;
+    };
+    let h = Harness::start("shell-runner-limit", Some(&vector_trust())).await;
+    h.runner
+        .shell_limit
+        .store(true, std::sync::atomic::Ordering::SeqCst);
+    let plan = shell_plan_at_head(&h, &owner, "0000000005d1");
+    let status = match open(&h, open_frame(plan)).await {
+        Ok(mut session) => session.rx.message().await.unwrap_err(),
+        Err(status) => status,
+    };
+    assert_eq!(status.code(), Code::ResourceExhausted);
+    assert_eq!(
+        status.metadata().get("permanu-error-reason").unwrap(),
+        "ERROR_REASON_LIMIT_EXCEEDED"
+    );
+    h.stop().await;
+}
+
+/// contracts v1.1.6 (D-064 #2): a host shell signed as a server-level plan
+/// (no project) opens a host login shell.
+#[tokio::test]
+async fn a_server_level_host_shell_opens() {
+    let Some(owner) = TestSigner::load("owner") else {
+        eprintln!("skipped: docs keys.json not found");
+        return;
+    };
+    let h = Harness::start("shell-host-server-plan", Some(&vector_trust())).await;
+    let cases = vector("policy-cases");
+    let case = cases["cases"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|c| c["name"] == "ok_owner_host_shell_server_plan")
+        .unwrap();
+    let base: Value = serde_json::from_str(case["input"].as_str().unwrap()).unwrap();
+    let plan = SignedPlan {
+        envelope_json: owner.envelope(&base["plan"]).into_bytes(),
+        ..Default::default()
+    };
+    let mut session = open(&h, open_frame(plan)).await.unwrap();
+    let shell_server_frame::Frame::Opened(opened) = next(&mut session).await else {
+        panic!("the first frame is Opened");
+    };
+    assert_eq!(opened.service_id, "");
+    session.tx = mpsc::channel(1).0;
+    assert!(matches!(
+        next(&mut session).await,
+        shell_server_frame::Frame::Exit(_)
+    ));
+    h.stop().await;
+}

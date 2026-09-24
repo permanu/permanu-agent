@@ -25,12 +25,20 @@
 //!   connection (the HTTP/2 connection window; HTTP/1.1 reads one ≤ 4 MiB
 //!   body at a time). Every cut-off client is counted
 //!   ([`Telemetry::otlp_connections_refused`]).
+//! - Connection limits (contracts v1.1.7, D-065 #8): at most 8 concurrent
+//!   connections per source address (further ones closed at accept and
+//!   counted); a connection with no request in flight for 30 s is closed
+//!   (HTTP/1.1: no request bytes; gRPC: no open stream, with HTTP/2
+//!   keepalive `PING`s after 30 s and a 10 s ack timeout); the 30 s body
+//!   deadline of a connection's first request starts at accept.
 
+use std::collections::HashMap;
 use std::future::Future;
 use std::io::Read;
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::path::PathBuf;
 use std::pin::Pin;
+use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::task::{Context, Poll};
 use std::time::{Duration, Instant};
@@ -74,14 +82,23 @@ const SOURCE_BURST: f64 = 200.0;
 const RECHECK: Duration = Duration::from_secs(30);
 /// D-063 #17: request data in flight per connection (HTTP/2 window).
 pub const CONNECTION_IN_FLIGHT: u32 = 16 * 1024 * 1024;
+/// D-065 #8: HTTP/2 keepalive `PING` after this long without frames.
+pub const KEEPALIVE_INTERVAL: Duration = Duration::from_secs(30);
+/// D-065 #8: a keepalive `PING` not acknowledged within this closes it.
+pub const KEEPALIVE_TIMEOUT: Duration = Duration::from_secs(10);
 
 /// Connection limits of the OTLP listeners (D-063 #17).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct OtlpLimits {
     /// Concurrent connections over both listeners together.
     pub max_connections: usize,
-    /// A request body must be read completely within this.
+    /// A request body must be read completely within this (the first
+    /// request's from accept, D-065 #8).
     pub body_read: Duration,
+    /// D-065 #8: a connection with no request in flight this long is closed.
+    pub idle: Duration,
+    /// D-065 #8: concurrent connections per source address.
+    pub per_source: usize,
 }
 
 impl Default for OtlpLimits {
@@ -89,14 +106,141 @@ impl Default for OtlpLimits {
         Self {
             max_connections: 64,
             body_read: Duration::from_secs(30),
+            idle: Duration::from_secs(30),
+            per_source: 8,
         }
     }
 }
 
-/// A TCP connection holding one of the listeners' connection slots.
+/// One connection's request activity (D-065 #8).
+struct ConnState {
+    accepted: Instant,
+    /// Requests (HTTP/1.1) or streams (gRPC) in flight.
+    open: AtomicUsize,
+    /// Requests begun so far.
+    begun: AtomicU64,
+    /// When the connection was last active.
+    last: Mutex<Instant>,
+}
+
+impl ConnState {
+    fn new() -> Arc<Self> {
+        let now = Instant::now();
+        Arc::new(Self {
+            accepted: now,
+            open: AtomicUsize::new(0),
+            begun: AtomicU64::new(0),
+            last: Mutex::new(now),
+        })
+    }
+
+    fn touch(&self) {
+        *self.last.lock().unwrap_or_else(|p| p.into_inner()) = Instant::now();
+    }
+
+    fn last(&self) -> Instant {
+        *self.last.lock().unwrap_or_else(|p| p.into_inner())
+    }
+
+    /// Starts a request; its body deadline (the first one's runs from
+    /// accept).
+    fn begin(self: &Arc<Self>, body_read: Duration) -> (Active, Duration) {
+        self.open.fetch_add(1, Ordering::SeqCst);
+        self.touch();
+        let deadline = if self.begun.fetch_add(1, Ordering::SeqCst) == 0 {
+            body_read.saturating_sub(self.accepted.elapsed())
+        } else {
+            body_read
+        };
+        (Active(self.clone()), deadline)
+    }
+}
+
+/// A request in flight; its end makes the connection idle again.
+struct Active(Arc<ConnState>);
+
+impl Drop for Active {
+    fn drop(&mut self) {
+        self.0.touch();
+        self.0.open.fetch_sub(1, Ordering::SeqCst);
+    }
+}
+
+/// Connections per source address (D-065 #8).
+type SourceCounts = Arc<Mutex<HashMap<IpAddr, usize>>>;
+
+/// One of a source address's connection slots.
+struct SourceSlot {
+    counts: SourceCounts,
+    ip: IpAddr,
+}
+
+impl SourceSlot {
+    fn take(counts: &SourceCounts, ip: IpAddr, max: usize) -> Option<Self> {
+        let mut map = counts.lock().unwrap_or_else(|p| p.into_inner());
+        let count = map.entry(ip).or_default();
+        if *count >= max {
+            return None;
+        }
+        *count += 1;
+        Some(Self {
+            counts: counts.clone(),
+            ip,
+        })
+    }
+}
+
+impl Drop for SourceSlot {
+    fn drop(&mut self) {
+        let mut map = self.counts.lock().unwrap_or_else(|p| p.into_inner());
+        if let Some(count) = map.get_mut(&self.ip) {
+            *count = count.saturating_sub(1);
+            if *count == 0 {
+                map.remove(&self.ip);
+            }
+        }
+    }
+}
+
+/// gRPC connections by peer, so a call finds its connection's state.
+type ConnRegistry = Arc<Mutex<HashMap<SocketAddr, Arc<ConnState>>>>;
+
+/// Removes a connection from the registry when it closes.
+struct Registered {
+    registry: ConnRegistry,
+    peer: SocketAddr,
+}
+
+impl Drop for Registered {
+    fn drop(&mut self) {
+        self.registry
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .remove(&self.peer);
+    }
+}
+
+/// A TCP connection holding one of the listeners' connection slots and one
+/// of its source's; it reads as closed once idle (D-065 #8).
 struct Permitted {
     stream: TcpStream,
     _permit: OwnedSemaphorePermit,
+    _source: SourceSlot,
+    _registered: Option<Registered>,
+    state: Arc<ConnState>,
+    idle: Duration,
+    /// HTTP/1.1: request bytes count as activity; gRPC: only streams do
+    /// (keepalive `PING`s never keep a connection open).
+    bytes_are_activity: bool,
+    timer: Pin<Box<tokio::time::Sleep>>,
+    closed: bool,
+}
+
+impl Permitted {
+    /// Whether the connection has been idle long enough to close.
+    fn idle_expired(&self) -> bool {
+        self.state.open.load(Ordering::SeqCst) == 0 && self.state.last().elapsed() >= self.idle
+    }
 }
 
 impl AsyncRead for Permitted {
@@ -105,7 +249,35 @@ impl AsyncRead for Permitted {
         cx: &mut Context<'_>,
         buf: &mut ReadBuf<'_>,
     ) -> Poll<std::io::Result<()>> {
-        Pin::new(&mut self.stream).poll_read(cx, buf)
+        let this = &mut *self;
+        if this.closed {
+            return Poll::Ready(Ok(()));
+        }
+        let before = buf.filled().len();
+        if let Poll::Ready(result) = Pin::new(&mut this.stream).poll_read(cx, buf) {
+            if this.bytes_are_activity && buf.filled().len() > before {
+                this.state.touch();
+            }
+            return Poll::Ready(result);
+        }
+        loop {
+            if this.idle_expired() {
+                // Read as closed: the server ends the connection.
+                this.closed = true;
+                return Poll::Ready(Ok(()));
+            }
+            let next = if this.state.open.load(Ordering::SeqCst) == 0 {
+                this.state.last() + this.idle
+            } else {
+                Instant::now() + this.idle
+            };
+            this.timer
+                .as_mut()
+                .reset(tokio::time::Instant::from_std(next));
+            if this.timer.as_mut().poll(cx).is_pending() {
+                return Poll::Pending;
+            }
+        }
     }
 }
 
@@ -153,6 +325,9 @@ impl Connected for Permitted {
 struct BodyDeadline {
     after: Duration,
     telemetry: Option<Arc<Telemetry>>,
+    /// The connections, so a call counts as activity and its connection's
+    /// first call gets its deadline from accept (D-065 #8).
+    conns: ConnRegistry,
 }
 
 impl<S> tower::Layer<S> for BodyDeadline {
@@ -186,9 +361,32 @@ where
     }
 
     fn call(&mut self, request: http::Request<B>) -> Self::Future {
+        let BodyDeadline {
+            after,
+            telemetry,
+            conns,
+        } = self.deadline.clone();
+        let state = request
+            .extensions()
+            .get::<TcpConnectInfo>()
+            .and_then(TcpConnectInfo::remote_addr)
+            .and_then(|peer| {
+                conns
+                    .lock()
+                    .unwrap_or_else(|p| p.into_inner())
+                    .get(&peer)
+                    .cloned()
+            });
+        let (active, after) = match state {
+            Some(state) => {
+                let (active, deadline) = state.begin(after);
+                (Some(active), deadline)
+            }
+            None => (None, after),
+        };
         let call = self.inner.call(request);
-        let BodyDeadline { after, telemetry } = self.deadline.clone();
         Box::pin(async move {
+            let _active = active;
             match tokio::time::timeout(after, call).await {
                 Ok(result) => result,
                 Err(_) => {
@@ -597,6 +795,7 @@ async fn handle_http(
     receiver: Receiver,
     peer: SocketAddr,
     request: Request<Incoming>,
+    body_read: Duration,
 ) -> Response<Full<Bytes>> {
     if request.method() != Method::POST {
         return plain(StatusCode::METHOD_NOT_ALLOWED);
@@ -631,7 +830,7 @@ async fn handle_http(
         return plain(StatusCode::UNSUPPORTED_MEDIA_TYPE);
     }
     let read = Limited::new(request.into_body(), WIRE_MAX).collect();
-    let body = match tokio::time::timeout(receiver.body_read, read).await {
+    let body = match tokio::time::timeout(body_read, read).await {
         Ok(Ok(collected)) => collected.to_bytes(),
         Ok(Err(_)) => return plain(StatusCode::PAYLOAD_TOO_LARGE),
         Err(_) => {
@@ -718,11 +917,21 @@ struct Gate {
     net: Arc<dyn Network>,
     slots: Arc<Semaphore>,
     telemetry: Arc<Telemetry>,
+    /// D-065 #8: connections per source address.
+    sources: SourceCounts,
+    per_source: usize,
+    idle: Duration,
 }
 
 /// Accepts connections that pass the source check (9.5) while a connection
-/// slot is free; others are closed at once (and counted when over the cap).
-async fn accept_checked(listener: &TcpListener, gate: &Gate) -> Option<(Permitted, SocketAddr)> {
+/// slot and one of the source's slots are free; others are closed at once
+/// (and counted when over a cap). `registry` (gRPC) maps the peer to its
+/// connection state.
+async fn accept_checked(
+    listener: &TcpListener,
+    gate: &Gate,
+    registry: Option<&ConnRegistry>,
+) -> Option<(Permitted, SocketAddr)> {
     loop {
         match listener.accept().await {
             Ok((stream, peer)) => {
@@ -730,15 +939,39 @@ async fn accept_checked(listener: &TcpListener, gate: &Gate) -> Option<(Permitte
                     warn!(%peer, "OTLP connection refused: source is not on a Docker bridge");
                     continue;
                 }
+                let Some(source) = SourceSlot::take(&gate.sources, peer.ip(), gate.per_source)
+                else {
+                    gate.telemetry.count_otlp_refused();
+                    warn!(%peer, "OTLP connection refused: too many connections from this source");
+                    continue;
+                };
                 match gate.slots.clone().try_acquire_owned() {
                     Ok(permit) => {
+                        let state = ConnState::new();
+                        let registered = registry.map(|registry| {
+                            registry
+                                .lock()
+                                .unwrap_or_else(|p| p.into_inner())
+                                .insert(peer, state.clone());
+                            Registered {
+                                registry: registry.clone(),
+                                peer,
+                            }
+                        });
                         return Some((
                             Permitted {
                                 stream,
                                 _permit: permit,
+                                _source: source,
+                                _registered: registered,
+                                state,
+                                idle: gate.idle,
+                                bytes_are_activity: registry.is_none(),
+                                timer: Box::pin(tokio::time::sleep(gate.idle)),
+                                closed: false,
                             },
                             peer,
-                        ))
+                        ));
                     }
                     Err(_) => {
                         gate.telemetry.count_otlp_refused();
@@ -756,13 +989,17 @@ async fn accept_checked(listener: &TcpListener, gate: &Gate) -> Option<(Permitte
 
 fn serve_http(listener: TcpListener, receiver: Receiver, gate: Gate) -> JoinHandle<()> {
     tokio::spawn(async move {
-        while let Some((stream, peer)) = accept_checked(&listener, &gate).await {
+        while let Some((stream, peer)) = accept_checked(&listener, &gate, None).await {
             let receiver = receiver.clone();
+            let state = stream.state.clone();
             tokio::spawn(async move {
                 let service = hyper::service::service_fn(move |req| {
                     let receiver = receiver.clone();
+                    let (active, body_read) = state.begin(receiver.body_read);
                     async move {
-                        Ok::<_, std::convert::Infallible>(handle_http(receiver, peer, req).await)
+                        let response = handle_http(receiver, peer, req, body_read).await;
+                        drop(active);
+                        Ok::<_, std::convert::Infallible>(response)
                     }
                 });
                 let _ = hyper::server::conn::http1::Builder::new()
@@ -778,21 +1015,28 @@ fn serve_http(listener: TcpListener, receiver: Receiver, gate: Gate) -> JoinHand
 fn serve_grpc(listener: TcpListener, receiver: Receiver, gate: Gate) -> JoinHandle<()> {
     tokio::spawn(async move {
         let (tx, rx) = mpsc::channel::<std::io::Result<Permitted>>(16);
+        let conns: ConnRegistry = Arc::default();
         let deadline = BodyDeadline {
             after: receiver.body_read,
             telemetry: Some(gate.telemetry.clone()),
+            conns: conns.clone(),
         };
-        let accept = tokio::spawn(async move {
-            while let Some((stream, _)) = accept_checked(&listener, &gate).await {
+        // QA_M2 G4: the accept task owns the listener; it must end with this
+        // task (an unbind aborts it), or the port stays taken and every
+        // rebind fails with `Address in use`.
+        let accept = AbortOnDrop(tokio::spawn(async move {
+            while let Some((stream, _)) = accept_checked(&listener, &gate, Some(&conns)).await {
                 if tx.send(Ok(stream)).await.is_err() {
                     return;
                 }
             }
-        });
+        }));
         let limit = DECOMPRESSED_MAX;
         let result = tonic::transport::Server::builder()
             .concurrency_limit_per_connection(32)
             .initial_connection_window_size(CONNECTION_IN_FLIGHT)
+            .http2_keepalive_interval(Some(KEEPALIVE_INTERVAL))
+            .http2_keepalive_timeout(Some(KEEPALIVE_TIMEOUT))
             .layer(deadline)
             .add_service(
                 TraceServiceServer::new(receiver.clone())
@@ -811,11 +1055,20 @@ fn serve_grpc(listener: TcpListener, receiver: Receiver, gate: Gate) -> JoinHand
             )
             .serve_with_incoming(tokio_stream::wrappers::ReceiverStream::new(rx))
             .await;
-        accept.abort();
+        drop(accept);
         if let Err(err) = result {
             warn!(error = %err, "OTLP gRPC server ended");
         }
     })
+}
+
+/// Aborts a task when dropped (also when its owner is aborted).
+struct AbortOnDrop(JoinHandle<()>);
+
+impl Drop for AbortOnDrop {
+    fn drop(&mut self) {
+        self.0.abort();
+    }
 }
 
 /// Keeps the listeners bound to the gateway while the checks pass.
@@ -886,6 +1139,9 @@ impl Listeners {
             net: self.net.clone(),
             slots: Arc::new(Semaphore::new(self.limits.max_connections)),
             telemetry: self.telemetry.clone(),
+            sources: Arc::default(),
+            per_source: self.limits.per_source,
+            idle: self.limits.idle,
         };
         let tasks = [
             serve_grpc(grpc, receiver.clone(), gate.clone()),
@@ -1173,6 +1429,7 @@ mod tests {
         let mut svc = BodyDeadline {
             after: Duration::from_millis(50),
             telemetry: None,
+            conns: Arc::default(),
         }
         .layer(never);
         let response = svc
@@ -1186,6 +1443,154 @@ mod tests {
             tonic::Status::from_header_map(response.headers()).map(|s| s.code()),
             Some(tonic::Code::DeadlineExceeded)
         );
+    }
+
+    /// D-065 #8: the normative numbers.
+    #[test]
+    fn connection_limits_are_the_v1_1_7_numbers() {
+        let limits = OtlpLimits::default();
+        assert_eq!(limits.idle, Duration::from_secs(30));
+        assert_eq!(limits.per_source, 8);
+        assert_eq!(KEEPALIVE_INTERVAL, Duration::from_secs(30));
+        assert_eq!(KEEPALIVE_TIMEOUT, Duration::from_secs(10));
+    }
+
+    /// D-065 #8: a connection with no request for the idle time is closed
+    /// (HTTP/1.1 and gRPC alike).
+    #[tokio::test]
+    async fn an_idle_connection_is_closed() {
+        let dir = temp_dir("otlp-idle");
+        let t = test_support::open(dir.join("telemetry"));
+        let mut l = listeners(t.clone(), Some("test-br"), true);
+        l.limits.idle = Duration::from_millis(200);
+        let bound = l.reconcile(None).await.expect("bound");
+        let listen = t.otlp();
+        for addr in [&listen.http_listen, &listen.grpc_listen] {
+            let mut stream = TcpStream::connect(addr).await.unwrap();
+            let mut buf = Vec::new();
+            let read =
+                tokio::time::timeout(Duration::from_secs(3), stream.read_to_end(&mut buf)).await;
+            assert!(matches!(read, Ok(Ok(_)) | Ok(Err(_))), "{addr}: {read:?}");
+        }
+        // A kept-alive HTTP connection is closed once idle after a request.
+        let mut stream = TcpStream::connect(&listen.http_listen).await.unwrap();
+        stream
+            .write_all(b"POST /v1/traces HTTP/1.1\r\nHost: x\r\nContent-Length: 0\r\n\r\n")
+            .await
+            .unwrap();
+        let mut buf = Vec::new();
+        let read = tokio::time::timeout(Duration::from_secs(3), stream.read_to_end(&mut buf)).await;
+        assert!(matches!(read, Ok(Ok(_))), "{read:?}");
+        assert!(String::from_utf8_lossy(&buf).starts_with("HTTP/1.1 415"));
+        bound.tasks.iter().for_each(JoinHandle::abort);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    /// D-065 #8: at most `per_source` concurrent connections per source
+    /// address; the next one is closed at accept and counted.
+    #[tokio::test]
+    async fn connections_per_source_are_capped() {
+        let dir = temp_dir("otlp-per-source");
+        let t = test_support::open(dir.join("telemetry"));
+        let mut l = listeners(t.clone(), Some("test-br"), true);
+        l.limits.per_source = 2;
+        let bound = l.reconcile(None).await.expect("bound");
+        let listen = t.otlp();
+        let held_http = TcpStream::connect(&listen.http_listen).await.unwrap();
+        let held_grpc = TcpStream::connect(&listen.grpc_listen).await.unwrap();
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        let mut refused = TcpStream::connect(&listen.http_listen).await.unwrap();
+        let mut buf = Vec::new();
+        let read =
+            tokio::time::timeout(Duration::from_secs(2), refused.read_to_end(&mut buf)).await;
+        assert!(matches!(read, Ok(Ok(0)) | Ok(Err(_))), "{read:?}");
+        assert_eq!(t.otlp_connections_refused(), 1);
+        drop(held_http);
+        drop(held_grpc);
+        let mut status = 0;
+        for _ in 0..40 {
+            tokio::time::sleep(Duration::from_millis(50)).await;
+            status = http_post(&listen.http_listen, "/v1/traces", "text/plain", "x")
+                .await
+                .0;
+            if status != 0 {
+                break;
+            }
+        }
+        assert_eq!(status, 415);
+        bound.tasks.iter().for_each(JoinHandle::abort);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    /// D-065 #8: the first request's body deadline starts at accept, so a
+    /// client that waits before sending gets less time.
+    #[tokio::test]
+    async fn the_first_request_deadline_starts_at_accept() {
+        let dir = temp_dir("otlp-accept-deadline");
+        let t = test_support::open(dir.join("telemetry"));
+        let mut l = listeners(t.clone(), Some("test-br"), true);
+        l.limits.body_read = Duration::from_millis(600);
+        let bound = l.reconcile(None).await.expect("bound");
+        let listen = t.otlp();
+        let mut stream = TcpStream::connect(&listen.http_listen).await.unwrap();
+        tokio::time::sleep(Duration::from_millis(400)).await;
+        let sent = Instant::now();
+        stream
+            .write_all(
+                b"POST /v1/traces HTTP/1.1\r\nHost: x\r\nContent-Type: application/json\r\nContent-Length: 100\r\n\r\n{",
+            )
+            .await
+            .unwrap();
+        let mut buf = Vec::new();
+        let read = tokio::time::timeout(Duration::from_secs(3), stream.read_to_end(&mut buf)).await;
+        assert!(matches!(read, Ok(Ok(_))), "{read:?}");
+        assert!(String::from_utf8_lossy(&buf).starts_with("HTTP/1.1 408"));
+        assert!(
+            sent.elapsed() < Duration::from_millis(450),
+            "{:?}",
+            sent.elapsed()
+        );
+        bound.tasks.iter().for_each(JoinHandle::abort);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    /// QA_M2 G4: unbinding releases both ports, so the next rebind on the
+    /// same ports succeeds instead of `Address in use` every 30 s.
+    #[tokio::test]
+    async fn an_unbind_releases_the_ports_for_a_rebind() {
+        let dir = temp_dir("otlp-rebind");
+        let t = test_support::open(dir.join("telemetry"));
+        let free = || {
+            let socket = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+            socket.local_addr().unwrap().port()
+        };
+        let firewall = Arc::new(Firewall(AtomicBool::new(true)));
+        let mut l = listeners(t.clone(), Some("test-br"), true);
+        l.firewall = firewall.clone();
+        l.grpc_port = free();
+        l.http_port = free();
+        let bound = l.reconcile(None).await;
+        assert!(bound.is_some());
+        let listen = t.otlp();
+        // Let the listener tasks start (their accept loops own the sockets).
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        firewall.0.store(false, Ordering::SeqCst);
+        let bound = l.reconcile(bound).await;
+        assert!(bound.is_none());
+        assert!(t.otlp().grpc_listen.is_empty());
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        // Nothing listens any more (a leftover accept task would).
+        for addr in [&listen.grpc_listen, &listen.http_listen] {
+            assert!(
+                TcpStream::connect(addr).await.is_err(),
+                "{addr} still listens"
+            );
+        }
+        firewall.0.store(true, Ordering::SeqCst);
+        let bound = l.reconcile(bound).await.expect("rebound on the same ports");
+        assert!(!t.otlp().grpc_listen.is_empty());
+        bound.tasks.iter().for_each(JoinHandle::abort);
+        std::fs::remove_dir_all(dir).unwrap();
     }
 
     #[cfg(feature = "dev-paths")]

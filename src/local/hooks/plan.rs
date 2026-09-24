@@ -217,4 +217,41 @@ mod tests {
         assert_ne!(again.plan_id, built.plan_id);
         assert_ne!(again.deployments[0].1, built.deployments[0].1);
     }
+
+    /// D-064 #9: a rule plan inherits the routes of the last admitted spec,
+    /// so an auto-deployed service keeps its default route.
+    #[test]
+    fn the_rule_plan_keeps_the_last_specs_routes() {
+        let context = &vector("policy-cases")["context"];
+        let rule = &context["rules"][0]["rule"];
+        let service = "01a0cdb5-3500-70c1-8000-000000000001";
+        let mut base = context["admitted_specs"][service].clone();
+        let routes = json!([
+            {"hostname": "shop.example.com", "source": "custom"},
+            {"hostname": "web-production-shop.11-22-0-10.sslip.io", "source": "default"}
+        ]);
+        base["routes"] = routes.clone();
+        let services = [ServiceBuild {
+            service_id: service.to_owned(),
+            last_spec: LastSpec {
+                spec: base,
+                spec_digest_hex: "0".repeat(64),
+            },
+            image_digest_hex: "e".repeat(64),
+        }];
+        let built = build_rule_plan(&RulePlanInput {
+            rule,
+            rule_digest_hex: context["rules"][0]["rule_digest_hex"].as_str().unwrap(),
+            environment_id: "01a0cdb5-3500-70b2-8000-000000000001",
+            server_id: "01a0cdb5-3500-70a1-8000-000000000001",
+            head: &"4".repeat(64),
+            delivery: &delivery(),
+            services: &services,
+            now: timestamp("2026-09-23T10:05:00Z").unwrap(),
+        })
+        .unwrap();
+        let text = std::str::from_utf8(&built.specs[0]).unwrap();
+        let (spec, _) = crate::signed_plan::verify::parse_spec(text).expect("a valid spec");
+        assert_eq!(spec["routes"], routes);
+    }
 }

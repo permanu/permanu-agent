@@ -1,0 +1,167 @@
+{
+  "note": "v1.0.15 (contracts v1.1.7, D-065): default route hosts (engine-api.md Default routes). existing_hosts are the route hosts of other services on the same server. expect is {hostname} or {error: conflict}.",
+  "cases": [
+    {
+      "name": "plain",
+      "service_name": "Web",
+      "environment_name": "Production",
+      "project_name": "Shop",
+      "service_id": "01a0cdb5-3500-70c1-8000-000000000001",
+      "ipv4": "11.22.0.10",
+      "existing_hosts": [],
+      "expect": {
+        "hostname": "web-production-shop.11-22-0-10.sslip.io"
+      }
+    },
+    {
+      "name": "plain_other_services_present",
+      "service_name": "Web",
+      "environment_name": "Production",
+      "project_name": "Shop",
+      "service_id": "01a0cdb5-3500-70c1-8000-000000000001",
+      "ipv4": "11.22.0.10",
+      "existing_hosts": [
+        "api-production-shop.11-22-0-10.sslip.io",
+        "shop.example.com"
+      ],
+      "expect": {
+        "hostname": "web-production-shop.11-22-0-10.sslip.io"
+      }
+    },
+    {
+      "name": "plain_same_label_other_ip",
+      "service_name": "Web",
+      "environment_name": "Production",
+      "project_name": "Shop",
+      "service_id": "01a0cdb5-3500-70c1-8000-000000000001",
+      "ipv4": "11.22.0.10",
+      "existing_hosts": [
+        "web-production-shop.11-22-0-11.sslip.io"
+      ],
+      "expect": {
+        "hostname": "web-production-shop.11-22-0-10.sslip.io"
+      }
+    },
+    {
+      "name": "collision_default_route",
+      "service_name": "Web",
+      "environment_name": "Production",
+      "project_name": "Shop",
+      "service_id": "01a0cdb5-3500-70c1-8000-000000000001",
+      "ipv4": "11.22.0.10",
+      "existing_hosts": [
+        "web-production-shop.11-22-0-10.sslip.io"
+      ],
+      "expect": {
+        "hostname": "web-production-shop-117dd8.11-22-0-10.sslip.io"
+      }
+    },
+    {
+      "name": "collision_normalized_names",
+      "service_name": "web_app",
+      "environment_name": "production",
+      "project_name": "shop",
+      "service_id": "01a0cdb5-3500-70c1-8000-000000000001",
+      "ipv4": "11.22.0.10",
+      "existing_hosts": [
+        "web-app-production-shop.11-22-0-10.sslip.io"
+      ],
+      "expect": {
+        "hostname": "web-app-production-shop-117dd8.11-22-0-10.sslip.io"
+      }
+    },
+    {
+      "name": "collision_join_ambiguity",
+      "service_name": "a",
+      "environment_name": "b-c",
+      "project_name": "shop",
+      "service_id": "01a0cdb5-3500-70c1-8000-000000000002",
+      "ipv4": "11.22.0.10",
+      "existing_hosts": [
+        "a-b-c-shop.11-22-0-10.sslip.io"
+      ],
+      "expect": {
+        "hostname": "a-b-c-shop-0bd0f5.11-22-0-10.sslip.io"
+      }
+    },
+    {
+      "name": "collision_other_service_id",
+      "service_name": "Web",
+      "environment_name": "Production",
+      "project_name": "Shop",
+      "service_id": "01a0cdb5-3500-70c1-8000-000000000002",
+      "ipv4": "11.22.0.10",
+      "existing_hosts": [
+        "web-production-shop.11-22-0-10.sslip.io"
+      ],
+      "expect": {
+        "hostname": "web-production-shop-0bd0f5.11-22-0-10.sslip.io"
+      }
+    },
+    {
+      "name": "empty_part_left_out",
+      "service_name": "Web",
+      "environment_name": "!!!",
+      "project_name": "Shop",
+      "service_id": "01a0cdb5-3500-70c1-8000-000000000001",
+      "ipv4": "11.22.0.10",
+      "existing_hosts": [],
+      "expect": {
+        "hostname": "web-shop.11-22-0-10.sslip.io"
+      }
+    },
+    {
+      "name": "non_ascii_is_dash",
+      "service_name": "Café Kiosk",
+      "environment_name": "Production",
+      "project_name": "Shop",
+      "service_id": "01a0cdb5-3500-70c1-8000-000000000001",
+      "ipv4": "11.22.0.10",
+      "existing_hosts": [],
+      "expect": {
+        "hostname": "caf-iosk-production-shop.11-22-0-10.sslip.io"
+      }
+    },
+    {
+      "name": "long_plain_cut",
+      "service_name": "api-gateway-api-gateway-api-gateway-edge",
+      "environment_name": "production-europe-west",
+      "project_name": "acme-commerce-platform",
+      "service_id": "01a0cdb5-3500-70c1-8000-000000000001",
+      "ipv4": "11.22.0.10",
+      "existing_hosts": [],
+      "expect": {
+        "hostname": "api-gateway-api-gateway-api-gateway-edge-production-eu-881cd3a8.11-22-0-10.sslip.io"
+      }
+    },
+    {
+      "name": "long_collision_cut_56",
+      "service_name": "api-gateway-api-gateway-api-gateway-edge",
+      "environment_name": "production-europe-west",
+      "project_name": "acme-commerce-platform",
+      "service_id": "01a0cdb5-3500-70c1-8000-000000000001",
+      "ipv4": "11.22.0.10",
+      "existing_hosts": [
+        "api-gateway-api-gateway-api-gateway-edge-production-eu-881cd3a8.11-22-0-10.sslip.io"
+      ],
+      "expect": {
+        "hostname": "api-gateway-api-gateway-api-gateway-edge-production-euro-117dd8.11-22-0-10.sslip.io"
+      }
+    },
+    {
+      "name": "collision_suffixed_taken_too",
+      "service_name": "Web",
+      "environment_name": "Production",
+      "project_name": "Shop",
+      "service_id": "01a0cdb5-3500-70c1-8000-000000000001",
+      "ipv4": "11.22.0.10",
+      "existing_hosts": [
+        "web-production-shop-117dd8.11-22-0-10.sslip.io",
+        "web-production-shop.11-22-0-10.sslip.io"
+      ],
+      "expect": {
+        "error": "conflict"
+      }
+    }
+  ]
+}

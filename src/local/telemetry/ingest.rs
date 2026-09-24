@@ -105,7 +105,19 @@ pub struct LogIngest {
     cron_runs: Option<Arc<dyn CronRuns>>,
     /// Route host → service (D-063 #9) for Dwaar records.
     routes: Option<Arc<super::routes::RoutesMap>>,
+    /// The `dwaar.*` series (agent-protocol.md 9.5, QA_M2 X1).
+    dwaar: super::dwaar_metrics::DwaarMetrics,
+    /// This server's id (`""` before the bootstrap), for `dwaar.*` labels.
+    server_id: Option<ServerIdFn>,
+    /// The last id read and when.
+    server_id_cache: (String, Option<Instant>),
 }
+
+/// Reads this server's id (the trust store's `server_id`).
+pub type ServerIdFn = Arc<dyn Fn() -> String + Send + Sync>;
+
+/// How long a read server id is reused.
+const SERVER_ID_EVERY: Duration = Duration::from_secs(60);
 
 fn valid_container_id(id: &str) -> bool {
     !id.is_empty()
@@ -164,6 +176,9 @@ impl LogIngest {
             rollups: Rollups::new(),
             cron_runs: None,
             routes: None,
+            dwaar: super::dwaar_metrics::DwaarMetrics::default(),
+            server_id: None,
+            server_id_cache: (String::new(), None),
         };
         ingest.load_checkpoint();
         ingest
@@ -173,6 +188,25 @@ impl LogIngest {
     pub fn with_routes(mut self, routes: Arc<super::routes::RoutesMap>) -> Self {
         self.routes = Some(routes);
         self
+    }
+
+    /// Labels the `dwaar.*` series with this server's id.
+    pub fn with_server_id(mut self, server_id: ServerIdFn) -> Self {
+        self.server_id = Some(server_id);
+        self
+    }
+
+    /// This server's id, re-read at most every [`SERVER_ID_EVERY`] (and
+    /// while still empty).
+    fn server_id(&mut self, now: Instant) -> String {
+        let Some(read) = &self.server_id else {
+            return String::new();
+        };
+        let (id, at) = &self.server_id_cache;
+        if id.is_empty() || at.is_none_or(|at| now.duration_since(at) >= SERVER_ID_EVERY) {
+            self.server_id_cache = (read(), Some(now));
+        }
+        self.server_id_cache.0.clone()
     }
 
     /// Files cron lines under their `CronRun` (v1.1.3, D-061).
@@ -368,17 +402,41 @@ impl LogIngest {
         self.last_sec = Some(self.last_sec.map_or(sec, |last| last.max(sec)));
     }
 
-    /// Writes the Dwaar rollups of every minute closed at `now_sec`.
+    /// Writes the Dwaar rollups of every minute closed at `now_sec`, each
+    /// under the service of its route host (D-060, D-063 #9), and the
+    /// changed `dwaar.*` series (at most every 10 s).
     pub fn flush_rollups(&mut self, now_sec: i64) {
         for row in self.rollups.closed(now_sec) {
             let ts = row.bucket_start.map_or(now_sec, |t| t.seconds) * NANOS;
+            let owner = row
+                .dimensions
+                .first()
+                .zip(self.routes.as_ref())
+                .and_then(|(host, routes)| routes.owner(&host.value))
+                .unwrap_or_default();
+            let stored = super::records::StoredAnalyticsRow {
+                bucket_start: row.bucket_start,
+                dimensions: row.dimensions,
+                values: row.values,
+                service_id: owner.service_id,
+                project_id: owner.project_id,
+                environment_id: owner.environment_id,
+            };
             self.telemetry.submit(
                 Kind::Analytics,
                 Producer::System,
                 ts,
                 TAG_ANALYTICS_ROW,
-                encode(&row),
+                encode(&stored),
                 false,
+            );
+        }
+        for sample in self.dwaar.take_samples(now_sec, false) {
+            self.telemetry.otlp_state.metric(
+                &self.telemetry,
+                Producer::System,
+                now_sec * NANOS,
+                sample,
             );
         }
     }
@@ -423,6 +481,11 @@ impl LogIngest {
                     .routes
                     .as_ref()
                     .and_then(|routes| routes.owner(&access.host));
+                if let Some(owner) = &owner {
+                    let server_id = self.server_id(now);
+                    self.dwaar
+                        .record(ts.div_euclid(NANOS), &access, owner, &server_id);
+                }
             }
         }
         let owner = owner.unwrap_or_default();
@@ -1162,6 +1225,100 @@ pub(crate) mod tests {
         );
         assert_eq!(http[1].service_id, "");
         assert_eq!(http[1].project_id, "");
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    /// QA_M2 X1 (agent-protocol.md 9.5): Dwaar access lines of a route host
+    /// that belongs to a service feed the `dwaar.*` series, and the 60 s
+    /// rollups carry that service's ids for `QueryAnalytics`.
+    #[tokio::test]
+    async fn dwaar_lines_feed_the_route_metrics_and_attributed_rollups() {
+        use super::super::records::{MetricSample, StoredAnalyticsRow, TAG_METRIC};
+        const SVC: &str = "01a0cdb5-3500-70c1-8000-000000000001";
+        const SERVER: &str = "01a0cdb5-3500-70a1-8000-000000000001";
+        let dir = temp_dir("ingest-dwaar-metrics");
+        let t = test_support::open(dir.join("telemetry"));
+        let runner = ScriptRunner::new(Vec::new());
+        let routes = Arc::new(super::super::routes::RoutesMap::default());
+        routes.replace(
+            super::super::routes::parse_routes(&json!({"routes": [{"host": "app.example.com",
+                "service_id": SVC,
+                "project_id": "01a0cdb5-3500-70b1-8000-000000000001",
+                "environment_id": "01a0cdb5-3500-70b2-8000-000000000001",
+                "source": "default"}]}))
+            .unwrap(),
+        );
+        let mut ingest = LogIngest::new(t.clone(), runner, "host-1".into())
+            .with_routes(routes)
+            .with_server_id(Arc::new(|| SERVER.to_owned()));
+        let access = |host: &str, path: &str, status: u16| {
+            format!(
+                r#"{{"timestamp":"2026-09-23T10:00:05Z","request_id":"r1","method":"GET","path":"{path}","host":"{host}","status":{status},"response_time_us":2500,"client_ip":"203.0.113.0","bytes_sent":10,"route":"{host}","route_path":"/ignored"}}"#
+            )
+        };
+        let now = Instant::now();
+        for (i, (host, path, status)) in [
+            ("app.example.com", "/hooks/42", 200),
+            ("app.example.com", "/hooks/43", 503),
+            ("hooks.example.com", "/hooks/44", 200),
+        ]
+        .iter()
+        .enumerate()
+        {
+            let mut line = system(
+                "dwaar.service",
+                6,
+                &format!("s=1;i={i}"),
+                &access(host, path, *status),
+            );
+            line["at"] = json!("2026-09-23T10:00:05Z");
+            ingest.handle(&line, now).await;
+        }
+        ingest.flush_rollups(timestamp("2026-09-23T10:01:30Z"));
+        t.sync().await;
+        let samples: Vec<MetricSample> = t
+            .snapshot(Kind::Metrics)
+            .scan(ScanSpec::default())
+            .filter_map(Result::ok)
+            .filter(|r| r.tag == TAG_METRIC)
+            .filter_map(|r| MetricSample::decode(r.payload.as_slice()).ok())
+            .collect();
+        let requests: Vec<&MetricSample> = samples
+            .iter()
+            .filter(|s| s.name == "dwaar.requests")
+            .collect();
+        assert_eq!(requests.len(), 2, "{samples:?}");
+        assert!(requests.iter().all(|s| s.labels["service_id"] == SVC
+            && s.labels["server_id"] == SERVER
+            && s.labels["route"] == "app.example.com"
+            && s.labels["route_path"] == "/hooks/:id"));
+        assert_eq!(
+            samples
+                .iter()
+                .filter(|s| s.name == "dwaar.requests.5xx")
+                .count(),
+            1
+        );
+        assert_eq!(
+            samples
+                .iter()
+                .filter(|s| s.name == "dwaar.request.duration")
+                .count(),
+            2
+        );
+        let rows: Vec<StoredAnalyticsRow> = stored_kind(&t, Kind::Analytics);
+        assert_eq!(rows.len(), 2);
+        let app = rows
+            .iter()
+            .find(|r| r.dimensions[0].value == "app.example.com")
+            .unwrap();
+        assert_eq!(app.service_id, SVC);
+        assert_eq!(app.environment_id, "01a0cdb5-3500-70b2-8000-000000000001");
+        let other = rows
+            .iter()
+            .find(|r| r.dimensions[0].value == "hooks.example.com")
+            .unwrap();
+        assert_eq!(other.service_id, "");
         std::fs::remove_dir_all(dir).unwrap();
     }
 

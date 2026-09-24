@@ -12,6 +12,7 @@
 pub mod age_recipient;
 pub mod artifacts;
 pub mod change;
+pub mod database;
 pub mod errors;
 pub mod events;
 pub mod execution;
@@ -51,6 +52,7 @@ use crate::{
         artifact_service_server::ArtifactServiceServer,
         backup_service_server::BackupServiceServer,
         change_service_server::ChangeServiceServer,
+        database_service_server::DatabaseServiceServer,
         event_service_server::EventServiceServer,
         info_service_server::{InfoService, InfoServiceServer},
         schedule_service_server::ScheduleServiceServer,
@@ -77,6 +79,9 @@ pub const PROTOCOL_VERSION_2_0: &str = "2.0";
 /// ingestion, the OTLP receiver and every `TelemetryService` RPC from the
 /// store.
 pub const CAPABILITY_TELEMETRY: &str = "telemetry.v1";
+/// v2.1.2 (contracts v1.1.2, D-060): `QueryAnalytics` from the store with
+/// `service_ids` (the rollups carry the service of their route host).
+pub const CAPABILITY_ANALYTICS: &str = "analytics.v1";
 /// agent-protocol.md section 2 (v2.0.2, D-033): the agent admits signed-plan
 /// v1 and drives execution; it serves the section 6.4 store with the v1.0.2
 /// columns; and, with a recipient, the runner decrypts sealed secrets.
@@ -373,12 +378,15 @@ fn capabilities(
         CAPABILITY_DEPLOYMENT_IDS.to_string(),
         CAPABILITY_LOGS_CONTAINERS.to_string(),
         CAPABILITY_SERVICE_KIND.to_string(),
+        // v2.1.6 (D-064 #1): DatabaseService over the runner's db_query.
+        database::CAPABILITY_DATABASE.to_string(),
     ];
     if !age_recipient.is_empty() {
         ids.push(CAPABILITY_AGE.to_string());
     }
     if telemetry {
         ids.push(CAPABILITY_TELEMETRY.to_string());
+        ids.push(CAPABILITY_ANALYTICS.to_string());
     }
     if schedulers {
         ids.extend(sched::Schedulers::capabilities().map(str::to_owned));
@@ -559,6 +567,13 @@ impl LocalServer {
         let state_svc = StateServiceServer::new(StateSvc { probe: self.probe })
             .max_decoding_message_size(MAX_MESSAGE_BYTES)
             .max_encoding_message_size(MAX_MESSAGE_BYTES);
+        // v2.1.6 (D-064 #1): database rows over the runner's `db_query`.
+        let database_svc = DatabaseServiceServer::new(database::DatabaseSvc::new(
+            self.core.runner.clone(),
+            self.core.store.clone(),
+        ))
+        .max_decoding_message_size(MAX_MESSAGE_BYTES)
+        .max_encoding_message_size(MAX_MESSAGE_BYTES);
         let events = self.core.events.clone();
         let bus = events.clone();
         let shutdown = async move {
@@ -601,6 +616,7 @@ impl LocalServer {
         let shell_svc = ShellServiceServer::new(shell::ShellSvc {
             core: self.core.clone(),
             idle: shell::IDLE,
+            slots: shell::slots(),
         })
         .max_decoding_message_size(MAX_MESSAGE_BYTES)
         .max_encoding_message_size(MAX_MESSAGE_BYTES);
@@ -639,6 +655,7 @@ impl LocalServer {
             .layer(presence::PresenceLayer(self.presence.clone()))
             .add_service(info_svc)
             .add_service(state_svc)
+            .add_service(database_svc)
             .add_service(change_svc)
             .add_service(shell_svc)
             .add_service(event_svc)
@@ -984,8 +1001,16 @@ fn start_telemetry(
     let routes = Arc::new(telemetry::routes::RoutesMap::default());
     tasks.push(routes.spawn(runner.clone()));
     tasks.push(spawn_routes_nudge(routes.clone(), core.events.clone()));
-    let mut ingest =
-        telemetry::ingest::LogIngest::new(store.clone(), runner.clone(), host).with_routes(routes);
+    // QA_M2 X1: `dwaar.*` series carry this server's id (read from the
+    // trust store; `server.add` may write it after the agent started).
+    let trust = core.trust.clone();
+    let server_id: telemetry::ingest::ServerIdFn = Arc::new(move || match trust.load() {
+        crate::signed_plan::trust::TrustState::Valid(store) => store.server_id,
+        _ => String::new(),
+    });
+    let mut ingest = telemetry::ingest::LogIngest::new(store.clone(), runner.clone(), host)
+        .with_routes(routes)
+        .with_server_id(server_id);
     if let Some(cron_runs) = cron_runs {
         ingest = ingest.with_cron_runs(cron_runs);
     }
@@ -1195,7 +1220,8 @@ mod tests {
                 "admissions.v1",
                 "deployment_ids.v1",
                 "logs.containers.v1",
-                "service_kind.v1"
+                "service_kind.v1",
+                "database.v1"
             ]
         );
         assert_eq!(
@@ -1206,6 +1232,7 @@ mod tests {
                 "deployment_ids.v1",
                 "logs.containers.v1",
                 "service_kind.v1",
+                "database.v1",
                 "age.v1"
             ]
         );
@@ -1218,7 +1245,9 @@ mod tests {
                 "deployment_ids.v1",
                 "logs.containers.v1",
                 "service_kind.v1",
-                "telemetry.v1"
+                "database.v1",
+                "telemetry.v1",
+                "analytics.v1"
             ]
         );
         let with_schedulers = capabilities("", false, true, false, false);
@@ -1314,6 +1343,7 @@ mod tests {
                 "deployment_ids.v1",
                 "logs.containers.v1",
                 "service_kind.v1",
+                "database.v1",
                 "age.v1"
             ]
         );

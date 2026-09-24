@@ -482,6 +482,43 @@ async fn a_failed_build_fails_the_delivery_and_admits_nothing() {
     f.h.stop().await;
 }
 
+/// D-064 #7: a build an admitted `operation.cancel` stopped (runner
+/// `E_CANCELLED`) ends `CANCELLED` with `failure_reason` `cancelled` and
+/// the reason CANCELLED, never a failure.
+#[tokio::test]
+async fn a_cancelled_build_ends_cancelled_not_failed() {
+    let f = fixture("hooks-build-cancelled").await;
+    f.h.runner
+        .build_answers
+        .lock()
+        .unwrap()
+        .push(json!({"ok": false, "error": {
+        "code": "E_CANCELLED", "message": "cancelled by operation.cancel"}}));
+    let body = push_body("refs/heads/main", COMMIT);
+    f.hooks.intake(github(&body, SECRET, "203.0.113.9")).await;
+    f.hooks.settle().await;
+    let delivery = only_delivery(&f.hooks);
+    assert_eq!(delivery.status, WebhookDeliveryStatus::Failed as i32);
+    assert_eq!(delivery.status_reason, "cancelled");
+    let mut client = WebhookServiceClient::new(f.h.channel.clone());
+    let builds = client
+        .list_server_builds(ListServerBuildsRequest::default())
+        .await
+        .unwrap()
+        .into_inner()
+        .builds;
+    assert_eq!(builds.len(), 1);
+    assert_eq!(builds[0].status, ServerBuildStatus::Cancelled as i32);
+    assert_eq!(builds[0].failure_reason, "cancelled");
+    assert!(
+        builds[0].error.contains("ERROR_REASON_CANCELLED"),
+        "{}",
+        builds[0].error
+    );
+    assert!(f.h.core.store.admissions_after(2, 10).unwrap().is_empty());
+    f.h.stop().await;
+}
+
 /// A deploy that cannot start after a successful build (here the trust
 /// store vanished mid-build) ends every build `FAILED`, never left
 /// `BUILDING`/`DEPLOYING`, and fails the delivery.

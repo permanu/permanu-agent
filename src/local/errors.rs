@@ -52,6 +52,12 @@ pub fn reason_for(code: PlanCode) -> ErrorReason {
         P::PlanNotAdmitted => R::PlanNotAdmitted,
         P::RollbackTargetUnknown => R::RollbackTargetUnknown,
         P::NotSupportedYet => R::NotSupportedYet,
+        // v2.1.5 / v2.1.6 (D-063 #11, D-064 #7): everywhere, never a failure.
+        P::Cancelled => R::Cancelled,
+        // v2.1.7 (D-065 #9): the runner's shell slots are all taken.
+        P::ShellLimit => R::LimitExceeded,
+        // v2.1.7 (D-065 #4): not a signed-plan code (agent-protocol.md 10.3).
+        P::ChannelMissing => R::ChannelMissing,
         // A runner code the section 5 table does not list is INTERNAL; the
         // exact code travels in `error_code`.
         P::PlanRequired | P::PlanAction | P::PlanArgs => R::Internal,
@@ -95,6 +101,9 @@ fn message_for(code: PlanCode) -> &'static str {
         PlanCode::Internal => "the agent could not read or write its store",
         PlanCode::Bootstrap => "the plan is not a valid server.add bootstrap for this server",
         PlanCode::ExecPrecondition => "the plan cannot execute in the server's current state",
+        PlanCode::ChannelMissing => {
+            "channel_missing: an alert rule names a channel this server does not hold"
+        }
         _ => "the signed plan was rejected",
     }
 }
@@ -107,7 +116,7 @@ pub fn plan_status(code: PlanCode) -> Status {
         ERROR_REASON_HEADER,
         MetadataValue::from_static(reason.as_str_name()),
     );
-    if code != PlanCode::StoreQuarantined {
+    if !matches!(code, PlanCode::StoreQuarantined | PlanCode::ChannelMissing) {
         metadata.insert(PLAN_ERROR_HEADER, MetadataValue::from_static(code.as_str()));
     }
     Status::with_metadata(
@@ -256,6 +265,24 @@ mod tests {
                 PlanCode::NotSupportedYet,
                 ErrorReason::NotSupportedYet,
                 Code::Unimplemented,
+            ),
+            // v2.1.5/v2.1.6 (D-063 #11, D-064 #7): E_CANCELLED is CANCELLED
+            // everywhere; v2.1.7 (D-065 #9): E_SHELL_LIMIT is LIMIT_EXCEEDED.
+            (
+                PlanCode::Cancelled,
+                ErrorReason::Cancelled,
+                Code::FailedPrecondition,
+            ),
+            (
+                PlanCode::ShellLimit,
+                ErrorReason::LimitExceeded,
+                Code::ResourceExhausted,
+            ),
+            // v2.1.7 (D-065 #4): a rule sync naming a channel not held.
+            (
+                PlanCode::ChannelMissing,
+                ErrorReason::ChannelMissing,
+                Code::FailedPrecondition,
             ),
             // A runner code the section 5 table does not list is INTERNAL
             // (the exact code travels in error_code).
