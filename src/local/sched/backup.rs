@@ -305,6 +305,9 @@ struct State {
     server_busy: bool,
     queue: VecDeque<Pending>,
     retries: Vec<Pending>,
+    /// The scheduled backup in flight: its run, binding plan, fire time and
+    /// attempt (D-063 #10: its runner `run_id` comes from the `run` line).
+    running: Option<(BackupRun, String, i64, u32)>,
 }
 
 pub struct BackupScheduler {
@@ -528,7 +531,39 @@ impl BackupScheduler {
         }
         self.retries_due(now);
         self.reconcile_manual(now);
+        self.note_runner_id();
         self.deps.ops.set_meta(CHECKPOINT_KEY, &now.to_string());
+    }
+
+    /// contracts v1.1.5 (D-063 #10): the running scheduled backup takes the
+    /// runner's `run_id` from its consumed-log `run` line, so the engine can
+    /// cancel that one run (`backups.runs.cancel`) before it ends.
+    fn note_runner_id(&self) {
+        let Some((mut run, plan_id, scheduled_for, attempt)) = self
+            .state()
+            .running
+            .clone()
+            .filter(|(run, ..)| run.runner_run_id.is_empty())
+        else {
+            return;
+        };
+        let Some(consumed) = self.deps.consumed_log.as_ref() else {
+            return;
+        };
+        let lines = consumed.run_lines("backup_run");
+        let Some(id) = super::find_runner_run_id(&lines, &plan_id, Some(scheduled_for), attempt)
+        else {
+            return;
+        };
+        run.runner_run_id = id;
+        {
+            let mut state = self.state();
+            match state.running.as_mut() {
+                Some(current) if current.0.id == run.id => current.0 = run.clone(),
+                _ => return,
+            }
+        }
+        self.record_run(&run, &rfc(scheduled_for));
     }
 
     fn after_downtime(self: &Arc<Self>, policy: &PolicyDef, times: &[i64], now: i64) {
@@ -648,6 +683,12 @@ impl BackupScheduler {
         run.started_at = Some(pts(self.now()));
         let slot = rfc(pending.scheduled_for);
         self.record_run(&run, &slot);
+        self.state().running = Some((
+            run.clone(),
+            policy.plan.plan_id.clone(),
+            pending.scheduled_for,
+            attempt,
+        ));
         self.log(
             &policy,
             &run.id,
@@ -707,6 +748,11 @@ impl BackupScheduler {
     ) {
         let now = self.now();
         let slot = rfc(pending.scheduled_for);
+        if let Some((learned, ..)) = self.state().running.take() {
+            if run.runner_run_id.is_empty() && learned.id == run.id {
+                run.runner_run_id = learned.runner_run_id;
+            }
+        }
         let (retryable, backup_id) = self.apply_backup_result(policy, &mut run, &result, now);
         run.finished_at = Some(pts(now));
         self.record_run(&run, &slot);
@@ -714,10 +760,10 @@ impl BackupScheduler {
         let retry = retryable && still_defined && attempt < RUN_ATTEMPTS;
         let mut message = format!(
             "backup {}: attempt {attempt}",
-            if run.status == BackupRunStatus::Succeeded as i32 {
-                "succeeded"
-            } else {
-                "failed"
+            match BackupRunStatus::try_from(run.status) {
+                Ok(BackupRunStatus::Succeeded) => "succeeded",
+                Ok(BackupRunStatus::Cancelled) => "cancelled",
+                _ => "failed",
             }
         );
         if !run.error.is_empty() {
@@ -762,7 +808,8 @@ impl BackupScheduler {
             if let Some(backup_id) = backup_id {
                 self.prune(policy, pending.scheduled_for, &backup_id).await;
             }
-        } else if !retry {
+        } else if !retry && run.status != BackupRunStatus::Cancelled as i32 {
+            // A run an admitted operation.cancel stopped is not a failure.
             self.report(
                 policy,
                 event_condition::Kind::BackupFailed,
@@ -781,6 +828,11 @@ impl BackupScheduler {
         result: &Result<Value, RunnerFailure>,
         now: i64,
     ) -> (bool, Option<String>) {
+        if let Ok(answer) = result {
+            if let Some(id) = super::runner_run_id_of(answer) {
+                run.runner_run_id = id;
+            }
+        }
         match result {
             Ok(answer) => match answer["outcome"].as_str().unwrap_or("succeeded") {
                 "succeeded" => {
@@ -1084,6 +1136,23 @@ impl BackupScheduler {
                 } as i32;
                 if !action.outcome.is_empty() {
                     run.finished_at = finished.or(Some(pts(now)));
+                }
+                if run.runner_run_id.is_empty() {
+                    if let Some(consumed) = self.deps.consumed_log.as_ref() {
+                        let lines: Vec<Value> = consumed
+                            .run_lines("backup_run")
+                            .into_iter()
+                            .filter(|line| {
+                                line["action_index"].as_u64()
+                                    == u64::try_from(action.action_index).ok()
+                            })
+                            .collect();
+                        if let Some(id) =
+                            super::find_runner_run_id(&lines, &action.plan_id, None, 1)
+                        {
+                            run.runner_run_id = id;
+                        }
+                    }
                 }
                 if action.outcome == "succeeded" {
                     self.record_manual_artifact(&action, &mut run, now);

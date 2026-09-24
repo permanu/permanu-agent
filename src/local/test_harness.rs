@@ -171,6 +171,11 @@ pub struct FakeRunner {
     pub webhook_secrets: Mutex<HashMap<String, EnvironmentSecrets>>,
     /// The next `build_image` answers, in order (success when empty).
     pub build_answers: Mutex<Vec<Value>>,
+    /// Every session line of `shell_open` sessions, in arrival order.
+    pub shell_session_lines: Mutex<Vec<Value>>,
+    /// Runs inside every `build_image` (a test's side effect mid-build).
+    #[allow(clippy::type_complexity)]
+    pub on_build: Mutex<Option<Box<dyn Fn() + Send>>>,
     /// The image digest a successful `build_image` reports.
     pub build_image_digest: Mutex<String>,
     /// Actions a `cancel_execution` closed (v1.0.6, D-048).
@@ -580,6 +585,9 @@ impl FakeRunner {
         {
             return refuse("E_PARSE", "build_image payload");
         }
+        if let Some(hook) = self.on_build.lock().unwrap().as_ref() {
+            hook();
+        }
         let queued = {
             let mut answers = self.build_answers.lock().unwrap();
             (!answers.is_empty()).then(|| answers.remove(0))
@@ -756,6 +764,100 @@ impl FakeRunner {
         json!({"ok": true})
     }
 
+    pub fn shell_lines(&self) -> Vec<Value> {
+        self.shell_session_lines.lock().unwrap().clone()
+    }
+
+    /// `shell_open` (signed-plan.md 14.8 "Shell stream") with an echo
+    /// session: every `shell_input` comes back as `stdout`; `shell_close` or
+    /// the connection's end closes it with the action's `result`.
+    async fn shell_session(
+        &self,
+        request: &Value,
+        lines: &mut tokio::io::Lines<BufReader<tokio::net::unix::OwnedReadHalf>>,
+        writer: &mut tokio::net::unix::OwnedWriteHalf,
+    ) {
+        use base64::Engine as _;
+        self.requests.lock().unwrap().push(request.clone());
+        let plan_id = request["plan"]["plan_id"].as_str().unwrap_or_default();
+        let digest = request["plan"]["plan_digest_hex"]
+            .as_str()
+            .unwrap_or_default();
+        let index = request["plan"]["action_index"].as_u64().unwrap_or_default() as u32;
+        let key = (plan_id.to_owned(), index);
+        let at = format_timestamp(self.clock.now());
+        if !self.consumed.lock().unwrap().contains(&key) {
+            let out = json!({"type": "result", "op": "shell_open", "ok": false,
+                "error": {"code": "E_PLAN_NOT_ADMITTED", "message": "not bound"}});
+            let _ = writer.write_all(format!("{out}\n").as_bytes()).await;
+            return;
+        }
+        self.append("op", plan_id, digest, index, json!({"op": "shell_open"}));
+        let ttl = self
+            .admitted(plan_id)
+            .and_then(|(_, plan, _)| {
+                plan["actions"][index as usize]["params"]["ttl_seconds"].as_i64()
+            })
+            .unwrap_or(1);
+        let ready = json!({"type": "progress", "op": "shell_open", "at": at, "ready": true,
+            "session_deadline": format_timestamp(self.clock.now() + ttl)});
+        if writer
+            .write_all(format!("{ready}\n").as_bytes())
+            .await
+            .is_err()
+        {
+            return;
+        }
+        let mut ended = "connection";
+        while let Ok(Some(line)) = lines.next_line().await {
+            let Ok(value) = serde_json::from_str::<Value>(&line) else {
+                ended = "invalid_request";
+                break;
+            };
+            self.shell_session_lines.lock().unwrap().push(value.clone());
+            match value["op"].as_str() {
+                Some("shell_input") => {
+                    let data = value["data_b64"].as_str().unwrap_or_default();
+                    if base64::engine::general_purpose::STANDARD
+                        .decode(data)
+                        .is_err()
+                    {
+                        ended = "invalid_request";
+                        break;
+                    }
+                    let out = json!({"type": "progress", "op": "shell_open", "at": at,
+                        "stream": "stdout", "data_b64": data});
+                    if writer
+                        .write_all(format!("{out}\n").as_bytes())
+                        .await
+                        .is_err()
+                    {
+                        return;
+                    }
+                }
+                Some("shell_resize") => {}
+                Some("shell_close") => {
+                    ended = "closed";
+                    break;
+                }
+                _ => {
+                    ended = "invalid_request";
+                    break;
+                }
+            }
+        }
+        let success = ended != "invalid_request";
+        let outcome = if success { "succeeded" } else { "failed" };
+        self.result_with(plan_id, digest, index, json!({"outcome": outcome}));
+        let mut out = json!({"type": "result", "op": "shell_open", "ok": success,
+            "plan_id": plan_id, "plan_digest_hex": digest, "action_index": index,
+            "outcome": outcome, "ended": ended});
+        if !success {
+            out["error"] = json!({"code": "E_SHELL_PROTOCOL", "message": "only shell lines"});
+        }
+        let _ = writer.write_all(format!("{out}\n").as_bytes()).await;
+    }
+
     /// Serves one connection like `permanu-runner serve`: one request line
     /// at a time, answered with `progress` lines and exactly one `result`
     /// line (section 14.8); a request that is not JSON gets one `E_PARSE`
@@ -772,6 +874,10 @@ impl FakeRunner {
                 return;
             };
             let op = request["op"].as_str().unwrap_or_default().to_owned();
+            if op == "shell_open" && request_shape_ok(&request) {
+                self.shell_session(&request, &mut lines, &mut writer).await;
+                return;
+            }
             if op == "container_logs_follow" && request_shape_ok(&request) {
                 self.requests.lock().unwrap().push(request.clone());
                 let id = request["payload"]["container_id"]
@@ -960,6 +1066,8 @@ impl Harness {
             drop_cancel_result: AtomicBool::new(false),
             webhook_secrets: Mutex::new(HashMap::new()),
             build_answers: Mutex::new(Vec::new()),
+            on_build: Mutex::new(None),
+            shell_session_lines: Mutex::new(Vec::new()),
             build_image_digest: Mutex::new("e".repeat(64)),
             closed: Mutex::new(HashSet::new()),
             consumed: Mutex::new(HashSet::new()),

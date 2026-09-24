@@ -222,4 +222,8 @@ enum ErrorReason {
   // v2.1.0 (contracts v1.0.7, signed-plan.md 14.10). An on-server build of a
   // rule deploy failed or timed out (E_BUILD_FAILED).
   ERROR_REASON_BUILD_FAILED = 44;
+  // v2.1.5 (contracts v1.1.5, D-063, signed-plan.md 14.11). An admitted
+  // operation.cancel stopped the build, run or step (runner code
+  // E_CANCELLED). Engine API -32016 cancelled; not retried.
+  ERROR_REASON_CANCELLED = 45;
 }

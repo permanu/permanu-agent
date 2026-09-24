@@ -407,7 +407,50 @@ impl CronScheduler {
         }
         self.retries_due(now);
         self.reconcile_manual(now);
+        self.note_runner_ids();
         self.deps.ops.set_meta(CHECKPOINT_KEY, &now.to_string());
+    }
+
+    /// contracts v1.1.5 (D-063 #10): a running attempt takes the runner's
+    /// `run_id` from its consumed-log `run` line, so the engine can cancel
+    /// that one run (`cron.runs.cancel`) before it ends.
+    fn note_runner_ids(&self) {
+        let missing: Vec<(String, CronRun)> = self
+            .state()
+            .chains
+            .iter()
+            .filter(|(_, chain)| {
+                chain.run.status == CronRunStatus::Running as i32
+                    && chain.run.runner_run_id.is_empty()
+                    && !chain.run.plan_id.is_empty()
+            })
+            .map(|(id, chain)| (id.clone(), chain.run.clone()))
+            .collect();
+        let Some(consumed) = self.deps.consumed_log.as_ref() else {
+            return;
+        };
+        if missing.is_empty() {
+            return;
+        }
+        let lines = consumed.run_lines("run_cron");
+        for (chain_id, mut run) in missing {
+            let scheduled_for = run.scheduled_for.map(|t| t.seconds);
+            let Some(id) =
+                super::find_runner_run_id(&lines, &run.plan_id, scheduled_for, run.attempt)
+            else {
+                continue;
+            };
+            run.runner_run_id = id;
+            self.update_chain_run(&chain_id, &run);
+            let slot = if run.trigger == CronTrigger::Manual as i32 {
+                format!("manual:{}", run.plan_id)
+            } else {
+                scheduled_for.map(rfc).unwrap_or_default()
+            };
+            self.save(&run, &slot);
+            let job = self.state().jobs.get(&run.cron_id).cloned();
+            self.publish(job.as_ref(), &run);
+        }
     }
 
     fn fire_due(self: &Arc<Self>, job: &JobDef, from: i64, now: i64, downtime: bool) {
@@ -676,6 +719,12 @@ impl CronScheduler {
         result: Result<Value, RunnerFailure>,
     ) {
         let now = self.now();
+        if run.runner_run_id.is_empty() {
+            // Learned from the `run` line while the attempt was in flight.
+            if let Some(chain) = self.state().chains.get(chain_id) {
+                run.runner_run_id = chain.run.runner_run_id.clone();
+            }
+        }
         let retryable = apply_result(&mut run, &result);
         run.finished_at = Some(pts(now));
         let still_defined = self.state().jobs.contains_key(&job.cron_id);
@@ -1105,6 +1154,9 @@ fn status_word(status: CronRunStatus) -> &'static str {
 fn apply_result(run: &mut CronRun, result: &Result<Value, RunnerFailure>) -> bool {
     match result {
         Ok(answer) => {
+            if let Some(id) = super::runner_run_id_of(answer) {
+                run.runner_run_id = id;
+            }
             run.exit_code = answer["exit_code"]
                 .as_i64()
                 .and_then(|code| i32::try_from(code).ok())

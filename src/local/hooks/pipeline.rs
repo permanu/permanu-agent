@@ -184,6 +184,18 @@ impl Hooks {
         })
     }
 
+    /// Atomically moves a `pending` delivery row to `status`; false when
+    /// another path got there first.
+    fn claim(&self, delivery_id: &str, status: &str) -> bool {
+        self.deps
+            .store
+            .claim_delivery(delivery_id, status)
+            .unwrap_or_else(|err| {
+                tracing::warn!(error = %err, delivery_id, "delivery claim failed");
+                false
+            })
+    }
+
     /// Matches a verified delivery and runs its rules.
     pub async fn process(self: &Arc<Self>, delivery_id: &str) {
         self.process_for(delivery_id, None).await;
@@ -205,12 +217,14 @@ impl Hooks {
         };
         let received = timestamp(&delivery.received_at).unwrap_or(0);
         if self.now() - received > STALE_SECONDS {
-            self.set_status(
-                delivery_id,
-                WebhookDeliveryStatus::Stale,
-                "received more than 15 minutes ago",
-                |_| {},
-            );
+            if self.claim(delivery_id, "stale") {
+                self.set_status(
+                    delivery_id,
+                    WebhookDeliveryStatus::Stale,
+                    "received more than 15 minutes ago",
+                    |_| {},
+                );
+            }
             return;
         }
         let (mut rules, protected) = self.matching_rules(&delivery, &record.project_id);
@@ -218,7 +232,7 @@ impl Hooks {
             rules.retain(|rule| rule.rule["id"] == only);
         }
         if rules.is_empty() {
-            if protected {
+            if protected && self.claim(delivery_id, "ignored") {
                 self.set_status(
                     delivery_id,
                     WebhookDeliveryStatus::Ignored,
@@ -227,6 +241,11 @@ impl Hooks {
                 );
             }
             // Otherwise it waits PENDING for the engine until it expires.
+            return;
+        }
+        // Intake, re-matches and the sweeper may reach one delivery at once;
+        // only the path that moves it out of `pending` processes it.
+        if !self.claim(delivery_id, "building") {
             return;
         }
         let mut ends = Vec::new();
@@ -642,9 +661,14 @@ impl Hooks {
             );
             return RuleEnd::Stale;
         }
+        // Every early end fails the builds too: none stays DEPLOYING.
+        let failed = |builds: &mut [ServerBuild], error: &str| {
+            fail(self, builds, ServerBuildStatus::Failed, error.to_owned());
+            RuleEnd::Failed(error.to_owned())
+        };
         let server_id = match self.deps.core.trust.load() {
             TrustState::Valid(store) => store.server_id.clone(),
-            _ => return RuleEnd::Failed("trust store unavailable".to_owned()),
+            _ => return failed(builds, "trust store unavailable"),
         };
         let scope = &rule.rule["scope"];
         let head = match self.deps.store.head(
@@ -652,7 +676,7 @@ impl Hooks {
             scope["environment"].as_str().unwrap_or_default(),
         ) {
             Ok(head) => head.head_digest_hex,
-            Err(_) => return RuleEnd::Failed("state head unavailable".to_owned()),
+            Err(_) => return failed(builds, "state head unavailable"),
         };
         let Some(plan) = build_rule_plan(&RulePlanInput {
             rule: &rule.rule,
@@ -664,7 +688,7 @@ impl Hooks {
             services: built,
             now,
         }) else {
-            return RuleEnd::Failed("rule plan not built".to_owned());
+            return failed(builds, "rule plan not built");
         };
         let submitted = self
             .deps

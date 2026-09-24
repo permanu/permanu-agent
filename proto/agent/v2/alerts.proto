@@ -76,6 +76,13 @@ message LogCondition {
 }
 
 // EventCondition fires on built-in events.
+// v2.1.5 (contracts v1.1.5, D-063): the Engine API AlertRule.condition
+// {event} maps cron_missed -> KIND_CRON_MISSED, cron_failed ->
+// KIND_CRON_FAILED, backup_failed -> KIND_BACKUP_FAILED, deploy_failed ->
+// KIND_DEPLOY_FAILED and build_failed -> KIND_WEBHOOK_BUILD_FAILED (an
+// on-server build that ended FAILED; CANCELLED is not a failure). A v2.1
+// agent evaluates these five kinds and refuses a rule of an event kind it
+// does not evaluate (EXEC_PRECONDITION); agent-protocol.md 10.3.
 message EventCondition {
   enum Kind {
     KIND_UNSPECIFIED = 0;

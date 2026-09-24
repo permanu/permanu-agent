@@ -310,6 +310,52 @@ async fn runner_shaped_answers_retry_a_failed_backup_and_read_verify_checks() {
     assert!(verifications[0].checks.iter().all(|c| c.passed));
 }
 
+const RUNNER_RUN: &str = "01a0cdb5-3500-70e1-8000-000000000021";
+
+/// contracts v1.1.5 (D-063 #10): a running backup learns the runner's
+/// `run_id` from its `run` line; a cancelled one ends `CANCELLED` with its
+/// id, no retry and no failure report.
+#[tokio::test]
+async fn a_cancelled_backup_keeps_its_runner_id_and_is_not_retried() {
+    let f = Fixture::new("backup-cancel-one", "2026-09-23T02:00:00Z");
+    let plan = f.record(1, &[policy(PG, "0 3 * * *", Value::Null)], "succeeded");
+    let s = scheduler(&f);
+    tick_at(&f, &s, "2026-09-23T02:59:55Z").await;
+    f.runner.hold("backup_run");
+    f.runner.answer(
+        "backup_run",
+        json!({"ok": false, "outcome": null, "run_outcome": "cancelled", "run_id": RUNNER_RUN,
+               "error": {"code": "E_CANCELLED", "message": "cancelled"}}),
+    );
+    f.clock.set("2026-09-23T03:00:05Z");
+    s.tick();
+    for _ in 0..20 {
+        tokio::task::yield_now().await;
+    }
+    f.append_consumed(
+        &json!({"v": 1, "seq": 1, "at": "2026-09-23T03:00:06Z", "event": "run",
+        "plan_id": plan, "plan_digest_hex": format!("{:064x}", 1), "action_index": 0,
+        "op": "backup_run", "scheduled_for": "2026-09-23T03:00:00Z", "attempt": 1,
+        "run_id": RUNNER_RUN}),
+    );
+    f.clock.set("2026-09-23T03:00:15Z");
+    s.tick();
+    let running = backup_runs(&f);
+    assert_eq!(running.len(), 1);
+    assert_eq!(running[0].status, BackupRunStatus::Dumping as i32);
+    assert_eq!(running[0].runner_run_id, RUNNER_RUN);
+    f.runner.release("backup_run", 1);
+    s.settle().await;
+    tick_at(&f, &s, "2026-09-23T03:01:00Z").await;
+    tick_at(&f, &s, "2026-09-23T03:05:00Z").await;
+    let runs = backup_runs(&f);
+    assert_eq!(runs.len(), 1, "{runs:?}");
+    assert_eq!(runs[0].status, BackupRunStatus::Cancelled as i32);
+    assert_eq!(runs[0].runner_run_id, RUNNER_RUN);
+    assert_eq!(f.runner.ops("backup_run").len(), 1);
+    assert!(f.sink.0.lock().unwrap().is_empty());
+}
+
 #[tokio::test]
 async fn failed_backups_get_three_attempts_then_report() {
     let f = Fixture::new("backup-retry", "2026-09-23T02:00:00Z");

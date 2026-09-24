@@ -482,6 +482,68 @@ async fn a_failed_build_fails_the_delivery_and_admits_nothing() {
     f.h.stop().await;
 }
 
+/// A deploy that cannot start after a successful build (here the trust
+/// store vanished mid-build) ends every build `FAILED`, never left
+/// `BUILDING`/`DEPLOYING`, and fails the delivery.
+#[tokio::test]
+async fn a_deploy_that_cannot_start_fails_its_builds() {
+    let f = fixture("hooks-deploy-early-fail").await;
+    let trust_file = f.h.dir.join("etc/trusted-keys.json");
+    *f.h.runner.on_build.lock().unwrap() = Some(Box::new(move || {
+        let _ = std::fs::remove_file(&trust_file);
+    }));
+    let body = push_body("refs/heads/main", COMMIT);
+    f.hooks.intake(github(&body, SECRET, "203.0.113.9")).await;
+    f.hooks.settle().await;
+    let delivery = only_delivery(&f.hooks);
+    assert_eq!(delivery.status, WebhookDeliveryStatus::Failed as i32);
+    assert_eq!(delivery.status_reason, "trust store unavailable");
+    let mut client = WebhookServiceClient::new(f.h.channel.clone());
+    let builds = client
+        .list_server_builds(ListServerBuildsRequest::default())
+        .await
+        .unwrap()
+        .into_inner()
+        .builds;
+    assert_eq!(builds.len(), 1);
+    assert_eq!(builds[0].status, ServerBuildStatus::Failed as i32);
+    assert_eq!(builds[0].error, "trust store unavailable");
+    assert!(builds[0].finished_at.is_some());
+    f.h.stop().await;
+}
+
+/// Two paths processing one delivery at once (intake and a re-match) build
+/// and deploy it once: the move out of `pending` is an atomic claim.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn concurrent_processing_builds_a_delivery_once() {
+    let f = fixture("hooks-claim-once").await;
+    f.hooks.hold(true);
+    let body = push_body("refs/heads/main", COMMIT);
+    f.hooks.intake(github(&body, SECRET, "203.0.113.9")).await;
+    let id = only_delivery(&f.hooks).id;
+    let start = Arc::new(tokio::sync::Barrier::new(8));
+    let paths: Vec<_> = (0..8)
+        .map(|_| {
+            let (hooks, id, start) = (f.hooks.clone(), id.clone(), start.clone());
+            tokio::spawn(async move {
+                start.wait().await;
+                hooks.process(&id).await;
+            })
+        })
+        .collect();
+    for path in paths {
+        path.await.unwrap();
+    }
+    f.hooks.release();
+    f.hooks.settle().await;
+    assert_eq!(build_requests(&f.h).len(), 1);
+    assert_eq!(
+        only_delivery(&f.hooks).status,
+        WebhookDeliveryStatus::Deployed as i32
+    );
+    f.h.stop().await;
+}
+
 #[tokio::test]
 async fn a_protected_environment_ignores_the_push() {
     let f = fixture("hooks-protected").await;

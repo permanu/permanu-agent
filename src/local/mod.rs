@@ -21,6 +21,7 @@ pub mod logs;
 pub mod presence;
 pub mod runner;
 pub mod sched;
+pub mod shell;
 pub mod socket;
 pub mod status;
 pub mod telemetry;
@@ -53,6 +54,7 @@ use crate::{
         event_service_server::EventServiceServer,
         info_service_server::{InfoService, InfoServiceServer},
         schedule_service_server::ScheduleServiceServer,
+        shell_service_server::ShellServiceServer,
         state_service_server::{StateService, StateServiceServer},
         telemetry_service_server::TelemetryServiceServer,
         trusted_keys_summary::TrustState as TrustStateProto,
@@ -595,6 +597,13 @@ impl LocalServer {
             ),
             None => (None, None, None),
         };
+        // agent-protocol.md 4: the only interactive exec path.
+        let shell_svc = ShellServiceServer::new(shell::ShellSvc {
+            core: self.core.clone(),
+            idle: shell::IDLE,
+        })
+        .max_decoding_message_size(MAX_MESSAGE_BYTES)
+        .max_encoding_message_size(MAX_MESSAGE_BYTES);
         let change_svc = ChangeServiceServer::new(change::ChangeSvc { core: self.core })
             .max_decoding_message_size(MAX_MESSAGE_BYTES)
             .max_encoding_message_size(MAX_MESSAGE_BYTES);
@@ -631,6 +640,7 @@ impl LocalServer {
             .add_service(info_svc)
             .add_service(state_svc)
             .add_service(change_svc)
+            .add_service(shell_svc)
             .add_service(event_svc)
             .add_service(telemetry_svc)
             .add_optional_service(schedule_svc)
@@ -969,7 +979,13 @@ fn start_telemetry(
     let host = hostname();
     let runner = core.runner.clone();
     let mut tasks = vec![store.spawn_maintenance()];
-    let mut ingest = telemetry::ingest::LogIngest::new(store.clone(), runner.clone(), host);
+    // contracts v1.1.5 (D-063 #9): Dwaar records by the service of their
+    // route host, from the runner's `routes_map`.
+    let routes = Arc::new(telemetry::routes::RoutesMap::default());
+    tasks.push(routes.spawn(runner.clone()));
+    tasks.push(spawn_routes_nudge(routes.clone(), core.events.clone()));
+    let mut ingest =
+        telemetry::ingest::LogIngest::new(store.clone(), runner.clone(), host).with_routes(routes);
     if let Some(cron_runs) = cron_runs {
         ingest = ingest.with_cron_runs(cron_runs);
     }
@@ -991,10 +1007,39 @@ fn start_telemetry(
             gateway_iface: telemetry::otlp_server::GATEWAY_IFACE.to_owned(),
             grpc_port: telemetry::otlp_server::GRPC_PORT,
             http_port: telemetry::otlp_server::HTTP_PORT,
+            limits: telemetry::otlp_server::OtlpLimits::default(),
         },
     };
     tasks.push(tokio::spawn(listeners.run()));
     (Some(store), tasks)
+}
+
+/// Refreshes the routes map after every finished plan that holds a
+/// `domain.*` or `webhook.host.set` action (agent-protocol.md 9.5).
+fn spawn_routes_nudge(
+    routes: Arc<telemetry::routes::RoutesMap>,
+    events: events::EventBus,
+) -> tokio::task::JoinHandle<()> {
+    let mut live = events.live();
+    tokio::spawn(async move {
+        loop {
+            match live.recv().await {
+                Ok(event) => {
+                    if let Some(crate::proto::agent::v2::event::Payload::Operation(op)) =
+                        &event.payload
+                    {
+                        if op.finished_at.is_some()
+                            && telemetry::routes::changes_routes(&op.actions)
+                        {
+                            routes.nudge();
+                        }
+                    }
+                }
+                Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => routes.nudge(),
+                Err(tokio::sync::broadcast::error::RecvError::Closed) => return,
+            }
+        }
+    })
 }
 
 fn hostname() -> String {
@@ -1082,6 +1127,8 @@ fn spawn_status_events(
 
 #[cfg(test)]
 mod change_tests;
+#[cfg(test)]
+mod shell_tests;
 #[cfg(test)]
 pub(crate) mod test_harness;
 

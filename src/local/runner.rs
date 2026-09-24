@@ -63,7 +63,7 @@ pub struct PlanRef {
 }
 
 impl PlanRef {
-    fn json(&self) -> Value {
+    pub(crate) fn json(&self) -> Value {
         json!({
             "plan_id": self.plan_id,
             "plan_digest_hex": self.plan_digest_hex,
@@ -157,7 +157,7 @@ fn failure_of(result: &Value) -> RunnerFailure {
     }
 }
 
-fn ok_or_failure(result: Value) -> Result<Value, RunnerFailure> {
+pub(crate) fn ok_or_failure(result: Value) -> Result<Value, RunnerFailure> {
     if result["ok"] == true {
         Ok(result)
     } else {
@@ -486,6 +486,12 @@ impl EventLines {
             #[cfg(feature = "dev-paths")]
             _child: None,
         })
+    }
+
+    /// The request side, for a session op (`shell_open`) whose caller keeps
+    /// sending lines while it reads.
+    pub(crate) fn take_writer(&mut self) -> Option<BoxWrite> {
+        self.writer.take()
     }
 
     /// One raw line; `None` at end of stream.

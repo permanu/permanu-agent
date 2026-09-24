@@ -103,6 +103,8 @@ pub struct LogIngest {
     last_sec: Option<i64>,
     rollups: Rollups,
     cron_runs: Option<Arc<dyn CronRuns>>,
+    /// Route host → service (D-063 #9) for Dwaar records.
+    routes: Option<Arc<super::routes::RoutesMap>>,
 }
 
 fn valid_container_id(id: &str) -> bool {
@@ -161,9 +163,16 @@ impl LogIngest {
             last_sec: None,
             rollups: Rollups::new(),
             cron_runs: None,
+            routes: None,
         };
         ingest.load_checkpoint();
         ingest
+    }
+
+    /// Files Dwaar records under the service of their route host (D-063 #9).
+    pub fn with_routes(mut self, routes: Arc<super::routes::RoutesMap>) -> Self {
+        self.routes = Some(routes);
+        self
     }
 
     /// Files cron lines under their `CronRun` (v1.1.3, D-061).
@@ -406,11 +415,17 @@ impl LogIngest {
             self.telemetry.count_dropped(kind, 1);
             return;
         }
+        let mut owner = None;
         if unit == Unit::Dwaar {
             if let Some(access) = journal::access_of(message) {
                 self.rollups.add(ts.div_euclid(NANOS), &access);
+                owner = self
+                    .routes
+                    .as_ref()
+                    .and_then(|routes| routes.owner(&access.host));
             }
         }
+        let owner = owner.unwrap_or_default();
         let level = journal::level_of(line["priority"].as_i64().unwrap_or(-1));
         let key = (unit_name.to_owned(), "journal".to_owned());
         let mut pem = self.pem.remove(&key).unwrap_or_default();
@@ -422,7 +437,11 @@ impl LogIngest {
                 journal::drop_header_fields(&mut parsed.fields);
             }
             let (source, project_id, producer) = match &unit {
-                Unit::Dwaar => ("dwaar".to_owned(), String::new(), Producer::System),
+                Unit::Dwaar => (
+                    "dwaar".to_owned(),
+                    owner.project_id.clone(),
+                    Producer::System,
+                ),
                 Unit::Host => (unit_name.to_owned(), String::new(), Producer::System),
                 Unit::Build { project_id } => (
                     unit_name.to_owned(),
@@ -443,6 +462,8 @@ impl LogIngest {
                 fields: parsed.fields,
                 redacted,
                 ingest: "journal".to_owned(),
+                service_id: owner.service_id.clone(),
+                environment_id: owner.environment_id.clone(),
                 ..Default::default()
             };
             self.telemetry
@@ -1095,6 +1116,52 @@ pub(crate) mod tests {
         assert_eq!(rows.len(), 1);
         assert_eq!(rows[0].dimensions[0].value, "app.example.com");
         assert_eq!(rows[0].values[0].value, 1.0);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    /// contracts v1.1.5 (D-063 #9): a Dwaar `http` record takes the ids of
+    /// the service whose route host it matched (`routes_map`); a host the map
+    /// does not name keeps none.
+    #[tokio::test]
+    async fn dwaar_records_are_attributed_by_route_host() {
+        let dir = temp_dir("ingest-routes");
+        let t = test_support::open(dir.join("telemetry"));
+        let runner = ScriptRunner::new(Vec::new());
+        let routes = Arc::new(super::super::routes::RoutesMap::default());
+        routes.replace(
+            super::super::routes::parse_routes(&json!({"routes": [{"host": "app.example.com",
+                "service_id": "01a0cdb5-3500-70c1-8000-000000000001",
+                "project_id": "01a0cdb5-3500-70b1-8000-000000000001",
+                "environment_id": "01a0cdb5-3500-70b2-8000-000000000001",
+                "source": "custom"}]}))
+            .unwrap(),
+        );
+        let mut ingest =
+            LogIngest::new(t.clone(), runner, "host-1".into()).with_routes(routes.clone());
+        let access = |host: &str| {
+            format!(
+                r#"{{"timestamp":"2026-09-23T10:00:05Z","request_id":"r1","method":"GET","path":"/","host":"{host}","status":200,"response_time_us":1500,"client_ip":"203.0.113.0","bytes_sent":10}}"#
+            )
+        };
+        let now = Instant::now();
+        for (i, host) in ["App.example.com:443", "other.example.com"]
+            .iter()
+            .enumerate()
+        {
+            let line = system("dwaar.service", 6, &format!("s=1;i={i}"), &access(host));
+            ingest.handle(&line, now).await;
+        }
+        t.sync().await;
+        let http: Vec<LogRecord> = stored_kind(&t, Kind::Http);
+        assert_eq!(http.len(), 2);
+        assert_eq!(http[0].service_id, "01a0cdb5-3500-70c1-8000-000000000001");
+        assert_eq!(http[0].project_id, "01a0cdb5-3500-70b1-8000-000000000001");
+        assert_eq!(
+            http[0].environment_id,
+            "01a0cdb5-3500-70b2-8000-000000000001"
+        );
+        assert_eq!(http[1].service_id, "");
+        assert_eq!(http[1].project_id, "");
         std::fs::remove_dir_all(dir).unwrap();
     }
 

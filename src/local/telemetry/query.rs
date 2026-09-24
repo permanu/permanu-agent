@@ -1038,6 +1038,7 @@ impl StoreQueries {
             retention_plan_digest_hex: String::new(),
             ingest_paused: report.ingest_paused,
             redaction_rules_version: super::redaction::RULES_VERSION.to_owned(),
+            spool_bytes: report.spool_bytes,
         }
     }
 }

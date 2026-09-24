@@ -5,7 +5,9 @@ use rusqlite::params;
 use serde_json::Value;
 
 use super::*;
-use crate::signed_plan::test_support::{plan_vector, temp_dir, test_trust, TestSigner, SERVER_A};
+use crate::signed_plan::test_support::{
+    plan_vector, temp_dir, test_trust, vector, TestSigner, SERVER_A,
+};
 use crate::signed_plan::text::timestamp;
 use crate::signed_plan::verify::Submitter;
 use crate::signed_plan::PlanCode;
@@ -1264,5 +1266,89 @@ fn reopening_repairs_the_store_and_directory_modes() {
         fs::metadata(dir.join("agent")).unwrap().mode() & 0o7777,
         0o2750
     );
+    fs::remove_dir_all(dir).unwrap();
+}
+
+/// The rule-plan evidence window's build start comes from the runner's
+/// `build_started` line in the consumed log, so it survives an agent
+/// restart (a new store instance has no memory of it).
+#[test]
+fn build_started_is_read_from_the_consumed_log_after_a_restart() {
+    let dir = temp_dir("store-build-started");
+    let log = dir.join("consumed.log");
+    let uid = unsafe { libc::geteuid() };
+    let build_id = "01a0cdb5-3500-70f1-8000-000000000001";
+    let started = serde_json::json!({"v": 1, "seq": 1, "at": "2026-09-23T10:01:00Z",
+        "event": "build_started", "build_id": build_id, "rule_id": "r",
+        "rule_digest_hex": "b".repeat(64)})
+    .to_string();
+    let other = serde_json::json!({"v": 1, "seq": 2, "at": "2026-09-23T10:02:00Z",
+        "event": "build_started", "build_id": "01a0cdb5-3500-70f1-8000-000000000002"})
+    .to_string();
+    write_log(&log, &[started, other], false);
+    {
+        let (store, _) = AdmissionStore::open(&config(&dir), false, now()).unwrap();
+        store.raw(&format!(
+            "PRAGMA foreign_keys = OFF; INSERT INTO builds (build_id, service_id, commit_sha, \
+             image_digest_hex, delivery_id, built_at) VALUES ('{build_id}', 'svc', '{}', '{}', \
+             'del', '{NOW}'); PRAGMA foreign_keys = ON;",
+            "c".repeat(40),
+            "d".repeat(64)
+        ));
+    }
+    let (store, _) = AdmissionStore::open(&config(&dir), true, now()).unwrap();
+    // Without the consumed log the start is unknown (fail closed).
+    assert_eq!(
+        store.build_window_of("svc", &"c".repeat(40)),
+        (None, Some(now()))
+    );
+    store.set_consumed_log(log, uid);
+    assert_eq!(
+        store.build_window_of("svc", &"c".repeat(40)),
+        (timestamp("2026-09-23T10:01:00Z"), Some(now()))
+    );
+    fs::remove_dir_all(dir).unwrap();
+}
+
+/// contracts v1.1.5 (D-063 #2): an event rule of a kind this agent never
+/// evaluates is refused `EXEC_PRECONDITION` and writes nothing; one of the
+/// evaluated kinds (`deploy_failed`) is admitted.
+#[test]
+fn an_event_rule_of_an_unevaluated_kind_is_refused() {
+    let Some(owner) = TestSigner::load("owner") else {
+        eprintln!("skipped: docs keys.json not found");
+        return;
+    };
+    let dir = temp_dir("store-event-kind");
+    let (store, _) = AdmissionStore::open(&config(&dir), false, now()).unwrap();
+    let cases = vector("policy-cases");
+    let case = cases["cases"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|c| c["name"] == "ok_deployer_alert_rule_create")
+        .unwrap();
+    let base: Value = serde_json::from_str(case["input"].as_str().unwrap()).unwrap();
+    let plan_with = |tail: &str, kind: &str| {
+        let mut plan = base["plan"].clone();
+        plan["id"] = Value::String(format!("01a0cdb5-3500-7001-8000-{tail}"));
+        plan["nonce"] = Value::String(format!("{tail}AAAAAAAAAA"));
+        plan["actions"][0]["params"]["spec"] = Value::String(
+            serde_json::json!({"event": {"kind": kind}, "enabled": true}).to_string(),
+        );
+        owner.envelope(&plan)
+    };
+    let refused = plan_with("0000000000e1", "KIND_CONTAINER_OOM");
+    assert_eq!(
+        store
+            .admit(&test_trust(), &input(&refused, &[], now()))
+            .unwrap_err(),
+        PlanCode::ExecPrecondition
+    );
+    assert_eq!(store.count("admissions"), 0);
+    let admitted = plan_with("0000000000e2", "KIND_DEPLOY_FAILED");
+    store
+        .admit(&test_trust(), &input(&admitted, &[], now()))
+        .unwrap();
     fs::remove_dir_all(dir).unwrap();
 }

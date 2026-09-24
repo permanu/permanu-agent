@@ -54,7 +54,7 @@ pub(super) struct TxContext<'a> {
     pub(super) trust: &'a TrustStore,
     pub(super) now: i64,
     /// `build_id` → runner `build_started` time (see `AdmissionStore`).
-    pub(super) build_starts: std::collections::BTreeMap<String, i64>,
+    pub(super) build_starts: &'a super::BuildStarts,
 }
 
 fn internal(_: rusqlite::Error) -> PlanCode {
@@ -271,7 +271,7 @@ impl PolicyContext for TxContext<'_> {
             .map_err(internal)?;
         Ok(row.map_or((None, None), |(build_id, built_at)| {
             (
-                self.build_starts.get(&build_id).copied(),
+                self.build_starts.get(&build_id),
                 crate::signed_plan::text::timestamp(&built_at),
             )
         }))
@@ -338,7 +338,7 @@ impl AdmissionStore {
     /// Section 6.1 steps 1–13. `trust` is the validated trust store.
     pub fn admit(&self, trust: &TrustStore, input: &AdmitInput<'_>) -> Result<Admission, PlanCode> {
         self.check_quarantine(input.now)?;
-        let build_starts = self.build_starts();
+        let build_starts = &self.build_starts;
         let mut conn = self.lock();
         let tx = conn
             .transaction_with_behavior(TransactionBehavior::Immediate)
@@ -387,7 +387,7 @@ impl AdmissionStore {
         input: &AdmitInput<'_>,
     ) -> Result<Verdict, PlanCode> {
         self.check_quarantine(input.now)?;
-        let build_starts = self.build_starts();
+        let build_starts = &self.build_starts;
         let mut conn = self.lock();
         let tx = conn.transaction().map_err(internal)?;
         let ctx = TxContext {
@@ -474,6 +474,14 @@ fn execution_preconditions(
                 }
             }
             "operation.cancel" => check_cancel(ctx, params)?,
+            // contracts v1.1.5 (D-063 #2, agent-protocol.md 10.3): an event
+            // rule of a kind this agent never evaluates would never fire.
+            "alert.rule.create" | "alert.rule.update" => {
+                let spec = params["spec"].as_str().unwrap_or_default();
+                if !crate::local::sched::alert_spec::event_kind_evaluated(spec) {
+                    return Err(PlanCode::ExecPrecondition);
+                }
+            }
             // v1.0.3 (D-035): an id already admitted on this server names
             // another release; the agent never reuses one.
             "deploy" => {

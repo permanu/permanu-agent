@@ -102,6 +102,48 @@ pub struct ConsumedLogRef {
     pub owner_uid: u32,
 }
 
+impl ConsumedLogRef {
+    /// The runner's `run` lines of `op` (D-063 #10: each carries the
+    /// attempt's `run_id` from its start).
+    pub fn run_lines(&self, op: &str) -> Vec<serde_json::Value> {
+        crate::admissions::event_lines(&self.path, self.owner_uid, "run")
+            .into_iter()
+            .filter(|line| line["op"] == op)
+            .collect()
+    }
+}
+
+/// The runner's `run_id` of one attempt (UUIDv7, contracts v1.1.5, D-063
+/// #10): what `operation.cancel` `run_id` names to stop only that run.
+pub fn runner_run_id_of(line: &serde_json::Value) -> Option<String> {
+    line["run_id"]
+        .as_str()
+        .filter(|id| crate::signed_plan::text::uuid7(id))
+        .map(str::to_owned)
+}
+
+/// The `run_id` of the attempt of `plan_id` at `scheduled_for` (None for a
+/// plan-bound run) and `attempt`, from the runner's `run` lines.
+pub fn find_runner_run_id(
+    lines: &[serde_json::Value],
+    plan_id: &str,
+    scheduled_for: Option<i64>,
+    attempt: u32,
+) -> Option<String> {
+    lines
+        .iter()
+        .rev()
+        .find(|line| {
+            line["plan_id"] == plan_id
+                && line["attempt"].as_u64() == Some(u64::from(attempt))
+                && match &line["scheduled_for"] {
+                    serde_json::Value::Null => scheduled_for.is_none(),
+                    value => value.as_str().and_then(parse_rfc) == scheduled_for,
+                }
+        })
+        .and_then(runner_run_id_of)
+}
+
 /// RFC 3339 of Unix seconds.
 pub fn rfc(seconds: i64) -> String {
     format_timestamp(seconds)
@@ -261,7 +303,12 @@ impl Schedulers {
 
     /// Starts the scheduler loops (aborted by the caller at shutdown).
     pub fn spawn(&self) -> Vec<tokio::task::JoinHandle<()>> {
-        vec![self.cron.spawn(), self.backups.spawn(), self.alerts.spawn()]
+        vec![
+            self.cron.spawn(),
+            self.backups.spawn(),
+            self.alerts.spawn(),
+            self.alerts.spawn_deploy_watch(),
+        ]
     }
 
     /// The capabilities these schedulers serve (agent-protocol.md 10).

@@ -104,6 +104,80 @@ pub(crate) fn hostname(value: &str) -> bool {
     rest.iter().all(|label| host_label(label, false)) && host_label(last, true)
 }
 
+/// One decimal IPv4 octet without leading zeros (`0`..`255`).
+fn octet(value: &str) -> Option<u32> {
+    let ok = !value.is_empty()
+        && value.len() <= 3
+        && all_bytes(value, |byte| byte.is_ascii_digit())
+        && (value.len() == 1 || !value.starts_with('0'));
+    ok.then(|| value.parse::<u32>().ok())
+        .flatten()
+        .filter(|n| *n <= 255)
+}
+
+fn ipv4_parts(value: &str, separator: char) -> Option<u32> {
+    let parts: Vec<&str> = value.split(separator).collect();
+    if parts.len() != 4 {
+        return None;
+    }
+    parts
+        .iter()
+        .try_fold(0u32, |acc, part| Some((acc << 8) | octet(part)?))
+}
+
+/// v1.0.13 (D-063 #4): RFC 6890 blocks that are never a public address.
+const NON_PUBLIC_IPV4: &[(u32, u32)] = &[
+    (0x0000_0000, 8),
+    (0x0a00_0000, 8),
+    (0x6440_0000, 10),
+    (0x7f00_0000, 8),
+    (0xa9fe_0000, 16),
+    (0xac10_0000, 12),
+    (0xc000_0000, 24),
+    (0xc000_0200, 24),
+    (0xc058_6300, 24),
+    (0xc0a8_0000, 16),
+    (0xc612_0000, 15),
+    (0xc633_6400, 24),
+    (0xcb00_7100, 24),
+    (0xe000_0000, 4),
+    (0xf000_0000, 4),
+];
+
+/// v1.0.13 (D-063 #4): a dotted-quad IPv4 address without leading zeros,
+/// outside every special-purpose block (a `webhook.host.set` host).
+pub(crate) fn public_ipv4(value: &str) -> bool {
+    ipv4_parts(value, '.').is_some_and(|ip| {
+        NON_PUBLIC_IPV4
+            .iter()
+            .all(|(net, bits)| ip >> (32 - bits) != net >> (32 - bits))
+    })
+}
+
+/// Whether `value` has the dotted-quad shape (any address).
+pub(crate) fn ipv4_shaped(value: &str) -> bool {
+    !value.is_empty() && all_bytes(value, |byte| byte.is_ascii_digit() || byte == b'.')
+}
+
+/// v1.0.13 (D-063 #5): `<label>.<a>-<b>-<c>-<d>.sslip.io`, one DNS label and
+/// the dashed IPv4 octets without leading zeros.
+pub(crate) fn default_route(value: &str) -> bool {
+    let Some(rest) = value.strip_suffix(".sslip.io") else {
+        return false;
+    };
+    let Some((label, ip)) = rest.split_once('.') else {
+        return false;
+    };
+    let label_ok = !label.is_empty()
+        && label.len() <= 63
+        && all_bytes(label, |byte| {
+            byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'-'
+        })
+        && !label.starts_with('-')
+        && !label.ends_with('-');
+    label_ok && ipv4_parts(ip, '-').is_some()
+}
+
 /// `[0-9*/,-]+( [0-9*/,-]+){4}`
 pub(crate) fn cron(value: &str) -> bool {
     let fields: Vec<&str> = value.split(' ').collect();
@@ -413,5 +487,48 @@ mod tests {
         assert!(timestamp("2024-02-29T00:00:00Z").is_some());
         assert!(timestamp("2026-09-23T10:05:00+00:00").is_none());
         assert!(timestamp("2026-09-23 10:05:00Z").is_none());
+    }
+
+    /// v1.0.13 (D-063 #4, #5): IPv4 webhook hosts and default routes.
+    #[test]
+    fn public_ipv4_and_default_routes() {
+        assert!(public_ipv4("11.22.0.10") && public_ipv4("8.8.8.8"));
+        assert!(public_ipv4("223.255.255.255"));
+        for bad in [
+            "10.0.0.5",
+            "0.1.2.3",
+            "100.64.0.1",
+            "127.0.0.1",
+            "169.254.1.1",
+            "172.16.0.1",
+            "172.31.255.255",
+            "192.0.0.1",
+            "192.0.2.1",
+            "192.88.99.1",
+            "192.168.1.1",
+            "198.19.0.1",
+            "198.51.100.1",
+            "203.0.113.7",
+            "224.0.0.1",
+            "255.255.255.255",
+            "11.22.0.010",
+            "11.22.0",
+            "11.22.0.256",
+            "11.22.0.1.",
+            "a.b.c.d",
+            "",
+        ] {
+            assert!(!public_ipv4(bad), "{bad}");
+        }
+        assert!(public_ipv4("172.32.0.1") && public_ipv4("100.128.0.1"));
+        assert!(default_route("web-production-shop.11-22-0-10.sslip.io"));
+        assert!(default_route("a.0-0-0-0.sslip.io"));
+        assert!(!default_route("web-production-shop.11-22-0-010.sslip.io"));
+        assert!(!default_route("shop.example.com"));
+        assert!(!default_route("-web.11-22-0-10.sslip.io"));
+        assert!(!default_route("a.b.11-22-0-10.sslip.io"));
+        assert!(!default_route("web.11-22-0.sslip.io"));
+        assert!(!default_route("web.11-22-0-256.sslip.io"));
+        assert!(!default_route("Web.11-22-0-10.sslip.io"));
     }
 }

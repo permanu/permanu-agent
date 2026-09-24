@@ -17,6 +17,7 @@ pub mod otlp_server;
 pub mod query;
 pub mod records;
 pub mod redaction;
+pub mod routes;
 pub mod store;
 
 #[cfg(test)]
@@ -97,6 +98,8 @@ pub struct Telemetry {
     runner_unreachable: AtomicBool,
     events: Option<EventBus>,
     started: Instant,
+    /// OTLP clients cut off by the connection limits (D-063 #17).
+    otlp_refused: AtomicU64,
 }
 
 /// What the rest of the agent needs to start telemetry.
@@ -127,6 +130,7 @@ impl Telemetry {
             runner_unreachable: AtomicBool::new(false),
             events: parts.events,
             started: Instant::now(),
+            otlp_refused: AtomicU64::new(0),
         });
         telemetry.check_disk();
         tokio::spawn(Self::writer(Arc::downgrade(&telemetry), rx));
@@ -243,6 +247,18 @@ impl Telemetry {
                 .fetch_add(n, Ordering::SeqCst);
             self.mark_drop();
         }
+    }
+
+    /// Counts an OTLP client cut off by the connection limits (D-063 #17).
+    pub fn count_otlp_refused(&self) {
+        self.otlp_refused.fetch_add(1, Ordering::SeqCst);
+    }
+
+    /// OTLP clients cut off by the connection limits since start (no proto
+    /// field carries it yet; logged at each cut).
+    #[cfg(test)]
+    pub fn otlp_connections_refused(&self) -> u64 {
+        self.otlp_refused.load(Ordering::SeqCst)
     }
 
     /// Resolves once everything submitted before it is stored and flushed.
@@ -409,10 +425,16 @@ impl Telemetry {
                 (u, rate)
             })
             .collect();
+        let spool_bytes = self
+            .kinds
+            .iter()
+            .map(|k| k.queued.load(Ordering::SeqCst) as u64)
+            .sum();
         TelemetryUsageReport {
             kinds,
             disk_free_bytes: guard.free_bytes,
             ingest_paused: guard.paused,
+            spool_bytes,
         }
     }
 
@@ -469,6 +491,8 @@ pub struct TelemetryUsageReport {
     pub kinds: Vec<(store::Usage, f64)>,
     pub disk_free_bytes: u64,
     pub ingest_paused: bool,
+    /// Bytes accepted into the ingest queues, not yet written (D-063 #13).
+    pub spool_bytes: u64,
 }
 
 /// Token bucket (ingest rate limits, 9.4 and 9.5).
@@ -601,6 +625,23 @@ mod tests {
         t.sync().await;
         assert_eq!(t.usage().kinds[0].0.records, 2);
         assert!(t.degraded_reasons().contains(&"otlp_unbound"));
+        t.close();
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    /// D-063 #13: `spool_bytes` counts bytes accepted but not yet written.
+    #[tokio::test(flavor = "current_thread")]
+    async fn usage_reports_spool_bytes_until_written() {
+        let dir = temp_dir("tel-spool");
+        let t = test_support::open(dir.join("telemetry"));
+        assert_eq!(t.usage().spool_bytes, 0);
+        let p = Producer::Project("p1".into());
+        // The writer cannot run before the next await on this runtime.
+        t.submit(Kind::Logs, p.clone(), 1, 1, vec![1; 100], false);
+        t.submit(Kind::Traces, p, 1, 1, vec![2; 23], false);
+        assert_eq!(t.usage().spool_bytes, 123);
+        t.sync().await;
+        assert_eq!(t.usage().spool_bytes, 0);
         t.close();
         std::fs::remove_dir_all(dir).unwrap();
     }
