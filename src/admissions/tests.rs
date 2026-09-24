@@ -1266,3 +1266,44 @@ fn reopening_repairs_the_store_and_directory_modes() {
     );
     fs::remove_dir_all(dir).unwrap();
 }
+
+/// The rule-plan evidence window's build start comes from the runner's
+/// `build_started` line in the consumed log, so it survives an agent
+/// restart (a new store instance has no memory of it).
+#[test]
+fn build_started_is_read_from_the_consumed_log_after_a_restart() {
+    let dir = temp_dir("store-build-started");
+    let log = dir.join("consumed.log");
+    let uid = unsafe { libc::geteuid() };
+    let build_id = "01a0cdb5-3500-70f1-8000-000000000001";
+    let started = serde_json::json!({"v": 1, "seq": 1, "at": "2026-09-23T10:01:00Z",
+        "event": "build_started", "build_id": build_id, "rule_id": "r",
+        "rule_digest_hex": "b".repeat(64)})
+    .to_string();
+    let other = serde_json::json!({"v": 1, "seq": 2, "at": "2026-09-23T10:02:00Z",
+        "event": "build_started", "build_id": "01a0cdb5-3500-70f1-8000-000000000002"})
+    .to_string();
+    write_log(&log, &[started, other], false);
+    {
+        let (store, _) = AdmissionStore::open(&config(&dir), false, now()).unwrap();
+        store.raw(&format!(
+            "PRAGMA foreign_keys = OFF; INSERT INTO builds (build_id, service_id, commit_sha, \
+             image_digest_hex, delivery_id, built_at) VALUES ('{build_id}', 'svc', '{}', '{}', \
+             'del', '{NOW}'); PRAGMA foreign_keys = ON;",
+            "c".repeat(40),
+            "d".repeat(64)
+        ));
+    }
+    let (store, _) = AdmissionStore::open(&config(&dir), true, now()).unwrap();
+    // Without the consumed log the start is unknown (fail closed).
+    assert_eq!(
+        store.build_window_of("svc", &"c".repeat(40)),
+        (None, Some(now()))
+    );
+    store.set_consumed_log(log, uid);
+    assert_eq!(
+        store.build_window_of("svc", &"c".repeat(40)),
+        (timestamp("2026-09-23T10:01:00Z"), Some(now()))
+    );
+    fs::remove_dir_all(dir).unwrap();
+}

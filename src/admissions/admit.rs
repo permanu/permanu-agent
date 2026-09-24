@@ -54,7 +54,7 @@ pub(super) struct TxContext<'a> {
     pub(super) trust: &'a TrustStore,
     pub(super) now: i64,
     /// `build_id` → runner `build_started` time (see `AdmissionStore`).
-    pub(super) build_starts: std::collections::BTreeMap<String, i64>,
+    pub(super) build_starts: &'a super::BuildStarts,
 }
 
 fn internal(_: rusqlite::Error) -> PlanCode {
@@ -271,7 +271,7 @@ impl PolicyContext for TxContext<'_> {
             .map_err(internal)?;
         Ok(row.map_or((None, None), |(build_id, built_at)| {
             (
-                self.build_starts.get(&build_id).copied(),
+                self.build_starts.get(&build_id),
                 crate::signed_plan::text::timestamp(&built_at),
             )
         }))
@@ -338,7 +338,7 @@ impl AdmissionStore {
     /// Section 6.1 steps 1–13. `trust` is the validated trust store.
     pub fn admit(&self, trust: &TrustStore, input: &AdmitInput<'_>) -> Result<Admission, PlanCode> {
         self.check_quarantine(input.now)?;
-        let build_starts = self.build_starts();
+        let build_starts = &self.build_starts;
         let mut conn = self.lock();
         let tx = conn
             .transaction_with_behavior(TransactionBehavior::Immediate)
@@ -387,7 +387,7 @@ impl AdmissionStore {
         input: &AdmitInput<'_>,
     ) -> Result<Verdict, PlanCode> {
         self.check_quarantine(input.now)?;
-        let build_starts = self.build_starts();
+        let build_starts = &self.build_starts;
         let mut conn = self.lock();
         let tx = conn.transaction().map_err(internal)?;
         let ctx = TxContext {

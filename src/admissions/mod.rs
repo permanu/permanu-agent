@@ -134,10 +134,62 @@ pub struct AdmissionStore {
     owner: Option<StoreOwner>,
     /// v1.0.11 (D-061): `build_id` → the `at` of the runner's
     /// `build_started` line (Unix seconds), which anchors the rule-plan
-    /// evidence window (section 6.1 step 12). Not in the normative DDL, so
-    /// kept in memory; unknown after a restart, which only narrows the
-    /// window to the delivery's own 900 s (fail closed).
-    build_starts: Mutex<std::collections::BTreeMap<String, i64>>,
+    /// evidence window (section 6.1 step 12). Not in the normative DDL: read
+    /// from the runner's consumed log (persistent), cached in memory.
+    build_starts: BuildStarts,
+}
+
+/// The runner's `build_started` times: a bounded cache in front of the
+/// consumed log. Without a consumed log (tests, before start-up wiring) an
+/// uncached start is unknown, which only narrows the window to the
+/// delivery's own 900 s (fail closed).
+#[derive(Default)]
+pub(crate) struct BuildStarts {
+    cache: Mutex<std::collections::BTreeMap<String, i64>>,
+    log: Mutex<Option<(PathBuf, u32)>>,
+}
+
+impl BuildStarts {
+    fn note(&self, build_id: &str, started_at: i64) {
+        let mut starts = self
+            .cache
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner());
+        // Bounded: builds are one at a time; keep the newest 1024.
+        while starts.len() >= 1024 {
+            let Some(oldest) = starts.keys().next().cloned() else {
+                break;
+            };
+            starts.remove(&oldest);
+        }
+        starts.insert(build_id.to_owned(), started_at);
+    }
+
+    /// The start of `build_id`, from the cache or else the consumed log.
+    pub(crate) fn get(&self, build_id: &str) -> Option<i64> {
+        let cached = self
+            .cache
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner())
+            .get(build_id)
+            .copied();
+        if cached.is_some() {
+            return cached;
+        }
+        let (path, owner) = self
+            .log
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner())
+            .clone()?;
+        let started = reconcile::event_lines(&path, owner, "build_started")
+            .iter()
+            .rev()
+            .find(|line| line["build_id"] == build_id)
+            .and_then(|line| line["at"].as_str())
+            .and_then(crate::signed_plan::text::timestamp)?;
+        self.note(build_id, started);
+        Some(started)
+    }
 }
 
 impl std::fmt::Debug for AdmissionStore {
@@ -197,8 +249,17 @@ impl AdmissionStore {
             conn: Mutex::new(conn),
             path: config.path.clone(),
             owner: config.owner,
-            build_starts: Mutex::new(std::collections::BTreeMap::new()),
+            build_starts: BuildStarts::default(),
         }
+    }
+
+    /// Where the runner's consumed log is, for `build_started` lines.
+    pub fn set_consumed_log(&self, path: PathBuf, owner_uid: u32) {
+        *self
+            .build_starts
+            .log
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner()) = Some((path, owner_uid));
     }
 
     #[cfg(test)]
@@ -208,18 +269,7 @@ impl AdmissionStore {
 
     /// Records when the runner started a build (its `build_started` line).
     pub fn note_build_started(&self, build_id: &str, started_at: i64) {
-        let mut starts = self
-            .build_starts
-            .lock()
-            .unwrap_or_else(|poison| poison.into_inner());
-        // Bounded: builds are one at a time; keep the newest 1024.
-        while starts.len() >= 1024 {
-            let Some(oldest) = starts.keys().next().cloned() else {
-                break;
-            };
-            starts.remove(&oldest);
-        }
-        starts.insert(build_id.to_owned(), started_at);
+        self.build_starts.note(build_id, started_at);
     }
 
     /// `(started_at, built_at)` of the recorded build of a service and
@@ -239,17 +289,10 @@ impl AdmissionStore {
             .ok();
         row.map_or((None, None), |(build_id, built_at)| {
             (
-                self.build_starts().get(&build_id).copied(),
+                self.build_starts.get(&build_id),
                 crate::signed_plan::text::timestamp(&built_at),
             )
         })
-    }
-
-    fn build_starts(&self) -> std::collections::BTreeMap<String, i64> {
-        self.build_starts
-            .lock()
-            .unwrap_or_else(|poison| poison.into_inner())
-            .clone()
     }
 
     fn lock(&self) -> MutexGuard<'_, Connection> {

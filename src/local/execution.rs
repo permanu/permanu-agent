@@ -412,6 +412,10 @@ fn describe(failure: &RunnerFailure) -> String {
 
 impl ChangeCore {
     pub fn new(parts: ChangeCoreParts) -> Arc<Self> {
+        // The rule-plan evidence window reads `build_started` lines there.
+        parts
+            .store
+            .set_consumed_log(parts.consumed_log.clone(), parts.consumed_log_owner);
         Arc::new(Self {
             store: parts.store,
             trust: parts.trust,
