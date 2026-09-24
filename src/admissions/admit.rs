@@ -604,9 +604,14 @@ fn check_input_composition(ctx: &TxContext<'_>, verified: &VerifiedPlan) -> Resu
 fn sealed_digest(action: &Value) -> Option<&str> {
     match action["kind"].as_str() {
         Some("secret.set") => action["params"]["ciphertext_digest_hex"].as_str(),
-        Some("alert.channel.create" | "alert.channel.update") => {
-            action["params"]["credential_ciphertext_digest_hex"].as_str()
-        }
+        // signed-plan.md 3.2: delivered "exactly like secret.set" (a null
+        // digest, a server_local destination, seals nothing).
+        Some(
+            "alert.channel.create"
+            | "alert.channel.update"
+            | "backup.destination.set"
+            | "repo.credential.set",
+        ) => action["params"]["credential_ciphertext_digest_hex"].as_str(),
         _ => None,
     }
 }
@@ -911,4 +916,37 @@ fn write_admission(
         deduplicated: false,
         deployment_ids,
     })
+}
+
+#[cfg(test)]
+mod sealed_kind_tests {
+    use serde_json::json;
+
+    use super::sealed_digest;
+
+    /// signed-plan.md 3.2: `secret.set`, `alert.channel.*`,
+    /// `backup.destination.set` and `repo.credential.set` deliver their
+    /// ciphertext in `SignedPlan.sealed_secrets` "exactly like secret.set";
+    /// a credentialed destination or a repository credential was refused
+    /// `E_EXEC_PRECONDITION` because its ciphertext matched no signed digest.
+    #[test]
+    fn every_sealing_kind_names_its_ciphertext_digest() {
+        let digest = "ab".repeat(32);
+        for (kind, field) in [
+            ("secret.set", "ciphertext_digest_hex"),
+            ("alert.channel.create", "credential_ciphertext_digest_hex"),
+            ("alert.channel.update", "credential_ciphertext_digest_hex"),
+            ("backup.destination.set", "credential_ciphertext_digest_hex"),
+            ("repo.credential.set", "credential_ciphertext_digest_hex"),
+        ] {
+            let action = json!({"kind": kind, "params": {field: digest}});
+            assert_eq!(sealed_digest(&action), Some(digest.as_str()), "{kind}");
+        }
+        // server_local signs a null digest: nothing sealed.
+        let local = json!({"kind": "backup.destination.set",
+            "params": {"credential_ciphertext_digest_hex": null}});
+        assert_eq!(sealed_digest(&local), None);
+        let deploy = json!({"kind": "deploy", "params": {"ciphertext_digest_hex": digest}});
+        assert_eq!(sealed_digest(&deploy), None);
+    }
 }
