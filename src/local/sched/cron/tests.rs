@@ -494,7 +494,7 @@ async fn a_failed_manual_run_is_never_retried() {
     f.append_consumed(&json!({"v": 1, "seq": 2, "at": "2026-09-23T10:00:07Z",
         "event": "run_result", "plan_id": manual, "plan_digest_hex": format!("{:064x}", 2),
         "action_index": 0, "op": "run_cron", "scheduled_for": null, "attempt": 1,
-        "run_id": "rr-2", "outcome": "failed", "exit_code": 1}));
+        "run_id": RUNNER_RUN, "outcome": "failed", "exit_code": 1}));
     f.finish(&manual, "failed");
     for now in [
         "2026-09-23T10:00:15Z",
@@ -507,6 +507,7 @@ async fn a_failed_manual_run_is_never_retried() {
     let all = runs(&f);
     assert_eq!(all.len(), 1, "{all:?}");
     assert_eq!(all[0].status, CronRunStatus::Failed as i32);
+    assert_eq!(all[0].runner_run_id, RUNNER_RUN);
     assert!(all[0].next_retry_at.is_none());
     assert!(f.runner.ops("run_cron").is_empty());
     // The chain ended: a new manual run is allowed at once.
@@ -518,6 +519,95 @@ async fn a_failed_manual_run_is_never_retried() {
         .unwrap()
         .iter()
         .any(|e| e.kind == EventKindCond::CronFailed && e.occurred));
+}
+
+const RUNNER_RUN: &str = "01a0cdb5-3500-70e1-8000-000000000011";
+
+/// contracts v1.1.5 (D-063 #10): a scheduled run carries the runner's
+/// `run_id` (what `cron.runs.cancel` names); a run an `operation.cancel`
+/// stopped ends `CANCELLED` with no retry and no failure report.
+#[tokio::test]
+async fn a_cancelled_scheduled_run_keeps_its_runner_id_and_is_not_retried() {
+    let f = Fixture::new("cron-cancel-one", "2026-09-23T10:00:00Z");
+    f.record(
+        1,
+        &[cron("cron.create", "*/15 * * * *", "skip", 2)],
+        "succeeded",
+    );
+    let s = scheduler(&f);
+    tick_at(&f, &s, "2026-09-23T10:00:05Z").await;
+    f.runner.answer(
+        "run_cron",
+        json!({"ok": false, "outcome": null, "run_outcome": "cancelled", "run_id": RUNNER_RUN,
+               "exit_code": null, "error": {"code": "E_CANCELLED", "message": "cancelled"}}),
+    );
+    tick_at(&f, &s, "2026-09-23T10:15:05Z").await;
+    tick_at(&f, &s, "2026-09-23T10:15:30Z").await;
+    tick_at(&f, &s, "2026-09-23T10:16:30Z").await;
+    let all = runs(&f);
+    assert_eq!(all.len(), 1, "{all:?}");
+    assert_eq!(all[0].status, CronRunStatus::Cancelled as i32);
+    assert_eq!(all[0].runner_run_id, RUNNER_RUN);
+    assert_eq!(f.runner.ops("run_cron").len(), 1);
+    assert!(!f
+        .sink
+        .0
+        .lock()
+        .unwrap()
+        .iter()
+        .any(|e| e.kind == EventKindCond::CronFailed && e.occurred));
+}
+
+/// contracts v1.1.5 (D-063 #10): while a run is in flight its
+/// `runner_run_id` comes from the runner's consumed-log `run` line, so the
+/// engine can cancel that one run before it ends.
+#[tokio::test]
+async fn a_running_run_learns_its_runner_id_from_the_run_line() {
+    let f = Fixture::new("cron-run-line", "2026-09-23T10:00:00Z");
+    let plan = f.record(
+        1,
+        &[cron("cron.create", "*/15 * * * *", "skip", 0)],
+        "succeeded",
+    );
+    let s = scheduler(&f);
+    tick_at(&f, &s, "2026-09-23T10:00:05Z").await;
+    f.runner.hold("run_cron");
+    f.runner.answer(
+        "run_cron",
+        json!({"outcome": "succeeded", "run_id": RUNNER_RUN}),
+    );
+    f.clock.set("2026-09-23T10:15:05Z");
+    s.tick();
+    spin().await;
+    assert_eq!(runs(&f)[0].runner_run_id, "");
+    let run_line = |attempt: u32, at: &str, id: &str| {
+        json!({"v": 1, "seq": 1, "at": "2026-09-23T10:15:06Z", "event": "run",
+               "plan_id": plan, "plan_digest_hex": format!("{:064x}", 1), "action_index": 0,
+               "op": "run_cron", "scheduled_for": at, "attempt": attempt, "run_id": id})
+    };
+    // Another fire time and another attempt never match.
+    f.append_consumed(&run_line(
+        1,
+        "2026-09-23T10:00:00Z",
+        "01a0cdb5-3500-70e1-8000-0000000000aa",
+    ));
+    f.append_consumed(&run_line(
+        2,
+        "2026-09-23T10:15:00Z",
+        "01a0cdb5-3500-70e1-8000-0000000000bb",
+    ));
+    f.append_consumed(&run_line(1, "2026-09-23T10:15:00Z", RUNNER_RUN));
+    f.clock.set("2026-09-23T10:15:15Z");
+    s.tick();
+    spin().await;
+    let running = runs(&f);
+    assert_eq!(running[0].status, CronRunStatus::Running as i32);
+    assert_eq!(running[0].runner_run_id, RUNNER_RUN);
+    f.runner.release("run_cron", 1);
+    s.settle().await;
+    let done = runs(&f);
+    assert_eq!(done[0].status, CronRunStatus::Succeeded as i32);
+    assert_eq!(done[0].runner_run_id, RUNNER_RUN);
 }
 
 #[test]
