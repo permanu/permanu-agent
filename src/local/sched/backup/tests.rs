@@ -717,3 +717,107 @@ async fn a_pre_deploy_backup_is_a_pre_change_run() {
     let runs = backup_runs(&f);
     assert_eq!(runs[0].trigger, backup_run::Trigger::PreChange as i32);
 }
+
+fn verifications(f: &Fixture) -> Vec<RestoreVerification> {
+    f.deps
+        .ops
+        .list(
+            RecordKind::Verification,
+            &Listing {
+                limit: 10,
+                ..Default::default()
+            },
+        )
+        .iter()
+        .filter_map(|row| row.decode())
+        .collect()
+}
+
+const VERIFY_RUN: &str = "01a0cdb5-3500-70e1-8000-000000000031";
+
+/// contracts v1.1.6 (D-064 #8): a running scheduled verification learns the
+/// runner's `run_id` from its `run` line; one a cancel stopped keeps it,
+/// raises no failure and leaves `last_verification` as it was.
+#[tokio::test]
+async fn a_cancelled_verification_keeps_its_runner_id_and_is_not_a_failure() {
+    let f = Fixture::new("backup-verify-cancel", "2026-09-27T03:00:00Z");
+    let plan = f.record(
+        1,
+        &[policy(PG, "0 3 * * *", json!("0 4 * * 0"))],
+        "succeeded",
+    );
+    let s = scheduler(&f);
+    s.put_artifact(&BackupArtifact {
+        id: BACKUP_A.to_owned(),
+        policy_id: PG.to_owned(),
+        last_verification: RestoreVerificationStatus::Passed as i32,
+        ..Default::default()
+    });
+    tick_at(&f, &s, "2026-09-27T03:59:55Z").await;
+    f.runner.hold("backup_verify");
+    f.runner.answer(
+        "backup_verify",
+        json!({"ok": false, "outcome": null, "run_outcome": "cancelled", "run_id": VERIFY_RUN,
+               "error": {"code": "E_CANCELLED", "message": "cancelled"}}),
+    );
+    f.clock.set("2026-09-27T04:00:05Z");
+    s.tick();
+    for _ in 0..20 {
+        tokio::task::yield_now().await;
+    }
+    f.append_consumed(
+        &json!({"v": 1, "seq": 1, "at": "2026-09-27T04:00:06Z", "event": "run",
+        "plan_id": plan, "plan_digest_hex": format!("{:064x}", 1), "action_index": 0,
+        "op": "backup_verify", "scheduled_for": "2026-09-27T04:00:00Z", "attempt": 1,
+        "run_id": VERIFY_RUN}),
+    );
+    f.clock.set("2026-09-27T04:00:15Z");
+    s.tick();
+    let running = verifications(&f);
+    assert_eq!(running.len(), 1);
+    assert_eq!(running[0].status, RestoreVerificationStatus::Running as i32);
+    assert_eq!(running[0].runner_run_id, VERIFY_RUN);
+    f.runner.release("backup_verify", 1);
+    s.settle().await;
+    let ended = verifications(&f);
+    assert_eq!(ended.len(), 1);
+    assert_eq!(ended[0].runner_run_id, VERIFY_RUN);
+    assert_eq!(ended[0].error, "cancelled");
+    assert!(ended[0].finished_at.is_some());
+    let artifact: BackupArtifact = f
+        .deps
+        .ops
+        .get(RecordKind::Artifact, BACKUP_A)
+        .unwrap()
+        .decode()
+        .unwrap();
+    assert_eq!(
+        artifact.last_verification,
+        RestoreVerificationStatus::Passed as i32
+    );
+    assert!(f.sink.0.lock().unwrap().is_empty());
+}
+
+/// contracts v1.1.6 (D-064 #8): a plan-bound verification takes the
+/// runner's `run_id` of its action from the `run` line while it runs.
+#[tokio::test]
+async fn a_manual_verification_learns_its_runner_run_id() {
+    let f = Fixture::new("backup-manual-verify-id", "2026-09-23T10:00:00Z");
+    f.record(1, &[policy(PG, "0 3 * * *", Value::Null)], "succeeded");
+    let s = scheduler(&f);
+    let plan = f.record(
+        2,
+        &[json!({"kind": "backup.verify", "params": {"resource_id": PG, "backup_id": BACKUP_A}})],
+        "",
+    );
+    f.append_consumed(
+        &json!({"v": 1, "seq": 1, "at": "2026-09-23T10:00:01Z", "event": "run",
+        "plan_id": plan, "plan_digest_hex": format!("{:064x}", 2), "action_index": 0,
+        "op": "backup_verify", "scheduled_for": null, "attempt": 1, "run_id": VERIFY_RUN}),
+    );
+    tick_at(&f, &s, "2026-09-23T10:00:05Z").await;
+    let running = verifications(&f);
+    assert_eq!(running.len(), 1);
+    assert_eq!(running[0].status, RestoreVerificationStatus::Running as i32);
+    assert_eq!(running[0].runner_run_id, VERIFY_RUN);
+}

@@ -20,7 +20,7 @@
 //! - Manual `backup.run` / `backup.verify` plans are executed by the plan
 //!   executor; their runs are recorded from the admissions.
 
-use std::collections::{BTreeMap, HashSet, VecDeque};
+use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -43,6 +43,7 @@ use crate::proto::agent::v2::{
     EventKind, LogLevel, LogSourceType, RestoreVerification, RestoreVerificationStatus,
     VerificationCheck,
 };
+use crate::signed_plan::PlanCode;
 
 pub const BACKUP_KINDS: &[&str] = &[
     "backup.policy.set",
@@ -308,6 +309,9 @@ struct State {
     /// The scheduled backup in flight: its run, binding plan, fire time and
     /// attempt (D-063 #10: its runner `run_id` comes from the `run` line).
     running: Option<(BackupRun, String, i64, u32)>,
+    /// Scheduled verifications in flight by id: their binding plan and fire
+    /// time (D-064 #8: the runner `run_id` comes from the `run` line).
+    verifies: HashMap<String, (RestoreVerification, String, i64)>,
 }
 
 pub struct BackupScheduler {
@@ -539,6 +543,7 @@ impl BackupScheduler {
     /// runner's `run_id` from its consumed-log `run` line, so the engine can
     /// cancel that one run (`backups.runs.cancel`) before it ends.
     fn note_runner_id(&self) {
+        self.note_verify_runner_ids();
         let Some((mut run, plan_id, scheduled_for, attempt)) = self
             .state()
             .running
@@ -564,6 +569,41 @@ impl BackupScheduler {
             }
         }
         self.record_run(&run, &rfc(scheduled_for));
+    }
+
+    /// contracts v1.1.6 (D-064 #8): each running scheduled verification
+    /// takes the runner's `run_id` of its `backup_verify` run, so
+    /// `backups.runs.cancel` can stop that one verification.
+    fn note_verify_runner_ids(&self) {
+        let waiting: Vec<(RestoreVerification, String, i64)> = self
+            .state()
+            .verifies
+            .values()
+            .filter(|(v, ..)| v.runner_run_id.is_empty())
+            .cloned()
+            .collect();
+        if waiting.is_empty() {
+            return;
+        }
+        let Some(consumed) = self.deps.consumed_log.as_ref() else {
+            return;
+        };
+        let lines = consumed.run_lines("backup_verify");
+        for (mut verification, plan_id, scheduled_for) in waiting {
+            let Some(id) = super::find_runner_run_id(&lines, &plan_id, Some(scheduled_for), 1)
+            else {
+                continue;
+            };
+            verification.runner_run_id = id;
+            {
+                let mut state = self.state();
+                match state.verifies.get_mut(&verification.id) {
+                    Some(current) => current.0.runner_run_id = verification.runner_run_id.clone(),
+                    None => continue,
+                }
+            }
+            self.record_verification(&verification, &rfc(scheduled_for));
+        }
     }
 
     fn after_downtime(self: &Arc<Self>, policy: &PolicyDef, times: &[i64], now: i64) {
@@ -1004,6 +1044,14 @@ impl BackupScheduler {
             ..Default::default()
         };
         self.record_verification(&verification, &slot);
+        self.state().verifies.insert(
+            verification.id.clone(),
+            (
+                verification.clone(),
+                policy.plan.plan_id.clone(),
+                scheduled_for,
+            ),
+        );
         self.log(
             policy,
             &verification.id,
@@ -1041,10 +1089,28 @@ impl BackupScheduler {
         result: Result<Value, RunnerFailure>,
     ) {
         let now = self.now();
+        if let Some((noted, ..)) = self.state().verifies.remove(&verification.id) {
+            verification.runner_run_id = noted.runner_run_id;
+        }
+        let cancelled = verify_cancelled(&result);
+        if let Some(id) = verify_run_id(&result) {
+            verification.runner_run_id = id;
+        }
         apply_verify_result(&mut verification, &result);
         verification.finished_at = Some(pts(now));
         self.record_verification(&verification, slot);
         self.state().verifying.remove(&policy.resource_id);
+        if cancelled {
+            // D-064 #8: a cancelled verification is not a failure and
+            // leaves the artifact's `last_verification` as it was.
+            self.log(
+                policy,
+                &verification.id,
+                LogLevel::Info,
+                "verify-restore cancelled",
+            );
+            return;
+        }
         if let Some(mut artifact) = self
             .deps
             .ops
@@ -1138,20 +1204,8 @@ impl BackupScheduler {
                     run.finished_at = finished.or(Some(pts(now)));
                 }
                 if run.runner_run_id.is_empty() {
-                    if let Some(consumed) = self.deps.consumed_log.as_ref() {
-                        let lines: Vec<Value> = consumed
-                            .run_lines("backup_run")
-                            .into_iter()
-                            .filter(|line| {
-                                line["action_index"].as_u64()
-                                    == u64::try_from(action.action_index).ok()
-                            })
-                            .collect();
-                        if let Some(id) =
-                            super::find_runner_run_id(&lines, &action.plan_id, None, 1)
-                        {
-                            run.runner_run_id = id;
-                        }
+                    if let Some(id) = self.manual_runner_run_id("backup_run", &action) {
+                        run.runner_run_id = id;
                     }
                 }
                 if action.outcome == "succeeded" {
@@ -1202,6 +1256,14 @@ impl BackupScheduler {
                     "succeeded" => RestoreVerificationStatus::Passed,
                     _ => RestoreVerificationStatus::Failed,
                 } as i32;
+                if action.outcome == "cancelled" {
+                    verification.error = "cancelled".to_owned();
+                }
+                if verification.runner_run_id.is_empty() {
+                    if let Some(id) = self.manual_runner_run_id("backup_verify", &action) {
+                        verification.runner_run_id = id;
+                    }
+                }
                 if !action.outcome.is_empty() {
                     verification.finished_at = finished.or(Some(pts(now)));
                     self.apply_manual_verify(&action, &mut verification);
@@ -1209,6 +1271,18 @@ impl BackupScheduler {
                 self.record_verification(&verification, &slot);
             }
         }
+    }
+
+    /// The runner's `run_id` of a plan-bound `op` run of `action`, from its
+    /// `run` line.
+    fn manual_runner_run_id(&self, op: &str, action: &AdmittedAction) -> Option<String> {
+        let consumed = self.deps.consumed_log.as_ref()?;
+        let lines: Vec<Value> = consumed
+            .run_lines(op)
+            .into_iter()
+            .filter(|line| line["action_index"].as_u64() == u64::try_from(action.action_index).ok())
+            .collect();
+        super::find_runner_run_id(&lines, &action.plan_id, None, 1)
     }
 
     /// v1.0.12 (D-062): a plan-bound `backup_verify` result sets the
@@ -1395,10 +1469,35 @@ impl BackupScheduler {
     }
 }
 
+/// A `backup_verify` an admitted `operation.cancel` stopped (runner
+/// `E_CANCELLED`, outcome `cancelled`).
+fn verify_cancelled(result: &Result<Value, RunnerFailure>) -> bool {
+    match result {
+        Ok(answer) => {
+            answer["run_outcome"] == "cancelled"
+                || answer["outcome"] == "cancelled"
+                || answer["error"]["code"] == PlanCode::Cancelled.as_str()
+        }
+        Err(failure) => failure.code == PlanCode::Cancelled.as_str(),
+    }
+}
+
+/// The runner's `run_id` in a `backup_verify` answer.
+fn verify_run_id(result: &Result<Value, RunnerFailure>) -> Option<String> {
+    result.as_ref().ok().and_then(super::runner_run_id_of)
+}
+
 fn apply_verify_result(
     verification: &mut RestoreVerification,
     result: &Result<Value, RunnerFailure>,
 ) {
+    if verify_cancelled(result) {
+        // D-064 #8: RestoreVerificationStatus has no CANCELLED; FAILED
+        // with the error `cancelled`, never reported as a failure.
+        verification.status = RestoreVerificationStatus::Failed as i32;
+        verification.error = "cancelled".to_owned();
+        return;
+    }
     match result {
         Ok(answer) => {
             if let Some(id) = answer["backup_id"].as_str() {
