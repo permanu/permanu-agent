@@ -15,7 +15,10 @@ import "agent/v2/common.proto";
 //
 // The target comes only from the signed plan: params.service_id names the
 // service (the agent picks one of its running containers itself) and null
-// means a host login shell as the permanu user (capability "shell.host").
+// means a host login shell as the permanu-shell user (capability
+// "shell.host"). v2.1.6 (contracts v1.1.6, D-064): a host shell's plan is
+// server-level (no project_id, environment or environment_id; this server in
+// targets); the earlier project-level form is still admitted (deprecated).
 // The client cannot name a container or a command. The session is audited
 // and ends at params.ttl_seconds (max 900 s) or after 15 min idle.
 service ShellService {

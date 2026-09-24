@@ -529,4 +529,9 @@ message GetTelemetryUsageResponse {
   // (container and unit logs, OTLP, Dwaar) that are not yet written to the
   // store. Engine API AgentStatus.spool_bytes (agent-protocol.md 12.3).
   uint64 spool_bytes = 6;
+  // v2.1.6 (contracts v1.1.6, D-064). OTLP connections refused at accept or
+  // closed by the connection, 30 s body-read or 16 MiB in-flight limit
+  // (agent-protocol.md 7) since the agent started. Engine API
+  // AgentStatus.otlp_refused_total (agent-protocol.md 12.3).
+  uint64 otlp_refused_total = 7;
 }

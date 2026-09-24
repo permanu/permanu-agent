@@ -83,6 +83,10 @@ message LogCondition {
 // on-server build that ended FAILED; CANCELLED is not a failure). A v2.1
 // agent evaluates these five kinds and refuses a rule of an event kind it
 // does not evaluate (EXEC_PRECONDITION); agent-protocol.md 10.3.
+//
+// v2.1.6 (contracts v1.1.6, D-064): scope names at most one service; an
+// Engine API event rule naming several services is signed as one rule per
+// service (the engine splits it), so Scope stays unchanged.
 message EventCondition {
   enum Kind {
     KIND_UNSPECIFIED = 0;
@@ -193,6 +197,8 @@ message AlertEvent {
   // policy with channel_ids). rule_id is "" unless source is "rule".
   string source = 13;
   // v2.1.0. The cron_id or backup policy id for those sources.
+  // v2.1.6 (contracts v1.1.6, D-064): the Engine API Alert then has rule_id
+  // null, source and subject_id.
   string subject_id = 14;
 }
 

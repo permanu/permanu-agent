@@ -193,6 +193,9 @@ message ServerBuild {
   // "timeout", "cache_full", "buildkit_unavailable", "build_queue_full".
   // v2.1.5 (contracts v1.1.5, D-063): "cancelled" for a CANCELLED build
   // (an admitted operation.cancel stopped it, runner code E_CANCELLED).
+  // v2.1.6 (contracts v1.1.6, D-064): also for a rule deploy cancelled after
+  // its build, whose deploy operation ends CANCELLED; E_CANCELLED maps to
+  // ERROR_REASON_CANCELLED everywhere, never to a failure.
   // Empty otherwise. The engine copies it into Engine API
   // Deployment.failure_detail (failure_code "build").
   string failure_reason = 17;
