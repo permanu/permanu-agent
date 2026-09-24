@@ -396,9 +396,35 @@ fn decode<M: Message + Default + serde::de::DeserializeOwned>(
     body: &[u8],
 ) -> Option<M> {
     if json {
-        serde_json::from_slice(body).ok()
+        let mut value: serde_json::Value = serde_json::from_slice(body).ok()?;
+        int64_strings_to_numbers(&mut value);
+        serde_json::from_value(value).ok()
     } else {
         M::decode(body).ok()
+    }
+}
+
+/// OTLP/JSON encodes int64 as a decimal string (the protobuf JSON mapping),
+/// and the `opentelemetry-proto` serde derive reads the data point and
+/// exemplar oneof member `asInt` only as a JSON number: a string dropped the
+/// metric's data, so the point was stored as 0. Every `asInt` member that
+/// holds an int64 string becomes that number; anything else is left for the
+/// decoder to refuse.
+fn int64_strings_to_numbers(value: &mut serde_json::Value) {
+    match value {
+        serde_json::Value::Object(map) => {
+            for (key, member) in map.iter_mut() {
+                if key == "asInt" {
+                    if let Some(number) = member.as_str().and_then(|s| s.parse::<i64>().ok()) {
+                        *member = serde_json::Value::from(number);
+                        continue;
+                    }
+                }
+                int64_strings_to_numbers(member);
+            }
+        }
+        serde_json::Value::Array(items) => items.iter_mut().for_each(int64_strings_to_numbers),
+        _ => {}
     }
 }
 
@@ -716,6 +742,55 @@ mod tests {
     use opentelemetry_proto::tonic::collector::trace::v1::trace_service_client::TraceServiceClient;
     use std::sync::atomic::{AtomicBool, Ordering};
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+    /// OTLP/JSON encodes int64 as a string (the protobuf JSON mapping every
+    /// SDK uses); `asInt` must keep its value, as a JSON number does.
+    #[test]
+    fn json_as_int_strings_keep_their_value() {
+        use opentelemetry_proto::tonic::metrics::v1::{metric, number_data_point};
+        let body = |value: &str| {
+            format!(
+                r#"{{"resourceMetrics":[{{"scopeMetrics":[{{"metrics":[
+                {{"name":"qa.sum","sum":{{"aggregationTemporality":2,"isMonotonic":true,
+                  "dataPoints":[{{"asInt":{value},"timeUnixNano":"1790000000000000000"}}]}}}},
+                {{"name":"qa.gauge","gauge":{{"dataPoints":[{{"asInt":{value}}}]}}}}]}}]}}]}}"#
+            )
+        };
+        for value in ["\"42\"", "42"] {
+            let request: ExportMetricsServiceRequest =
+                decode(true, body(value).as_bytes()).expect("decodes");
+            let metrics = &request.resource_metrics[0].scope_metrics[0].metrics;
+            let Some(metric::Data::Sum(sum)) = &metrics[0].data else {
+                panic!("sum")
+            };
+            assert_eq!(
+                sum.data_points[0].value,
+                Some(number_data_point::Value::AsInt(42)),
+                "{value}"
+            );
+            let Some(metric::Data::Gauge(gauge)) = &metrics[1].data else {
+                panic!("gauge")
+            };
+            assert_eq!(
+                gauge.data_points[0].value,
+                Some(number_data_point::Value::AsInt(42)),
+                "{value}"
+            );
+        }
+        // Not an int64: the value is refused as before (no point), never 0.
+        let request: ExportMetricsServiceRequest =
+            decode(true, body("\"4x2\"").as_bytes()).unwrap_or_default();
+        let value = request
+            .resource_metrics
+            .first()
+            .and_then(|r| r.scope_metrics.first())
+            .and_then(|s| s.metrics.first())
+            .and_then(|m| match &m.data {
+                Some(metric::Data::Sum(sum)) => sum.data_points.first().and_then(|p| p.value),
+                _ => None,
+            });
+        assert_ne!(value, Some(number_data_point::Value::AsInt(0)));
+    }
 
     struct TestNet {
         bridges: Vec<Bridge>,

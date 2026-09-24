@@ -429,6 +429,53 @@ async fn manual_runs_follow_their_admission_and_count_for_overlap() {
     assert_eq!(s.manual_allowed("other"), Err("unknown cron job"));
 }
 
+/// A manual run (`cron.run`, plan-bound `run_cron`) takes its exit code,
+/// output size, container and `timeout` outcome from the runner's
+/// `run_result` line of that action (signed-plan.md 14.8), as a scheduled
+/// run takes them from the runner's answer: a failed `exit 3` must not read
+/// as exit code 0.
+#[tokio::test]
+async fn a_manual_run_keeps_the_runners_exit_code_and_outcome() {
+    let f = Fixture::new("cron-manual-result", "2026-09-23T10:00:00Z");
+    f.record(
+        1,
+        &[cron("cron.create", "0 0 1 1 *", "skip", 0)],
+        "succeeded",
+    );
+    let s = scheduler(&f);
+    tick_at(&f, &s, "2026-09-23T10:00:05Z").await;
+    let result = |seq: i64, plan: &str, outcome: &str, fields: Value| {
+        let mut line = json!({"v": 1, "seq": seq, "at": "2026-09-23T10:00:07Z",
+            "event": "run_result", "plan_id": plan, "plan_digest_hex": format!("{seq:064x}"),
+            "action_index": 0, "op": "run_cron", "scheduled_for": null, "attempt": 1,
+            "run_id": format!("rr-{seq}"), "outcome": outcome, "output_bytes": 14,
+            "container_name": format!("permanu-run-{seq}")});
+        for (key, value) in fields.as_object().unwrap() {
+            line[key] = value.clone();
+        }
+        line
+    };
+    let failed = f.record(2, &[id_only("cron.run")], "");
+    s.record_manual(CRON, &failed, "op-2");
+    f.append_consumed(&result(2, &failed, "failed", json!({"exit_code": 3})));
+    f.finish(&failed, "failed");
+    tick_at(&f, &s, "2026-09-23T10:00:15Z").await;
+    let timed_out = f.record(3, &[id_only("cron.run")], "");
+    s.record_manual(CRON, &timed_out, "op-3");
+    f.append_consumed(&result(3, &timed_out, "timeout", json!({})));
+    f.finish(&timed_out, "failed");
+    tick_at(&f, &s, "2026-09-23T10:00:25Z").await;
+    let all = runs(&f);
+    let by_plan = |plan: &str| all.iter().find(|run| run.plan_id == plan).cloned().unwrap();
+    let run = by_plan(&failed);
+    assert_eq!(run.status, CronRunStatus::Failed as i32);
+    assert_eq!(run.exit_code, 3);
+    assert_eq!(run.output_bytes, 14);
+    assert_eq!(run.container_name, "permanu-run-2");
+    let run = by_plan(&timed_out);
+    assert_eq!(run.status, CronRunStatus::TimedOut as i32);
+}
+
 #[test]
 fn backoff_doubles_from_ten_seconds_up_to_ten_minutes() {
     assert_eq!(

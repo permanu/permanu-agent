@@ -843,6 +843,14 @@ impl CronScheduler {
                 "cancelled" => CronRunStatus::Cancelled,
                 _ => CronRunStatus::Failed,
             } as i32;
+            // The runner's run_result line of this action carries the exit
+            // code, output size, container and a `timeout` outcome
+            // (signed-plan.md 14.8), as its answer does for a scheduled run.
+            if action.outcome != "cancelled" {
+                if let Some(line) = self.manual_result(&action) {
+                    apply_result(&mut run, &Ok(line));
+                }
+            }
             run.finished_at = Some(pts(action
                 .finished_at
                 .as_deref()
@@ -856,6 +864,20 @@ impl CronScheduler {
             }
         }
         self.fill_slots();
+    }
+
+    /// The runner's `run_result` line of a plan-bound `run_cron` action,
+    /// read with the consumed-log trust checks.
+    fn manual_result(&self, action: &AdmittedAction) -> Option<Value> {
+        let consumed = self.deps.consumed_log.as_ref()?;
+        crate::admissions::run_results(&consumed.path, consumed.owner_uid, "run_cron")
+            .into_iter()
+            .rev()
+            .find(|line| {
+                line["plan_id"] == action.plan_id.as_str()
+                    && line["plan_digest_hex"] == action.plan_digest_hex.as_str()
+                    && line["action_index"].as_u64() == u64::try_from(action.action_index).ok()
+            })
     }
 
     /// `RunCronJobNow` (section 10.1): the overlap policy applies to manual

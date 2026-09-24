@@ -503,3 +503,20 @@ async fn an_update_needs_its_staged_set_and_verifies_it_first() {
     assert!(!h.dir.join("staging").join(digest).exists());
     h.stop().await;
 }
+
+/// A QA bundle is signed with a TEST release key and its runner is built with
+/// `test-release-keys` (D-051); the agent needs the same switch, or it reads
+/// the pinned `release-keys.json` as invalid ("TEST release key in
+/// production") and no update of a TEST-signed server can be staged.
+#[cfg(feature = "test-release-keys")]
+#[test]
+fn a_test_release_keys_build_trusts_the_test_keys() {
+    assert!(ReleaseMode::production().trust_test_keys);
+}
+
+/// A release build (neither dev feature) never trusts them.
+#[cfg(not(any(feature = "dev-paths", feature = "test-release-keys")))]
+#[test]
+fn a_release_build_never_trusts_the_test_keys() {
+    assert!(!ReleaseMode::production().trust_test_keys);
+}
