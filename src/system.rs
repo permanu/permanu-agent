@@ -242,6 +242,13 @@ impl HostIpCandidate {
     }
 }
 
+/// The host's public IPv4 and IPv6 addresses ("" when none), as the heartbeat reports them: the
+/// PERMANU_AGENT_PUBLIC_IPV4/IPV6 overrides, else the first public address of a local interface.
+pub(crate) fn host_public_ips() -> (String, String) {
+    let ips = collect_host_public_ips();
+    (ips.ipv4, ips.ipv6)
+}
+
 fn collect_host_public_ips() -> HostPublicIps {
     let candidates = local_ip_candidates();
     select_host_public_ips(&candidates, |name| std::env::var(name).ok())

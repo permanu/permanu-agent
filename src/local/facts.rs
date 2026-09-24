@@ -59,6 +59,7 @@ impl HostProbe for SystemProbe {
         let (memory_total_bytes, memory_available_bytes) =
             parse_meminfo_bytes(&fs::read_to_string("/proc/meminfo").unwrap_or_default());
         let mounts = parse_mounts(&fs::read_to_string("/proc/mounts").unwrap_or_default());
+        let (public_ipv4, public_ipv6) = crate::system::host_public_ips();
         ServerFacts {
             hostname: hostname(),
             machine_id: fs::read_to_string("/etc/machine-id")
@@ -90,6 +91,8 @@ impl HostProbe for SystemProbe {
                 .collect(),
             docker: Some(docker_info().await),
             dwaar: Some(dwaar_info().await),
+            public_ipv4,
+            public_ipv6,
             boot_time: parse_boot_time(&fs::read_to_string("/proc/stat").unwrap_or_default()),
             probed_at: Some(timestamp(SystemTime::now())),
             ..Default::default()
@@ -451,6 +454,24 @@ mod tests {
             probe.ssh_host_key_digests_hex(),
             vec![ssh_host_key_digest_hex(&line).unwrap()]
         );
+    }
+
+    // QA_M2 run 2: a server reached through an address that is not its public one (NAT, port forward) got no
+    // default route because the facts never carried the host's public IPv4 (D-063 #5).
+    #[tokio::test]
+    async fn server_facts_carry_the_public_ipv4() {
+        std::env::set_var("PERMANU_AGENT_PUBLIC_IPV4", "11.22.0.10");
+        let dir = crate::signed_plan::test_support::temp_dir("facts-public-ip");
+        let probe = SystemProbe {
+            server_id: String::new(),
+            ssh_host_key_dir: dir.clone(),
+            runner: std::sync::Arc::new(super::super::runner::SocketRunner {
+                path: dir.join("runner.sock"),
+            }),
+        };
+        let facts = probe.server_facts().await;
+        std::env::remove_var("PERMANU_AGENT_PUBLIC_IPV4");
+        assert_eq!(facts.public_ipv4, "11.22.0.10");
     }
 
     #[test]
