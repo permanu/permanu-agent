@@ -254,7 +254,9 @@ impl Telemetry {
         self.otlp_refused.fetch_add(1, Ordering::SeqCst);
     }
 
-    /// OTLP clients cut off by the connection limits since start.
+    /// OTLP clients cut off by the connection limits since start (no proto
+    /// field carries it yet; logged at each cut).
+    #[cfg(test)]
     pub fn otlp_connections_refused(&self) -> u64 {
         self.otlp_refused.load(Ordering::SeqCst)
     }
