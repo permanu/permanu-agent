@@ -171,6 +171,11 @@ message BackupRun {
   // content_digest_hex = the manifest's backup_digest_hex, signed-plan.md
   // 3.8); "" until SUCCEEDED.
   string content_digest_hex = 11;
+  // v2.1.5 (contracts v1.1.5, D-063). The runner's run_id of this backup_run
+  // (signed-plan.md 14.8); "" until the runner started it. An
+  // operation.cancel with this run_id stops only this run (Engine API
+  // backups.runs.cancel).
+  string runner_run_id = 12;
 }
 
 enum RestoreVerificationStatus {

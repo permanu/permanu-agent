@@ -151,6 +151,8 @@ message WebhookQueueStatus {
   // v2.1.3 (contracts v1.1.3, D-061). The hostname Dwaar routes
   // /hooks/<project_id> on: the latest succeeded webhook.host.set on this
   // server; "" before one. Push URL: https://<webhook_host>/hooks/<project_id>.
+  // v2.1.5 (contracts v1.1.5, D-063): may be a public IPv4 address (an
+  // IP-only server); the push URL is then http://<webhook_host>/hooks/<project_id>.
   string webhook_host = 13;
 }
 
@@ -189,6 +191,8 @@ message ServerBuild {
   // v2.1.0. Sub-reason of a FAILED build: "source_fetch" (including a ref
   // whose head is no longer commit_sha), "recipe_missing", "build",
   // "timeout", "cache_full", "buildkit_unavailable", "build_queue_full".
+  // v2.1.5 (contracts v1.1.5, D-063): "cancelled" for a CANCELLED build
+  // (an admitted operation.cancel stopped it, runner code E_CANCELLED).
   // Empty otherwise. The engine copies it into Engine API
   // Deployment.failure_detail (failure_code "build").
   string failure_reason = 17;

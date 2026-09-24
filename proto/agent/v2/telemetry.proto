@@ -525,4 +525,8 @@ message GetTelemetryUsageResponse {
   // v2.1.0. Version of the normative redaction rule set in force
   // (agent-protocol.md 9.6), "redaction-v1" in v2.1.0.
   string redaction_rules_version = 5;
+  // v2.1.5 (contracts v1.1.5, D-063). Bytes of records ingestion accepted
+  // (container and unit logs, OTLP, Dwaar) that are not yet written to the
+  // store. Engine API AgentStatus.spool_bytes (agent-protocol.md 12.3).
+  uint64 spool_bytes = 6;
 }
