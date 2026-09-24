@@ -21,6 +21,7 @@ pub mod logs;
 pub mod presence;
 pub mod runner;
 pub mod sched;
+pub mod shell;
 pub mod socket;
 pub mod status;
 pub mod telemetry;
@@ -53,6 +54,7 @@ use crate::{
         event_service_server::EventServiceServer,
         info_service_server::{InfoService, InfoServiceServer},
         schedule_service_server::ScheduleServiceServer,
+        shell_service_server::ShellServiceServer,
         state_service_server::{StateService, StateServiceServer},
         telemetry_service_server::TelemetryServiceServer,
         trusted_keys_summary::TrustState as TrustStateProto,
@@ -595,6 +597,13 @@ impl LocalServer {
             ),
             None => (None, None, None),
         };
+        // agent-protocol.md 4: the only interactive exec path.
+        let shell_svc = ShellServiceServer::new(shell::ShellSvc {
+            core: self.core.clone(),
+            idle: shell::IDLE,
+        })
+        .max_decoding_message_size(MAX_MESSAGE_BYTES)
+        .max_encoding_message_size(MAX_MESSAGE_BYTES);
         let change_svc = ChangeServiceServer::new(change::ChangeSvc { core: self.core })
             .max_decoding_message_size(MAX_MESSAGE_BYTES)
             .max_encoding_message_size(MAX_MESSAGE_BYTES);
@@ -631,6 +640,7 @@ impl LocalServer {
             .add_service(info_svc)
             .add_service(state_svc)
             .add_service(change_svc)
+            .add_service(shell_svc)
             .add_service(event_svc)
             .add_service(telemetry_svc)
             .add_optional_service(schedule_svc)
@@ -1117,6 +1127,8 @@ fn spawn_status_events(
 
 #[cfg(test)]
 mod change_tests;
+#[cfg(test)]
+mod shell_tests;
 #[cfg(test)]
 pub(crate) mod test_harness;
 

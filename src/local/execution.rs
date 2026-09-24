@@ -110,6 +110,9 @@ enum Exec {
     /// definition (`consumed`, then `result succeeded`) and the schedulers
     /// apply it once that result is reconciled (section 14.6).
     Definition,
+    /// `shell.open`: the Shell RPC binds it and holds the runner's
+    /// `shell_open` session; the runner's `result` line ends the action.
+    Shell,
     NotImplemented,
 }
 
@@ -175,6 +178,7 @@ fn exec_of(kind: &str, params: &Value) -> Exec {
         "backup.verify" => Exec::Ops(&["backup_verify"]),
         "backup.delete" => Exec::Ops(&["backup_delete"]),
         "restore" => Exec::Ops(&["restore_backup"]),
+        "shell.open" => Exec::Shell,
         kind if kind.starts_with("alert.") => Exec::Agent,
         kind if DEFINITION_KINDS.contains(&kind) => Exec::Definition,
         kind if INPUT_KINDS.contains(&kind) => Exec::Input,
@@ -1034,6 +1038,9 @@ impl ChangeCore {
                     ),
                 )),
                 Exec::Input | Exec::Definition => self.bind(&record, &action).await.err(),
+                // Driven by `ShellService.Shell` (never here); an unbound one
+                // expires with the execution window.
+                Exec::Shell => None,
                 Exec::Deploy => Some(match self.bind(&record, &action).await {
                     Ok(()) => self.run_deploy(&record, &plan, &action, &done).await,
                     Err(outcome) => outcome,
@@ -1173,6 +1180,47 @@ impl ChangeCore {
                 Err(outcome)
             }
         }
+    }
+
+    /// `ShellService.Shell`: binds the admitted `shell.open` action (its
+    /// only action) and records the session step. The session itself is the
+    /// runner's `shell_open` connection, held by the caller.
+    pub(crate) async fn bind_shell(
+        &self,
+        plan_id: &str,
+    ) -> Result<(AdmissionRecord, ActionRecord), String> {
+        let record = self
+            .store
+            .admission(plan_id)
+            .ok()
+            .flatten()
+            .ok_or_else(|| "admission not found".to_owned())?;
+        let action = self
+            .store
+            .actions(plan_id)
+            .unwrap_or_default()
+            .into_iter()
+            .find(|a| a.action_index == 0 && a.kind == "shell.open")
+            .ok_or_else(|| "no shell.open action".to_owned())?;
+        if action.finished_at.is_some() {
+            return Err("the shell.open action already ended".to_owned());
+        }
+        self.bind(&record, &action).await.map_err(|o| o.error)?;
+        self.step(
+            &record,
+            Some(&action),
+            "shell_open",
+            OperationState::Running,
+            "",
+            "",
+        );
+        Ok((record, action))
+    }
+
+    /// A session line of the `shell_open` step (audit: open and close, never
+    /// the input or output).
+    pub(crate) fn shell_log(&self, record: &AdmissionRecord, action: &ActionRecord, line: &str) {
+        self.log_line(record, action, "shell_open", line);
     }
 
     /// One bound op with its steps and deploy status.

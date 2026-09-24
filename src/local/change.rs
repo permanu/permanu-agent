@@ -113,6 +113,19 @@ impl ChangeSvc {
     }
 
     pub(crate) async fn submit(&self, plan: Option<SignedPlan>) -> Result<OperationRef, Status> {
+        // agent-protocol.md 4: `shell.open` is admitted by
+        // `ShellService.Shell` only (signed, direct), never here.
+        if plan
+            .as_ref()
+            .is_some_and(|plan| holds_kind(&plan.envelope_json, "shell.open"))
+        {
+            return Err(plan_status(PlanCode::ExecPrecondition));
+        }
+        self.admit(plan).await
+    }
+
+    /// Rate limit, staging checks and admission of a signed plan.
+    pub(crate) async fn admit(&self, plan: Option<SignedPlan>) -> Result<OperationRef, Status> {
         if !self.core.allow_submission() {
             return Err(status_with_reason(
                 Code::ResourceExhausted,
@@ -156,6 +169,19 @@ impl ChangeSvc {
             plan_id: admission.plan_id,
         })
     }
+}
+
+/// Whether an envelope has an action of `kind` (not verified: this can only
+/// refuse).
+pub(crate) fn holds_kind(envelope: &[u8], kind: &str) -> bool {
+    serde_json::from_slice::<serde_json::Value>(envelope)
+        .ok()
+        .and_then(|parsed| {
+            parsed["plan"]["actions"]
+                .as_array()
+                .map(|actions| actions.iter().any(|a| a["kind"] == kind))
+        })
+        .unwrap_or(false)
 }
 
 /// `bundle_manifest_digest_hex` of every `agent.update` and
