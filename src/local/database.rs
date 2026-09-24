@@ -11,11 +11,19 @@
 //! and maps the runner's answer. Rows are not redacted and may hold secret
 //! values; they are never logged (agent-protocol.md 4: the engine serves
 //! them app-only).
+//!
+//! Contracts v1.1.8 (D-066, proto v2.1.8): a refused request is
+//! `INVALID_ARGUMENT` + `VALIDATION`; numbers travel as decimal strings in
+//! `string_value` (`number_value` is refused); cells are cut at 64 KiB; the
+//! statement timeout is `DEADLINE_EXCEEDED` "statement timeout"; a database
+//! without the reader role is `FAILED_PRECONDITION` + `EXEC_PRECONDITION`;
+//! a `QueryRowsResponse` over 3 MiB encoded fails whole (`INTERNAL`).
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
+use prost::Message;
 use serde_json::{json, Map, Value};
 use tokio::sync::{OwnedMutexGuard, OwnedSemaphorePermit, Semaphore};
 use tonic::{Code, Request, Response, Status};
@@ -45,7 +53,12 @@ const DEFAULT_LIMIT: u32 = 100;
 const MAX_LIKE_BYTES: usize = 256;
 const MAX_CURSOR_BYTES: usize = 512;
 const MAX_TABLES: usize = 1_000;
-const MAX_CELL_BYTES: usize = 4_096;
+/// A filter value (a `like` pattern has its own 256 B cap).
+const MAX_VALUE_BYTES: usize = 4_096;
+/// v2.1.8 (D-066 #1): a cell's text form is cut here.
+const MAX_CELL_BYTES: usize = 64 * 1024;
+/// v2.1.8 (D-066 #2): a `QueryRowsResponse`'s encoded budget.
+const MAX_ROWS_RESPONSE_BYTES: usize = 3 * 1024 * 1024;
 
 /// The kind of a service's last admitted spec (`service_kind`).
 pub trait ServiceKinds: Send + Sync {
@@ -146,10 +159,10 @@ impl DatabaseSvc {
     }
 }
 
-/// `INVALID_ARGUMENT` naming the field (agent-protocol.md 4 says reason
-/// `VALIDATION`, which proto v2.1.7 does not define, so no reason trailer).
+/// `INVALID_ARGUMENT` + `VALIDATION` naming the field (agent-protocol.md 3;
+/// proto v2.1.8, D-066 #4).
 fn invalid(message: &str) -> Status {
-    Status::invalid_argument(message)
+    status_with_reason(Code::InvalidArgument, message, ErrorReason::Validation)
 }
 
 /// A runner refusal as a status (agent-protocol.md 4).
@@ -163,9 +176,14 @@ fn runner_error(error: &Value) -> Status {
     match (error["code"].as_str(), error["reason"].as_str()) {
         (Some("invalid_request"), _) => invalid(&message),
         (Some("not_found"), _) => Status::not_found(message),
-        (Some("runtime_failed"), Some("timeout")) => {
-            Status::deadline_exceeded("the database query ran over 5 s")
-        }
+        // D-066 #1: the runner's 5 s statement timeout.
+        (Some("runtime_failed"), Some("timeout")) => Status::deadline_exceeded("statement timeout"),
+        // D-066 #3: the database has no permanu_reader role until its next deploy.
+        (Some("runtime_failed"), Some("reader_missing")) => status_with_reason(
+            Code::FailedPrecondition,
+            &message,
+            ErrorReason::ExecPrecondition,
+        ),
         _ => Status::failed_precondition(message),
     }
 }
@@ -210,10 +228,14 @@ fn filter_json(filter: &crate::proto::agent::v2::DbFilter) -> Result<Value, Stat
         }
         (Op::Like, _) => return Err(invalid("filters.value of like is a pattern of ≤ 256 bytes")),
         (_, None | Some(V::NullValue(_))) => Value::Null,
-        (_, Some(V::StringValue(text))) if text.len() <= MAX_CELL_BYTES => json!(text),
+        (_, Some(V::StringValue(text))) if text.len() <= MAX_VALUE_BYTES => json!(text),
         (_, Some(V::StringValue(_))) => return Err(invalid("filters.value is too long")),
-        (_, Some(V::NumberValue(n))) if n.is_finite() => json!(n),
-        (_, Some(V::NumberValue(_))) => return Err(invalid("filters.value is not a number")),
+        // D-066 #1: a number travels as its decimal string, never a float.
+        (_, Some(V::NumberValue(_))) => {
+            return Err(invalid(
+                "filters.value: send a number as its decimal string (string_value)",
+            ))
+        }
         (_, Some(V::BoolValue(b))) => json!(b),
     };
     Ok(json!({"column": filter.column, "op": op_name, "value": value}))
@@ -277,13 +299,19 @@ fn rows_payload(request: &QueryRowsRequest) -> Result<Value, Status> {
     Ok(payload)
 }
 
-fn text_of(value: &Value, max: usize) -> String {
+/// `value`'s string cut at `max` bytes on a UTF-8 boundary, and whether it
+/// was cut.
+fn cut(value: &Value, max: usize) -> (String, bool) {
     let text = value.as_str().unwrap_or_default();
     let mut end = text.len().min(max);
     while !text.is_char_boundary(end) {
         end -= 1;
     }
-    text[..end].to_owned()
+    (text[..end].to_owned(), end < text.len())
+}
+
+fn text_of(value: &Value, max: usize) -> String {
+    cut(value, max).0
 }
 
 /// A runner cell: `null`, the text form, or `{text, truncated: true}`.
@@ -293,18 +321,22 @@ fn cell_of(value: &Value) -> DbCell {
             is_null: true,
             ..Default::default()
         },
-        Value::String(_) => DbCell {
-            text: text_of(value, MAX_CELL_BYTES),
-            ..Default::default()
-        },
-        Value::Object(map) => DbCell {
-            text: text_of(
-                &map.get("text").cloned().unwrap_or_default(),
-                MAX_CELL_BYTES,
-            ),
-            truncated: map.get("truncated") == Some(&Value::Bool(true)),
-            is_null: false,
-        },
+        Value::String(_) => {
+            let (text, truncated) = cut(value, MAX_CELL_BYTES);
+            DbCell {
+                text,
+                truncated,
+                is_null: false,
+            }
+        }
+        Value::Object(map) => {
+            let (text, cut_here) = cut(map.get("text").unwrap_or(&Value::Null), MAX_CELL_BYTES);
+            DbCell {
+                text,
+                truncated: cut_here || map.get("truncated") == Some(&Value::Bool(true)),
+                is_null: false,
+            }
+        }
         // A number or boolean: its text form.
         other => DbCell {
             text: other.to_string(),
@@ -395,7 +427,20 @@ impl DatabaseService for DatabaseSvc {
             .as_u64()
             .unwrap_or(u64::from(DEFAULT_LIMIT)) as usize;
         let answer = self.query(&request.resource_id, payload).await?;
-        Ok(Response::new(rows_response(&answer, limit)))
+        let response = rows_response(&answer, limit);
+        // D-066 #2: the runner's page already fits; never a partial page.
+        if response.encoded_len() > MAX_ROWS_RESPONSE_BYTES {
+            tracing::warn!(
+                bytes = response.encoded_len(),
+                "db_query page is over the 3 MiB budget"
+            );
+            return Err(status_with_reason(
+                Code::Internal,
+                "the rows page is over 3 MiB",
+                ErrorReason::Internal,
+            ));
+        }
+        Ok(Response::new(response))
     }
 }
 
@@ -493,7 +538,7 @@ mod tests {
         let runner = DbRunner::new(
             json!({"ok": true, "op": "db_query",
                 "columns": [{"name": "id", "type": "integer"}, {"name": "note", "type": "text"}],
-                "rows": [[1, null], ["2", {"text": "abc", "truncated": true}]],
+                "rows": [["9007199254740993", null], ["12.50", {"text": "abc", "truncated": true}]],
                 "next_cursor": "MTAwLmFi"}),
             false,
         );
@@ -507,7 +552,8 @@ mod tests {
                 DbFilter {
                     column: "id".into(),
                     op: db_filter::Op::Gte as i32,
-                    value: Some(db_filter::Value::NumberValue(2.0)),
+                    // v2.1.8 (D-066 #1): numbers travel as decimal strings.
+                    value: Some(db_filter::Value::StringValue("9007199254740993".into())),
                 },
                 DbFilter {
                     column: "note".into(),
@@ -536,16 +582,16 @@ mod tests {
             runner.requests.lock().unwrap()[0]["payload"],
             json!({"resource_id": DB, "query": "rows", "schema": "app", "table": "users",
                 "columns": ["id", "note"],
-                "filters": [{"column": "id", "op": "gte", "value": 2.0},
+                "filters": [{"column": "id", "op": "gte", "value": "9007199254740993"},
                             {"column": "note", "op": "is_null", "value": false},
                             {"column": "email", "op": "like", "value": "%@example.com"}],
                 "order_by": [{"column": "id", "dir": "desc"}], "limit": 100})
         );
         assert_eq!(answer.columns[1].r#type, "text");
         assert_eq!(answer.rows.len(), 2);
-        assert_eq!(answer.rows[0].cells[0].text, "1");
+        assert_eq!(answer.rows[0].cells[0].text, "9007199254740993");
         assert!(answer.rows[0].cells[1].is_null);
-        assert_eq!(answer.rows[1].cells[0].text, "2");
+        assert_eq!(answer.rows[1].cells[0].text, "12.50");
         assert_eq!(answer.rows[1].cells[1].text, "abc");
         assert!(answer.rows[1].cells[1].truncated);
         assert_eq!(answer.next_cursor, "MTAwLmFi");
@@ -625,6 +671,14 @@ mod tests {
                 )],
                 ..base.clone()
             },
+            // v2.1.8 (D-066 #1): number_value is never sent.
+            QueryRowsRequest {
+                filters: vec![filter(
+                    db_filter::Op::Eq,
+                    Some(db_filter::Value::NumberValue(2.0)),
+                )],
+                ..base.clone()
+            },
             QueryRowsRequest {
                 resource_id: "x".into(),
                 ..base.clone()
@@ -632,28 +686,45 @@ mod tests {
         ] {
             let status = svc.query_rows(Request::new(bad)).await.unwrap_err();
             assert_eq!(status.code(), Code::InvalidArgument, "{status:?}");
+            // v2.1.8 (D-066 #4).
+            assert_eq!(reason(&status), "ERROR_REASON_VALIDATION", "{status:?}");
         }
         assert!(runner.requests.lock().unwrap().is_empty());
     }
 
     #[tokio::test]
     async fn runner_refusals_map_to_statuses() {
-        for (error, code) in [
+        for (error, code, why, message) in [
             (
                 json!({"code": "invalid_request", "message": "unknown column \"x\""}),
                 Code::InvalidArgument,
+                "ERROR_REASON_VALIDATION",
+                "unknown column \"x\"",
             ),
             (
                 json!({"code": "not_found", "message": "no running container"}),
                 Code::NotFound,
+                "",
+                "no running container",
             ),
+            // v2.1.8 (D-066 #1): the statement timeout.
             (
                 json!({"code": "runtime_failed", "reason": "timeout", "message": "t"}),
                 Code::DeadlineExceeded,
+                "",
+                "statement timeout",
+            ),
+            (
+                json!({"code": "runtime_failed", "reason": "reader_missing", "message": "no reader"}),
+                Code::FailedPrecondition,
+                "ERROR_REASON_EXEC_PRECONDITION",
+                "no reader",
             ),
             (
                 json!({"code": "runtime_failed", "message": "refused"}),
                 Code::FailedPrecondition,
+                "",
+                "refused",
             ),
         ] {
             let runner = DbRunner::new(json!({"ok": false, "error": error}), false);
@@ -665,7 +736,59 @@ mod tests {
                 .await
                 .unwrap_err();
             assert_eq!(status.code(), code);
+            assert_eq!(reason(&status), why);
+            assert_eq!(status.message(), message);
         }
+    }
+
+    /// v2.1.8 (D-066 #1): cells are cut at 64 KiB on a UTF-8 boundary and
+    /// then marked truncated.
+    #[test]
+    fn cells_are_cut_at_64_kib() {
+        let long = "é".repeat(40 * 1024);
+        let cell = cell_of(&json!(long));
+        assert!(cell.truncated);
+        assert!(!cell.is_null);
+        assert_eq!(cell.text.len(), 64 * 1024);
+        let cell = cell_of(&json!({"text": long, "truncated": true}));
+        assert!(cell.truncated);
+        assert_eq!(cell.text.len(), 64 * 1024);
+        let short = cell_of(&json!("x".repeat(64 * 1024)));
+        assert!(!short.truncated);
+        assert_eq!(short.text.len(), 64 * 1024);
+    }
+
+    /// v2.1.8 (D-066 #2): a `QueryRowsResponse` is at most 3 MiB encoded;
+    /// the agent never adds or drops rows, so a runner page over it fails.
+    #[tokio::test]
+    async fn a_page_over_3_mib_is_refused_whole() {
+        let request = QueryRowsRequest {
+            resource_id: DB.into(),
+            table: "blobs".into(),
+            limit: 500,
+            ..Default::default()
+        };
+        let cell = "x".repeat(60 * 1024);
+        let page = |rows: usize| {
+            json!({"ok": true, "op": "db_query",
+                "columns": [{"name": "b", "type": "text"}],
+                "rows": vec![json!([cell]); rows], "next_cursor": "NTEuYWI"})
+        };
+        // 51 rows of 60 KiB: 3,060 KiB, within 3 MiB.
+        let answer = svc(DbRunner::new(page(51), false))
+            .query_rows(Request::new(request.clone()))
+            .await
+            .unwrap()
+            .into_inner();
+        assert_eq!(answer.rows.len(), 51);
+        assert_eq!(answer.next_cursor, "NTEuYWI");
+        // 60 rows: 3,600 KiB, over 3 MiB.
+        let status = svc(DbRunner::new(page(60), false))
+            .query_rows(Request::new(request))
+            .await
+            .unwrap_err();
+        assert_eq!(status.code(), Code::Internal);
+        assert_eq!(reason(&status), "ERROR_REASON_INTERNAL");
     }
 
     /// agent-protocol.md 7: one query per resource at a time; a second
