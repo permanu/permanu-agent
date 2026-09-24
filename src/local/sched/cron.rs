@@ -65,6 +65,13 @@ const CHECKPOINT_KEY: &str = "cron_checkpoint";
 const CALL_MARGIN_SECONDS: u64 = 60;
 /// Missed fire times are counted up to this many.
 const MISSED_COUNT_LIMIT: u32 = 100_000;
+/// How long a run whose answer was lost waits for its `run_result`:
+/// `cancel_running` stops the run within 30 s, then writes it (14.3).
+#[cfg(not(test))]
+const LOST_RESULT_WAIT: Duration = Duration::from_secs(40);
+#[cfg(test)]
+const LOST_RESULT_WAIT: Duration = Duration::from_millis(400);
+const LOST_RESULT_POLL: Duration = Duration::from_millis(50);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Overlap {
@@ -697,6 +704,10 @@ impl CronScheduler {
             let result =
                 runner::run_scheduled(this.deps.runner.as_ref(), "run_cron", &schedule, timeout)
                     .await;
+            let result = match result {
+                Err(failure) => this.lost_answer(&run, failure).await,
+                answered => answered,
+            };
             this.finish(&job, &chain_id, run, result);
         });
         self.tasks
@@ -725,13 +736,6 @@ impl CronScheduler {
                 run.runner_run_id = chain.run.runner_run_id.clone();
             }
         }
-        // `cancel_running` stops the runner process that holds the run, so
-        // the call ends without a `result` line; the run's consumed-log
-        // `run_result` (signed-plan.md 14.3) is then its end.
-        let result = match result {
-            Err(failure) => self.scheduled_result(&run.runner_run_id).ok_or(failure),
-            answered => answered,
-        };
         let retryable = apply_result(&mut run, &result);
         run.finished_at = Some(pts(now));
         let still_defined = self.state().jobs.contains_key(&job.cron_id);
@@ -936,17 +940,42 @@ impl CronScheduler {
             })
     }
 
-    /// The runner's `run_result` line of the run `runner_run_id`, read with
-    /// the consumed-log trust checks (none while the id is unknown).
-    fn scheduled_result(&self, runner_run_id: &str) -> Option<Value> {
-        if runner_run_id.is_empty() {
-            return None;
+    /// A scheduled run whose `run_cron` call ended without a `result` line:
+    /// `cancel_running` stops the runner process that holds the run, then
+    /// writes the run's `run_result` (signed-plan.md 14.3), which is its end.
+    /// Waits up to [`LOST_RESULT_WAIT`] for that line of the attempt the
+    /// runner started (read with the consumed-log trust checks); a run the
+    /// runner never started, or no line in time, keeps the failure.
+    async fn lost_answer(
+        &self,
+        run: &CronRun,
+        failure: RunnerFailure,
+    ) -> Result<Value, RunnerFailure> {
+        let Some(consumed) = self.deps.consumed_log.clone() else {
+            return Err(failure);
+        };
+        let scheduled_for = run.scheduled_for.as_ref().map(|t| t.seconds);
+        let deadline = tokio::time::Instant::now() + LOST_RESULT_WAIT;
+        loop {
+            let lines = consumed.run_lines("run_cron");
+            let Some(run_id) =
+                super::find_runner_run_id(&lines, &run.plan_id, scheduled_for, run.attempt)
+            else {
+                return Err(failure);
+            };
+            let result =
+                crate::admissions::run_results(&consumed.path, consumed.owner_uid, "run_cron")
+                    .into_iter()
+                    .rev()
+                    .find(|line| line["run_id"] == run_id.as_str());
+            if let Some(line) = result {
+                return Ok(line);
+            }
+            if tokio::time::Instant::now() >= deadline {
+                return Err(failure);
+            }
+            tokio::time::sleep(LOST_RESULT_POLL).await;
         }
-        let consumed = self.deps.consumed_log.as_ref()?;
-        crate::admissions::run_results(&consumed.path, consumed.owner_uid, "run_cron")
-            .into_iter()
-            .rev()
-            .find(|line| line["run_id"] == runner_run_id)
     }
 
     /// `RunCronJobNow` (section 10.1): the overlap policy applies to manual

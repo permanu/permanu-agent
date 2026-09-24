@@ -664,6 +664,42 @@ async fn a_run_stopped_by_cancel_running_ends_cancelled_from_the_consumed_log() 
         .any(|e| e.kind == EventKindCond::CronFailed && e.occurred));
 }
 
+/// The runner process dies before `cancel_running` writes the stopped
+/// run's `run_result` (QA M2 run 2 on Ubuntu 24.04): the lost answer waits
+/// for that line.
+#[tokio::test]
+async fn a_lost_answer_waits_for_the_run_result_that_cancel_running_writes() {
+    let f = Fixture::new("cron-cancel-late", "2026-09-23T10:00:00Z");
+    let plan = f.record(
+        1,
+        &[cron("cron.create", "*/15 * * * *", "skip", 2)],
+        "succeeded",
+    );
+    let s = scheduler(&f);
+    tick_at(&f, &s, "2026-09-23T10:00:05Z").await;
+    f.runner.hold("run_cron");
+    f.runner
+        .answer("run_cron", json!(super::super::test_support::LOST));
+    f.clock.set("2026-09-23T10:15:05Z");
+    s.tick();
+    spin().await;
+    let line = |seq: u64, event: &str| {
+        json!({"v": 1, "seq": seq, "at": "2026-09-23T10:15:06Z", "event": event,
+               "plan_id": plan, "plan_digest_hex": format!("{:064x}", 1), "action_index": 0,
+               "op": "run_cron", "scheduled_for": "2026-09-23T10:15:00Z", "attempt": 1,
+               "run_id": RUNNER_RUN, "outcome": "cancelled", "exit_code": null})
+    };
+    f.append_consumed(&line(1, "run"));
+    f.runner.release("run_cron", 1);
+    tokio::time::sleep(Duration::from_millis(150)).await;
+    f.append_consumed(&line(2, "run_result"));
+    s.settle().await;
+    let all = runs(&f);
+    assert_eq!(all.len(), 1, "{all:?}");
+    assert_eq!(all[0].status, CronRunStatus::Cancelled as i32);
+    assert_eq!(all[0].runner_run_id, RUNNER_RUN);
+}
+
 /// A lost answer with no `run_result` for the run stays a failure.
 #[tokio::test]
 async fn a_lost_answer_without_a_run_result_stays_failed() {
