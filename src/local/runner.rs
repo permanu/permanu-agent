@@ -157,7 +157,7 @@ fn failure_of(result: &Value) -> RunnerFailure {
     }
 }
 
-fn ok_or_failure(result: Value) -> Result<Value, RunnerFailure> {
+pub(crate) fn ok_or_failure(result: Value) -> Result<Value, RunnerFailure> {
     if result["ok"] == true {
         Ok(result)
     } else {

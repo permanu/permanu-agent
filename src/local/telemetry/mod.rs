@@ -17,6 +17,7 @@ pub mod otlp_server;
 pub mod query;
 pub mod records;
 pub mod redaction;
+pub mod routes;
 pub mod store;
 
 #[cfg(test)]

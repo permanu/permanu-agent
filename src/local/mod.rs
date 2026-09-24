@@ -969,7 +969,13 @@ fn start_telemetry(
     let host = hostname();
     let runner = core.runner.clone();
     let mut tasks = vec![store.spawn_maintenance()];
-    let mut ingest = telemetry::ingest::LogIngest::new(store.clone(), runner.clone(), host);
+    // contracts v1.1.5 (D-063 #9): Dwaar records by the service of their
+    // route host, from the runner's `routes_map`.
+    let routes = Arc::new(telemetry::routes::RoutesMap::default());
+    tasks.push(routes.spawn(runner.clone()));
+    tasks.push(spawn_routes_nudge(routes.clone(), core.events.clone()));
+    let mut ingest =
+        telemetry::ingest::LogIngest::new(store.clone(), runner.clone(), host).with_routes(routes);
     if let Some(cron_runs) = cron_runs {
         ingest = ingest.with_cron_runs(cron_runs);
     }
@@ -996,6 +1002,34 @@ fn start_telemetry(
     };
     tasks.push(tokio::spawn(listeners.run()));
     (Some(store), tasks)
+}
+
+/// Refreshes the routes map after every finished plan that holds a
+/// `domain.*` or `webhook.host.set` action (agent-protocol.md 9.5).
+fn spawn_routes_nudge(
+    routes: Arc<telemetry::routes::RoutesMap>,
+    events: events::EventBus,
+) -> tokio::task::JoinHandle<()> {
+    let mut live = events.live();
+    tokio::spawn(async move {
+        loop {
+            match live.recv().await {
+                Ok(event) => {
+                    if let Some(crate::proto::agent::v2::event::Payload::Operation(op)) =
+                        &event.payload
+                    {
+                        if op.finished_at.is_some()
+                            && telemetry::routes::changes_routes(&op.actions)
+                        {
+                            routes.nudge();
+                        }
+                    }
+                }
+                Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => routes.nudge(),
+                Err(tokio::sync::broadcast::error::RecvError::Closed) => return,
+            }
+        }
+    })
 }
 
 fn hostname() -> String {
