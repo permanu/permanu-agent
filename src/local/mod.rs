@@ -601,6 +601,7 @@ impl LocalServer {
         let shell_svc = ShellServiceServer::new(shell::ShellSvc {
             core: self.core.clone(),
             idle: shell::IDLE,
+            slots: shell::slots(),
         })
         .max_decoding_message_size(MAX_MESSAGE_BYTES)
         .max_encoding_message_size(MAX_MESSAGE_BYTES);

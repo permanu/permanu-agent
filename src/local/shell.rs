@@ -27,7 +27,7 @@ use base64::Engine;
 use futures::Stream;
 use serde_json::{json, Value};
 use tokio::io::AsyncWriteExt;
-use tokio::sync::mpsc;
+use tokio::sync::{mpsc, Semaphore};
 use tokio::time::Instant;
 use tonic::{Request, Response, Status, Streaming};
 use tracing::{info, warn};
@@ -36,9 +36,10 @@ use super::change::ChangeSvc;
 use super::errors::plan_status;
 use super::execution::ChangeCore;
 use super::runner::{BoxWrite, EventLines, PlanRef};
+use super::status_with_reason;
 use crate::proto::agent::v2::shell_service_server::ShellService;
 use crate::proto::agent::v2::{
-    shell_client_frame, shell_server_frame, ShellClientFrame, ShellExit, ShellOpened,
+    shell_client_frame, shell_server_frame, ErrorReason, ShellClientFrame, ShellExit, ShellOpened,
     ShellServerFrame, TerminalSize,
 };
 use crate::signed_plan::text::timestamp;
@@ -52,6 +53,22 @@ const MAX_FRAME: usize = 32 * 1024;
 const CLOSE_GRACE: Duration = Duration::from_secs(15);
 /// signed-plan.md 14.8: terminal sizes the runner accepts.
 const MAX_TERMINAL: u32 = 1_000;
+/// agent-protocol.md 7 (contracts v1.1.7, D-065 #9): concurrent shells
+/// (service and host) per agent.
+pub const MAX_SHELLS: usize = 4;
+
+/// The agent's shell slots ([`MAX_SHELLS`]).
+pub fn slots() -> Arc<Semaphore> {
+    Arc::new(Semaphore::new(MAX_SHELLS))
+}
+
+fn limit_exceeded(message: &str) -> Status {
+    status_with_reason(
+        tonic::Code::ResourceExhausted,
+        message,
+        ErrorReason::LimitExceeded,
+    )
+}
 
 type ShellStream = Pin<Box<dyn Stream<Item = Result<ShellServerFrame, Status>> + Send>>;
 
@@ -59,6 +76,8 @@ pub struct ShellSvc {
     pub core: Arc<ChangeCore>,
     /// [`IDLE`] outside tests.
     pub idle: Duration,
+    /// One permit per open session ([`slots`]).
+    pub slots: Arc<Semaphore>,
 }
 
 fn out(frame: shell_server_frame::Frame) -> Result<ShellServerFrame, Status> {
@@ -110,6 +129,12 @@ impl ShellService for ShellSvc {
                 "the first frame must be ShellOpen",
             ));
         };
+        // D-065 #9: the 5th concurrent shell is refused before admission.
+        let slot = self
+            .slots
+            .clone()
+            .try_acquire_owned()
+            .map_err(|_| limit_exceeded("at most 4 shells are open at a time"))?;
         let plan = open.plan.ok_or_else(|| plan_status(PlanCode::Parse))?;
         let params = shell_params(&plan.envelope_json)
             .ok_or_else(|| plan_status(PlanCode::ExecPrecondition))?;
@@ -147,6 +172,12 @@ impl ShellService for ShellSvc {
             Ok(Some(line)) => {
                 self.core.reconcile_once().await;
                 let code = line["error"]["code"].as_str().unwrap_or("E_INTERNAL");
+                if code == PlanCode::ShellLimit.as_str() {
+                    // A session from before an agent restart holds a slot.
+                    return Err(limit_exceeded(
+                        "the runner refused the shell (E_SHELL_LIMIT): 4 shells are open",
+                    ));
+                }
                 return Err(Status::failed_precondition(format!(
                     "the runner refused the shell ({code})"
                 )));
@@ -202,6 +233,7 @@ impl ShellService for ShellSvc {
         let core = self.core.clone();
         let idle = self.idle;
         tokio::spawn(async move {
+            let _slot = slot;
             let exit = pump(lines, writer, inbound, &tx, deadline, idle).await;
             core.shell_log(&record, &action, &format!("shell closed: {}", exit.reason));
             info!(plan_id = %record.plan_id, reason = %exit.reason, "shell session closed");
@@ -243,9 +275,8 @@ async fn pump(
                             "exited"
                         };
                         return ShellExit {
-                            exit_code: 0,
-                            signal: String::new(),
                             reason: reason.unwrap_or(default).to_owned(),
+                            ..exit_of(&line)
                         };
                     }
                     Ok(Some(line)) => {
@@ -341,9 +372,44 @@ async fn pump(
     }
 }
 
+/// v1.0.15 (D-065 #3): the `exit_code` and `signal` of the runner's
+/// `shell_open` result line; null or absent is 0 and "".
+fn exit_of(line: &Value) -> ShellExit {
+    ShellExit {
+        exit_code: line["exit_code"]
+            .as_i64()
+            .and_then(|code| i32::try_from(code).ok())
+            .unwrap_or_default(),
+        signal: line["signal"]
+            .as_str()
+            .filter(|name| {
+                name.len() <= 16
+                    && name.starts_with("SIG")
+                    && name
+                        .bytes()
+                        .all(|b| b.is_ascii_uppercase() || b.is_ascii_digit())
+            })
+            .unwrap_or_default()
+            .to_owned(),
+        reason: String::new(),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_exit_takes_the_runners_code_and_signal() {
+        let exit = exit_of(&json!({"exit_code": 3, "signal": null}));
+        assert_eq!((exit.exit_code, exit.signal.as_str()), (3, ""));
+        let exit = exit_of(&json!({"exit_code": null, "signal": "SIGKILL"}));
+        assert_eq!((exit.exit_code, exit.signal.as_str()), (0, "SIGKILL"));
+        let exit = exit_of(&json!({"signal": "rm -rf"}));
+        assert_eq!(exit.signal, "");
+        let exit = exit_of(&json!({"exit_code": 1_u64 << 40}));
+        assert_eq!(exit.exit_code, 0);
+    }
 
     #[test]
     fn only_a_single_shell_open_plan_opens_a_shell() {

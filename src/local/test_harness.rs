@@ -173,6 +173,9 @@ pub struct FakeRunner {
     pub build_answers: Mutex<Vec<Value>>,
     /// Every session line of `shell_open` sessions, in arrival order.
     pub shell_session_lines: Mutex<Vec<Value>>,
+    /// `shell_open` refuses with `E_SHELL_LIMIT` (all 4 slot locks taken,
+    /// signed-plan.md 14.8, v1.0.15).
+    pub shell_limit: AtomicBool,
     /// Runs inside every `build_image` (a test's side effect mid-build).
     #[allow(clippy::type_complexity)]
     pub on_build: Mutex<Option<Box<dyn Fn() + Send>>>,
@@ -793,6 +796,15 @@ impl FakeRunner {
             return;
         }
         self.append("op", plan_id, digest, index, json!({"op": "shell_open"}));
+        if self.shell_limit.load(Ordering::SeqCst) {
+            self.result_with(plan_id, digest, index, json!({"outcome": "failed"}));
+            let out = json!({"type": "result", "op": "shell_open", "ok": false,
+                "plan_id": plan_id, "plan_digest_hex": digest, "action_index": index,
+                "outcome": "failed", "exit_code": null, "signal": null,
+                "error": {"code": "E_SHELL_LIMIT", "message": "4 shells are open"}});
+            let _ = writer.write_all(format!("{out}\n").as_bytes()).await;
+            return;
+        }
         let ttl = self
             .admitted(plan_id)
             .and_then(|(_, plan, _)| {
@@ -809,6 +821,9 @@ impl FakeRunner {
             return;
         }
         let mut ended = "connection";
+        // v1.0.15 (D-065 #3): the result carries `exit_code` and `signal`.
+        let mut exit_code = Value::Null;
+        let mut signal = Value::Null;
         while let Ok(Some(line)) = lines.next_line().await {
             let Ok(value) = serde_json::from_str::<Value>(&line) else {
                 ended = "invalid_request";
@@ -818,11 +833,18 @@ impl FakeRunner {
             match value["op"].as_str() {
                 Some("shell_input") => {
                     let data = value["data_b64"].as_str().unwrap_or_default();
-                    if base64::engine::general_purpose::STANDARD
-                        .decode(data)
-                        .is_err()
-                    {
+                    let Ok(decoded) = base64::engine::general_purpose::STANDARD.decode(data) else {
                         ended = "invalid_request";
+                        break;
+                    };
+                    // `exit <n>` ends the echo shell by itself with status n.
+                    if let Some(code) = std::str::from_utf8(&decoded)
+                        .ok()
+                        .and_then(|text| text.trim().strip_prefix("exit "))
+                        .and_then(|n| n.parse::<i64>().ok())
+                    {
+                        ended = "exited";
+                        exit_code = json!(code);
                         break;
                     }
                     let out = json!({"type": "progress", "op": "shell_open", "at": at,
@@ -838,6 +860,7 @@ impl FakeRunner {
                 Some("shell_resize") => {}
                 Some("shell_close") => {
                     ended = "closed";
+                    signal = json!("SIGHUP");
                     break;
                 }
                 _ => {
@@ -851,7 +874,7 @@ impl FakeRunner {
         self.result_with(plan_id, digest, index, json!({"outcome": outcome}));
         let mut out = json!({"type": "result", "op": "shell_open", "ok": success,
             "plan_id": plan_id, "plan_digest_hex": digest, "action_index": index,
-            "outcome": outcome, "ended": ended});
+            "outcome": outcome, "ended": ended, "exit_code": exit_code, "signal": signal});
         if !success {
             out["error"] = json!({"code": "E_SHELL_PROTOCOL", "message": "only shell lines"});
         }
@@ -1068,6 +1091,7 @@ impl Harness {
             build_answers: Mutex::new(Vec::new()),
             on_build: Mutex::new(None),
             shell_session_lines: Mutex::new(Vec::new()),
+            shell_limit: AtomicBool::new(false),
             build_image_digest: Mutex::new("e".repeat(64)),
             closed: Mutex::new(HashSet::new()),
             consumed: Mutex::new(HashSet::new()),
