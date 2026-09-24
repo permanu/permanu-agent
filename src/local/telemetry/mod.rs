@@ -254,8 +254,8 @@ impl Telemetry {
         self.otlp_refused.fetch_add(1, Ordering::SeqCst);
     }
 
-    /// OTLP clients cut off by the connection limits since start (no proto
-    /// field carries it yet; logged at each cut).
+    /// OTLP clients cut off by the connection limits since start
+    /// (`GetTelemetryUsageResponse.otlp_refused_total`, D-064 #6).
     #[cfg(test)]
     pub fn otlp_connections_refused(&self) -> u64 {
         self.otlp_refused.load(Ordering::SeqCst)
@@ -435,6 +435,7 @@ impl Telemetry {
             disk_free_bytes: guard.free_bytes,
             ingest_paused: guard.paused,
             spool_bytes,
+            otlp_refused_total: self.otlp_refused.load(Ordering::SeqCst),
         }
     }
 
@@ -493,6 +494,8 @@ pub struct TelemetryUsageReport {
     pub ingest_paused: bool,
     /// Bytes accepted into the ingest queues, not yet written (D-063 #13).
     pub spool_bytes: u64,
+    /// OTLP connections refused at accept or cut by a limit (D-064 #6).
+    pub otlp_refused_total: u64,
 }
 
 /// Token bucket (ingest rate limits, 9.4 and 9.5).
@@ -642,6 +645,22 @@ mod tests {
         assert_eq!(t.usage().spool_bytes, 123);
         t.sync().await;
         assert_eq!(t.usage().spool_bytes, 0);
+        t.close();
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    /// D-064 #6: refused or cut OTLP connections reach
+    /// `GetTelemetryUsageResponse.otlp_refused_total`.
+    #[tokio::test(flavor = "current_thread")]
+    async fn usage_reports_otlp_refused_total() {
+        let dir = temp_dir("tel-otlp-refused");
+        let t = test_support::open(dir.join("telemetry"));
+        assert_eq!(t.usage().otlp_refused_total, 0);
+        t.count_otlp_refused();
+        t.count_otlp_refused();
+        assert_eq!(t.usage().otlp_refused_total, 2);
+        let response = query::StoreQueries::new(t.clone()).usage();
+        assert_eq!(response.otlp_refused_total, 2);
         t.close();
         std::fs::remove_dir_all(dir).unwrap();
     }

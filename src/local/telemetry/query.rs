@@ -1039,6 +1039,7 @@ impl StoreQueries {
             ingest_paused: report.ingest_paused,
             redaction_rules_version: super::redaction::RULES_VERSION.to_owned(),
             spool_bytes: report.spool_bytes,
+            otlp_refused_total: report.otlp_refused_total,
         }
     }
 }
