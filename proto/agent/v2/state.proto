@@ -197,6 +197,10 @@ service StateService {
   // by scope (project_id, environment/environment_id, service_id).
   rpc ListContainers(ListContainersRequest) returns (ListContainersResponse);
   // GetStateSnapshot returns a consistent snapshot for one scope.
+  // v2.1.10 (contracts v1.1.10, D-068): an agent that advertises
+  // "database.reader.v1" serves it (never UNIMPLEMENTED + CAPABILITY_MISSING)
+  // and fills ServiceState.db_reader; the engine reads it after every healthy
+  // deploy of a managed PostgreSQL service (Engine API Deployment.db_reader).
   rpc GetStateSnapshot(GetStateSnapshotRequest) returns (StateSnapshot);
 }
 
@@ -271,6 +275,9 @@ message ServiceState {
   // v2.1.9 (contracts v1.1.9, D-067). For a managed PostgreSQL service, the
   // reader status recorded on the running release (release_id); unset for
   // other services.
+  // v2.1.10 (D-068): from the reader record of the running release (the
+  // result line that activated it or the latest db_reader_ensure, whichever
+  // is newer); MISSING when the release has none.
   DbReaderStatus db_reader = 11;
 }
 
