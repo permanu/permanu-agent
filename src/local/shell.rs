@@ -62,6 +62,11 @@ pub fn slots() -> Arc<Semaphore> {
     Arc::new(Semaphore::new(MAX_SHELLS))
 }
 
+/// agent-protocol.md 7 (contracts v1.1.10, D-068 #6): the refusal of a 5th
+/// concurrent shell (the agent's or the runner's `E_SHELL_LIMIT`) names its
+/// limit; the engine puts it in `data.detail`.
+pub const SHELL_LIMIT_MESSAGE: &str = "at most 4 concurrent shells";
+
 fn limit_exceeded(message: &str) -> Status {
     status_with_reason(
         tonic::Code::ResourceExhausted,
@@ -134,7 +139,7 @@ impl ShellService for ShellSvc {
             .slots
             .clone()
             .try_acquire_owned()
-            .map_err(|_| limit_exceeded("at most 4 shells are open at a time"))?;
+            .map_err(|_| limit_exceeded(SHELL_LIMIT_MESSAGE))?;
         let plan = open.plan.ok_or_else(|| plan_status(PlanCode::Parse))?;
         let params = shell_params(&plan.envelope_json)
             .ok_or_else(|| plan_status(PlanCode::ExecPrecondition))?;
@@ -181,9 +186,8 @@ impl ShellService for ShellSvc {
                 let code = line["error"]["code"].as_str().unwrap_or("E_INTERNAL");
                 if code == PlanCode::ShellLimit.as_str() {
                     // A session from before an agent restart holds a slot.
-                    return Err(limit_exceeded(
-                        "the runner refused the shell (E_SHELL_LIMIT): 4 shells are open",
-                    ));
+                    warn!("the runner refused the shell: E_SHELL_LIMIT");
+                    return Err(limit_exceeded(SHELL_LIMIT_MESSAGE));
                 }
                 return Err(Status::failed_precondition(format!(
                     "the runner refused the shell ({code})"
