@@ -1715,32 +1715,41 @@ impl ChangeCore {
             }
             Some(failure) => (failure, false),
             None if ran("activate_release") => return Outcome::succeeded().activated(),
-            None => match self
-                .op_result(
-                    record,
-                    plan,
-                    action,
-                    "activate_release",
-                    self.timing.op_timeout,
-                )
-                .await
-            {
-                Ok(result) => {
-                    self.reader_line(record, action, &result);
-                    self.prune_releases(record, plan, action).await;
-                    return Outcome::succeeded().activated();
+            None => {
+                // D-068 #3: the plan is held from the activation on, so the
+                // reconciler cannot emit the final step from the runner's
+                // `result` line before `prune_releases`; `complete` ends
+                // the hold.
+                locked(&self.held)
+                    .entry(record.plan_id.clone())
+                    .or_default();
+                match self
+                    .op_result(
+                        record,
+                        plan,
+                        action,
+                        "activate_release",
+                        self.timing.op_timeout,
+                    )
+                    .await
+                {
+                    Ok(result) => {
+                        self.reader_line(record, action, &result);
+                        self.prune_releases(record, plan, action).await;
+                        return Outcome::succeeded().activated();
+                    }
+                    Err(failure) => (
+                        StartFailure {
+                            failure_code: op_failure_code("deploy", "activate_release", &failure),
+                            message: describe(&failure),
+                            error_code: failure.code.clone(),
+                            restorable: true,
+                            refused: false,
+                        },
+                        true,
+                    ),
                 }
-                Err(failure) => (
-                    StartFailure {
-                        failure_code: op_failure_code("deploy", "activate_release", &failure),
-                        message: describe(&failure),
-                        error_code: failure.code.clone(),
-                        restorable: true,
-                        refused: false,
-                    },
-                    true,
-                ),
-            },
+            }
         };
         // A cancel closes an action only before its activate_release
         // (D-048); after it, the recovery still runs.
@@ -1794,12 +1803,9 @@ impl ChangeCore {
     /// v1.0.18 (D-068 #3, sections 14.4, 14.6): release retention after a
     /// `succeeded` `activate_release`. `prune_releases` runs on the same,
     /// closed action as an operation-only step before the final step (the
-    /// plan is held, so the reconciler cannot emit the final step first);
-    /// its failure is logged on that step and never changes the outcome.
+    /// caller holds the plan); its failure is logged on that step and never
+    /// changes the outcome.
     async fn prune_releases(&self, record: &AdmissionRecord, plan: &Value, action: &ActionRecord) {
-        locked(&self.held)
-            .entry(record.plan_id.clone())
-            .or_default();
         match self
             .op_result(
                 record,
