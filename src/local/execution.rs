@@ -1727,6 +1727,7 @@ impl ChangeCore {
             {
                 Ok(result) => {
                     self.reader_line(record, action, &result);
+                    self.prune_releases(record, plan, action).await;
                     return Outcome::succeeded().activated();
                 }
                 Err(failure) => (
@@ -1787,6 +1788,37 @@ impl ChangeCore {
             ended.activated()
         } else {
             ended
+        }
+    }
+
+    /// v1.0.18 (D-068 #3, sections 14.4, 14.6): release retention after a
+    /// `succeeded` `activate_release`. `prune_releases` runs on the same,
+    /// closed action as an operation-only step before the final step (the
+    /// plan is held, so the reconciler cannot emit the final step first);
+    /// its failure is logged on that step and never changes the outcome.
+    async fn prune_releases(&self, record: &AdmissionRecord, plan: &Value, action: &ActionRecord) {
+        locked(&self.held)
+            .entry(record.plan_id.clone())
+            .or_default();
+        match self
+            .op_result(
+                record,
+                plan,
+                action,
+                "prune_releases",
+                self.timing.op_timeout,
+            )
+            .await
+        {
+            Ok(result) => {
+                if let Some(count) = result["pruned_releases"].as_u64() {
+                    let line = format!("pruned {count} older releases");
+                    self.log_line(record, action, "prune_releases", &line);
+                }
+            }
+            Err(failure) => {
+                warn!(plan_id = %record.plan_id, error = %describe(&failure), "prune_releases failed; the deploy outcome is unchanged");
+            }
         }
     }
 

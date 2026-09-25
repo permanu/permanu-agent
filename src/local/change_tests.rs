@@ -703,7 +703,8 @@ async fn deploy_success_binds_runs_the_op_sequence_and_goes_live() {
     )
     .await;
     wait_for_state(&h, &reference.operation_id, OperationState::Succeeded).await;
-    // bind_plan, then prepare → verify → activate, each with payload {}.
+    // bind_plan, then prepare → verify → activate, each with payload {},
+    // then (v1.0.18, D-068) prune_releases on the closed action.
     assert_eq!(
         h.runner.binds(),
         vec![(
@@ -718,6 +719,7 @@ async fn deploy_success_binds_runs_the_op_sequence_and_goes_live() {
             ("prepare_release".to_owned(), 0),
             ("verify_health".to_owned(), 0),
             ("activate_release".to_owned(), 0),
+            ("prune_releases".to_owned(), 0),
         ]
     );
     let phases = deploy_phases(&mut deploys).await;
@@ -750,6 +752,7 @@ async fn deploy_success_binds_runs_the_op_sequence_and_goes_live() {
             "prepare_release",
             "verify_health",
             "activate_release",
+            "prune_releases",
             "succeeded"
         ]
     );
@@ -1313,6 +1316,111 @@ async fn activation_reader_status_is_shown_and_never_fails_the_deploy() {
             .iter()
             .any(|l| l == "database reader permanu_reader: failed (not_ready)"),
         "{lines:?}"
+    );
+    h.stop().await;
+}
+
+/// v1.0.18 (D-068 #3, signed-plan 14.4/14.6): after a `succeeded`
+/// `activate_release` the agent calls `prune_releases` on the same (closed)
+/// action and records it as an operation-only step before the final step.
+#[tokio::test]
+async fn a_successful_activation_prunes_older_releases() {
+    let Some(owner) = TestSigner::load("owner") else {
+        eprintln!("skipped: docs keys.json not found");
+        return;
+    };
+    let h = Harness::start("deploy-prune", Some(&vector_trust())).await;
+    h.runner
+        .op_extra
+        .lock()
+        .unwrap()
+        .insert("prune_releases".to_owned(), json!({"pruned_releases": 2}));
+    let reference = submit_ok(
+        &h,
+        fresh_deploy(
+            &owner,
+            "0000000000e1",
+            "AAAAAAAAAAAAAAAAAAAAEQ",
+            GENESIS_HEAD,
+        ),
+    )
+    .await;
+    wait_for_state(&h, &reference.operation_id, OperationState::Succeeded).await;
+    assert_eq!(
+        h.runner.ops_for(&reference.plan_id),
+        vec![
+            ("prepare_release".to_owned(), 0),
+            ("verify_health".to_owned(), 0),
+            ("activate_release".to_owned(), 0),
+            ("prune_releases".to_owned(), 0),
+        ]
+    );
+    let op = operation(&h, &reference.operation_id).await;
+    assert_eq!(
+        names(&op, 0),
+        vec![
+            "queued",
+            "bound",
+            "prepare_release",
+            "verify_health",
+            "activate_release",
+            "prune_releases",
+            "succeeded"
+        ]
+    );
+    let prune = op
+        .steps
+        .iter()
+        .find(|s| s.name == "prune_releases")
+        .unwrap();
+    assert_eq!(prune.state, OperationState::Succeeded as i32);
+    assert_eq!(prune.failure_code, "");
+    let lines = step_logs(&h, &reference.operation_id);
+    assert!(
+        lines.iter().any(|l| l == "pruned 2 older releases"),
+        "{lines:?}"
+    );
+    h.stop().await;
+}
+
+/// D-068 #3: a failed `prune_releases` is logged on its step and never
+/// changes the deploy's outcome.
+#[tokio::test]
+async fn a_failed_prune_never_changes_the_deploy_outcome() {
+    let Some(owner) = TestSigner::load("owner") else {
+        eprintln!("skipped: docs keys.json not found");
+        return;
+    };
+    let h = Harness::start("deploy-prunefail", Some(&vector_trust())).await;
+    h.runner
+        .behave("prune_releases", OpBehavior::Fail("E_EXEC_RUNTIME"));
+    let reference = submit_ok(
+        &h,
+        fresh_deploy(
+            &owner,
+            "0000000000e2",
+            "AAAAAAAAAAAAAAAAAAAAEg",
+            GENESIS_HEAD,
+        ),
+    )
+    .await;
+    wait_for_state(&h, &reference.operation_id, OperationState::Succeeded).await;
+    let op = operation(&h, &reference.operation_id).await;
+    let prune = op
+        .steps
+        .iter()
+        .find(|s| s.name == "prune_releases")
+        .unwrap();
+    assert_eq!(prune.state, OperationState::Failed as i32);
+    assert_eq!(prune.failure_code, "");
+    assert!(prune.error.contains("prune_releases failed"), "{prune:?}");
+    assert_eq!(
+        final_step(&op),
+        (
+            "succeeded".to_owned(),
+            OperationState::Succeeded as i32,
+            String::new()
+        )
     );
     h.stop().await;
 }
