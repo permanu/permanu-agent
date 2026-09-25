@@ -436,3 +436,85 @@ async fn a_server_level_host_shell_opens() {
     ));
     h.stop().await;
 }
+
+/// The vector host shell (`service_id` null) as a server-level plan.
+fn host_shell_plan(owner: &TestSigner) -> SignedPlan {
+    let cases = vector("policy-cases");
+    let case = cases["cases"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|c| c["name"] == "ok_owner_host_shell_server_plan")
+        .unwrap();
+    let base: Value = serde_json::from_str(case["input"].as_str().unwrap()).unwrap();
+    SignedPlan {
+        envelope_json: owner.envelope(&base["plan"]).into_bytes(),
+        ..Default::default()
+    }
+}
+
+async fn refusal(h: &Harness, plan: SignedPlan) -> tonic::Status {
+    match open(h, open_frame(plan)).await {
+        Ok(mut session) => session.rx.message().await.unwrap_err(),
+        Err(status) => status,
+    }
+}
+
+/// contracts v1.1.9 (D-067 #9): host shell opens are not counted by the 10
+/// plan submissions per minute (a host shell opens when that limit is
+/// spent), while a service shell still is.
+#[tokio::test]
+async fn host_shell_opens_are_exempt_from_the_plan_limit() {
+    let Some(owner) = TestSigner::load("owner") else {
+        eprintln!("skipped: docs keys.json not found");
+        return;
+    };
+    let h = Harness::start("shell-host-exempt", Some(&vector_trust())).await;
+    while h.core.allow_submission() {}
+    let mut session = open(&h, open_frame(host_shell_plan(&owner))).await.unwrap();
+    assert!(matches!(
+        next(&mut session).await,
+        shell_server_frame::Frame::Opened(_)
+    ));
+    session.tx = mpsc::channel(1).0;
+    assert!(matches!(
+        next(&mut session).await,
+        shell_server_frame::Frame::Exit(_)
+    ));
+    let status = refusal(&h, shell_plan_at_head(&h, &owner, "0000000005c1")).await;
+    assert_eq!(status.code(), Code::ResourceExhausted);
+    assert_eq!(
+        status.metadata().get("permanu-error-reason").unwrap(),
+        "ERROR_REASON_RATE_LIMITED"
+    );
+    assert_eq!(h.core.store.admissions_after(0, 10).unwrap().len(), 1);
+    h.stop().await;
+}
+
+/// contracts v1.1.9 (D-067 #9): at most 20 host shell opens per rolling
+/// hour; the 21st is `RESOURCE_EXHAUSTED` + `RATE_LIMITED` before
+/// admission, and host opens never spend the plan limit.
+#[tokio::test]
+async fn the_21st_host_shell_open_in_an_hour_is_rate_limited() {
+    let Some(owner) = TestSigner::load("owner") else {
+        eprintln!("skipped: docs keys.json not found");
+        return;
+    };
+    let h = Harness::start("shell-host-hourly", Some(&vector_trust())).await;
+    for _ in 0..20 {
+        assert!(h.core.allow_host_shell());
+    }
+    let status = refusal(&h, host_shell_plan(&owner)).await;
+    assert_eq!(status.code(), Code::ResourceExhausted);
+    assert_eq!(
+        status.metadata().get("permanu-error-reason").unwrap(),
+        "ERROR_REASON_RATE_LIMITED"
+    );
+    assert!(status.message().contains("20 host shell opens per hour"));
+    assert!(h.core.store.admissions_after(0, 10).unwrap().is_empty());
+    // The plan limit is untouched by host shell opens.
+    for _ in 0..10 {
+        assert!(h.core.allow_submission());
+    }
+    h.stop().await;
+}

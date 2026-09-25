@@ -18,6 +18,12 @@
 //! statement timeout is `DEADLINE_EXCEEDED` "statement timeout"; a database
 //! without the reader role is `FAILED_PRECONDITION` + `EXEC_PRECONDITION`;
 //! a `QueryRowsResponse` over 3 MiB encoded fails whole (`INTERNAL`).
+//!
+//! Contracts v1.1.9 (D-067 #3, proto v2.1.9): a database without a working
+//! `permanu_reader` is `FAILED_PRECONDITION` + `READER_MISSING` with the
+//! runner's detail in the message, and `EnsureReader` (capability
+//! `database.reader.v1`) re-runs the reader provisioning through the
+//! runner's unbound `db_reader_ensure`, one call per database at a time.
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
@@ -32,13 +38,19 @@ use super::runner::Runner;
 use super::status_with_reason;
 use crate::proto::agent::v2::database_service_server::DatabaseService;
 use crate::proto::agent::v2::{
-    db_filter, db_order, DbCell, DbColumn, DbRow, DbTable, ErrorReason, ListTablesRequest,
-    ListTablesResponse, QueryRowsRequest, QueryRowsResponse,
+    db_filter, db_order, db_reader_status, DbCell, DbColumn, DbReaderStatus, DbRow, DbTable,
+    EnsureReaderRequest, ErrorReason, ListTablesRequest, ListTablesResponse, QueryRowsRequest,
+    QueryRowsResponse,
 };
 use crate::signed_plan::text;
 
 /// v2.1.6 (D-064 #1).
 pub const CAPABILITY_DATABASE: &str = "database.v1";
+/// v2.1.9 (D-067 #3): `DatabaseService.EnsureReader`.
+pub const CAPABILITY_DATABASE_READER: &str = "database.reader.v1";
+/// signed-plan.md 14.3 `db_reader_ensure`: up to 120 s for the database to
+/// accept an authenticated connection, then create, grant and log in.
+const ENSURE_TIMEOUT: Duration = Duration::from_secs(180);
 /// agent-protocol.md 7: concurrent `db_query` calls per agent.
 const PER_AGENT: usize = 4;
 /// agent-protocol.md 7: how long a query waits for its slot.
@@ -79,7 +91,20 @@ pub struct DatabaseSvc {
     pub kinds: Arc<dyn ServiceKinds>,
     agent: Arc<Semaphore>,
     resources: Mutex<HashMap<String, Arc<tokio::sync::Mutex<()>>>>,
+    /// One `EnsureReader` per database at a time (a second waits).
+    ensuring: Mutex<HashMap<String, Arc<tokio::sync::Mutex<()>>>>,
     wait: Duration,
+}
+
+fn lock_of(
+    map: &Mutex<HashMap<String, Arc<tokio::sync::Mutex<()>>>>,
+    key: &str,
+) -> Arc<tokio::sync::Mutex<()>> {
+    map.lock()
+        .unwrap_or_else(|p| p.into_inner())
+        .entry(key.to_owned())
+        .or_default()
+        .clone()
 }
 
 impl DatabaseSvc {
@@ -93,6 +118,7 @@ impl DatabaseSvc {
             kinds,
             agent: Arc::new(Semaphore::new(PER_AGENT)),
             resources: Mutex::new(HashMap::new()),
+            ensuring: Mutex::new(HashMap::new()),
             wait,
         }
     }
@@ -115,13 +141,7 @@ impl DatabaseSvc {
         &self,
         resource_id: &str,
     ) -> Result<(OwnedSemaphorePermit, OwnedMutexGuard<()>), Status> {
-        let lock = self
-            .resources
-            .lock()
-            .unwrap_or_else(|p| p.into_inner())
-            .entry(resource_id.to_owned())
-            .or_default()
-            .clone();
+        let lock = lock_of(&self.resources, resource_id);
         let agent = self.agent.clone();
         tokio::time::timeout(self.wait, async move {
             let guard = lock.lock_owned().await;
@@ -178,14 +198,75 @@ fn runner_error(error: &Value) -> Status {
         (Some("not_found"), _) => Status::not_found(message),
         // D-066 #1: the runner's 5 s statement timeout.
         (Some("runtime_failed"), Some("timeout")) => Status::deadline_exceeded("statement timeout"),
-        // D-066 #3: the database has no permanu_reader role until its next deploy.
+        // D-067 #3: no working permanu_reader (never provisioned, failed,
+        // or its login fails); the runner's detail travels in the message.
         (Some("runtime_failed"), Some("reader_missing")) => status_with_reason(
+            Code::FailedPrecondition,
+            &with_reader_detail(message, &error["detail"]),
+            ErrorReason::ReaderMissing,
+        ),
+        _ => Status::failed_precondition(message),
+    }
+}
+
+/// `message` plus the runner's reader record (`reader_status`,
+/// `reader_reason`), each a short token.
+fn with_reader_detail(message: String, detail: &Value) -> String {
+    let token = |key: &str| {
+        detail[key]
+            .as_str()
+            .filter(|t| !t.is_empty() && t.len() <= 64)
+            .filter(|t| t.bytes().all(|b| b.is_ascii_graphic()))
+            .map(|t| format!("{key} {t}"))
+    };
+    let parts: Vec<String> = ["reader_status", "reader_reason"]
+        .into_iter()
+        .filter_map(token)
+        .collect();
+    if parts.is_empty() {
+        message
+    } else {
+        format!("{message} ({})", parts.join(", "))
+    }
+}
+
+/// A runner `db_reader_ensure` refusal as a status (agent-protocol.md 4,
+/// contracts v1.1.9).
+fn ensure_error(error: &Value) -> Status {
+    let message: String = error["message"]
+        .as_str()
+        .unwrap_or("the reader could not be provisioned")
+        .chars()
+        .take(256)
+        .collect();
+    match (error["code"].as_str(), error["reason"].as_str()) {
+        (Some("invalid_request" | "not_found"), _) => invalid(&message),
+        (Some("runtime_failed"), Some("not_active")) => status_with_reason(
             Code::FailedPrecondition,
             &message,
             ErrorReason::ExecPrecondition,
         ),
         _ => Status::failed_precondition(message),
     }
+}
+
+/// The runner's `db_reader_ensure` answer as `DbReaderStatus`.
+fn reader_status(answer: &Value, now: i64) -> Result<DbReaderStatus, Status> {
+    use db_reader_status::Status as S;
+    let (status, reason) = match answer["reader_status"].as_str() {
+        Some("ready") => (S::Ready, String::new()),
+        Some("failed") => (S::Failed, text_of(&answer["reader_reason"], 128)),
+        _ => return Err(Status::internal("the runner returned no reader status")),
+    };
+    Ok(DbReaderStatus {
+        status: status as i32,
+        reason,
+        deployment_id: text_of(&answer["deployment_id"], 64),
+        checked_at: Some(prost_types::Timestamp {
+            seconds: now,
+            nanos: 0,
+        }),
+    })
 }
 
 /// A catalog name as the runner takes it: 1–63 bytes, no NUL.
@@ -442,13 +523,57 @@ impl DatabaseService for DatabaseSvc {
         }
         Ok(Response::new(response))
     }
+
+    /// v2.1.9 (D-067 #3): re-runs the reader provisioning of one managed
+    /// PostgreSQL service (runner `db_reader_ensure`, bound by the runner to
+    /// the service's last admitted spec; the request names only the
+    /// resource, never credentials).
+    async fn ensure_reader(
+        &self,
+        request: Request<EnsureReaderRequest>,
+    ) -> Result<Response<DbReaderStatus>, Status> {
+        super::log_peer(&request, "EnsureReader");
+        let resource_id = request.into_inner().resource_id;
+        if !text::uuid7(&resource_id)
+            || self.kinds.service_kind(&resource_id).as_deref() != Some("database")
+        {
+            return Err(invalid(
+                "resource_id is not a managed PostgreSQL service on this server",
+            ));
+        }
+        let lock = lock_of(&self.ensuring, &resource_id);
+        let _one = lock.lock().await;
+        let request = json!({"op": "db_reader_ensure", "payload": {"resource_id": resource_id}});
+        let answer = self
+            .runner
+            .exchange(request, ENSURE_TIMEOUT)
+            .await
+            .map_err(|failure| {
+                tracing::warn!(code = %failure.code, "db_reader_ensure did not complete");
+                Status::unavailable("the runner did not answer the reader repair")
+            })?;
+        if answer["ok"] != true {
+            return Err(ensure_error(&answer["error"]));
+        }
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0, |d| i64::try_from(d.as_secs()).unwrap_or(i64::MAX));
+        let status = reader_status(&answer, now)?;
+        tracing::info!(
+            %resource_id,
+            status = status.status,
+            reason = %status.reason,
+            "database reader ensured"
+        );
+        Ok(Response::new(status))
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::local::runner::{EventLines, RunnerFailure};
-    use crate::proto::agent::v2::{DbFilter, DbOrder};
+    use crate::proto::agent::v2::{db_reader_status, DbFilter, DbOrder, EnsureReaderRequest};
 
     const DB: &str = "01a0cdb5-3500-70c1-8000-000000000002";
     const WEB: &str = "01a0cdb5-3500-70c1-8000-000000000001";
@@ -714,10 +839,26 @@ mod tests {
                 "",
                 "statement timeout",
             ),
+            // v2.1.9 (D-067 #3): READER_MISSING with the runner's detail.
+            (
+                json!({"code": "runtime_failed", "reason": "reader_missing", "message": "no reader",
+                    "detail": {"reader_status": "failed", "reader_reason": "not_ready"}}),
+                Code::FailedPrecondition,
+                "ERROR_REASON_READER_MISSING",
+                "no reader (reader_status failed, reader_reason not_ready)",
+            ),
+            (
+                json!({"code": "runtime_failed", "reason": "reader_missing", "message": "no reader",
+                    "detail": {"reader_status": "missing", "reader_reason": null}}),
+                Code::FailedPrecondition,
+                "ERROR_REASON_READER_MISSING",
+                "no reader (reader_status missing)",
+            ),
+            // A runner before v1.0.17 sends no detail.
             (
                 json!({"code": "runtime_failed", "reason": "reader_missing", "message": "no reader"}),
                 Code::FailedPrecondition,
-                "ERROR_REASON_EXEC_PRECONDITION",
+                "ERROR_REASON_READER_MISSING",
                 "no reader",
             ),
             (
@@ -821,5 +962,126 @@ mod tests {
         assert_eq!(reason(&status), "ERROR_REASON_RATE_LIMITED");
         runner.hold.add_permits(10);
         assert!(first.await.unwrap().is_ok());
+    }
+
+    fn ensure(resource_id: &str) -> Request<EnsureReaderRequest> {
+        Request::new(EnsureReaderRequest {
+            resource_id: resource_id.into(),
+        })
+    }
+
+    /// v2.1.9 (D-067 #3): `EnsureReader` is one unbound `db_reader_ensure`
+    /// naming only the resource; the answer becomes `DbReaderStatus`.
+    #[tokio::test]
+    async fn ensure_reader_runs_db_reader_ensure() {
+        let deployment = "01a0cdb5-3500-70d1-8000-000000000009";
+        let runner = DbRunner::new(
+            json!({"ok": true, "op": "db_reader_ensure", "deployment_id": deployment,
+                "reader_status": "ready", "reader_reason": null}),
+            false,
+        );
+        let status = svc(runner.clone())
+            .ensure_reader(ensure(DB))
+            .await
+            .unwrap()
+            .into_inner();
+        assert_eq!(status.status, db_reader_status::Status::Ready as i32);
+        assert_eq!(status.reason, "");
+        assert_eq!(status.deployment_id, deployment);
+        assert!(status.checked_at.is_some());
+        assert_eq!(
+            runner.requests.lock().unwrap().as_slice(),
+            [json!({"op": "db_reader_ensure", "payload": {"resource_id": DB}})]
+        );
+
+        let runner = DbRunner::new(
+            json!({"ok": true, "op": "db_reader_ensure", "deployment_id": deployment,
+                "reader_status": "failed", "reader_reason": "sql_error:42501"}),
+            false,
+        );
+        let status = svc(runner)
+            .ensure_reader(ensure(DB))
+            .await
+            .unwrap()
+            .into_inner();
+        assert_eq!(status.status, db_reader_status::Status::Failed as i32);
+        assert_eq!(status.reason, "sql_error:42501");
+    }
+
+    /// v2.1.9: a resource that is not a database service here is
+    /// `INVALID_ARGUMENT` + `VALIDATION` (never sent); the runner's
+    /// refusals map to the contract's statuses.
+    #[tokio::test]
+    async fn ensure_reader_refusals() {
+        let runner = DbRunner::new(json!({"ok": true}), false);
+        for id in [WEB, "01a0cdb5-3500-70c1-8000-00000000000f", "x"] {
+            let status = svc(runner.clone())
+                .ensure_reader(ensure(id))
+                .await
+                .unwrap_err();
+            assert_eq!(status.code(), Code::InvalidArgument, "{id}");
+            assert_eq!(reason(&status), "ERROR_REASON_VALIDATION");
+        }
+        assert!(runner.requests.lock().unwrap().is_empty());
+        for (error, code, why) in [
+            (
+                json!({"code": "invalid_request", "message": "not PostgreSQL"}),
+                Code::InvalidArgument,
+                "ERROR_REASON_VALIDATION",
+            ),
+            (
+                json!({"code": "not_found", "message": "no such service"}),
+                Code::InvalidArgument,
+                "ERROR_REASON_VALIDATION",
+            ),
+            (
+                json!({"code": "runtime_failed", "reason": "not_active", "message": "no release"}),
+                Code::FailedPrecondition,
+                "ERROR_REASON_EXEC_PRECONDITION",
+            ),
+            (
+                json!({"code": "runtime_failed", "message": "boom"}),
+                Code::FailedPrecondition,
+                "",
+            ),
+        ] {
+            let runner = DbRunner::new(json!({"ok": false, "error": error}), false);
+            let status = svc(runner).ensure_reader(ensure(DB)).await.unwrap_err();
+            assert_eq!(status.code(), code, "{status:?}");
+            assert_eq!(reason(&status), why, "{status:?}");
+        }
+        // A malformed answer is never READY.
+        let runner = DbRunner::new(json!({"ok": true, "reader_status": "maybe"}), false);
+        let status = svc(runner).ensure_reader(ensure(DB)).await.unwrap_err();
+        assert_eq!(status.code(), Code::Internal);
+    }
+
+    /// v2.1.9: one `EnsureReader` per database at a time; a second waits
+    /// for the first (no `RATE_LIMITED`), and queries of the database are
+    /// not blocked by it.
+    #[tokio::test]
+    async fn ensure_reader_calls_of_one_database_wait_for_each_other() {
+        let runner = DbRunner::new(
+            json!({"ok": true, "deployment_id": "d", "reader_status": "ready", "reader_reason": null}),
+            true,
+        );
+        let svc = Arc::new(svc(runner.clone()));
+        let spawn = || {
+            let svc = svc.clone();
+            tokio::spawn(async move { svc.ensure_reader(ensure(DB)).await })
+        };
+        let first = spawn();
+        while runner.requests.lock().unwrap().is_empty() {
+            tokio::task::yield_now().await;
+        }
+        let second = spawn();
+        tokio::time::sleep(Duration::from_millis(300)).await;
+        // Past the query wait (100 ms here): still waiting, not refused.
+        assert_eq!(runner.requests.lock().unwrap().len(), 1);
+        assert!(!second.is_finished());
+        runner.hold.add_permits(10);
+        assert!(first.await.unwrap().is_ok());
+        assert!(second.await.unwrap().is_ok());
+        assert_eq!(runner.requests.lock().unwrap().len(), 2);
     }
 }

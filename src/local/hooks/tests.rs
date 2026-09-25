@@ -482,6 +482,90 @@ async fn a_failed_build_fails_the_delivery_and_admits_nothing() {
     f.h.stop().await;
 }
 
+/// contracts v1.1.9 (D-067 #6, QA_M2 run 4 B1): a build the runner refused
+/// for want of AppArmor reports `buildkit_unavailable` on the build, the
+/// delivery and the agent status.
+#[tokio::test]
+async fn a_build_without_apparmor_reports_buildkit_unavailable() {
+    let f = fixture("hooks-build-apparmor").await;
+    f.h.runner
+        .build_answers
+        .lock()
+        .unwrap()
+        .push(json!({"ok": false, "error": {
+        "code": "E_BUILD_FAILED", "message": "the permanu-buildkitd AppArmor profile is not loaded",
+        "failure_reason": "buildkit_unavailable"}}));
+    let body = push_body("refs/heads/main", COMMIT);
+    f.hooks.intake(github(&body, SECRET, "203.0.113.9")).await;
+    f.hooks.settle().await;
+    let delivery = only_delivery(&f.hooks);
+    assert_eq!(delivery.status, WebhookDeliveryStatus::Failed as i32);
+    assert_eq!(delivery.status_reason, "buildkit_unavailable");
+    let mut client = WebhookServiceClient::new(f.h.channel.clone());
+    let builds = client
+        .list_server_builds(ListServerBuildsRequest::default())
+        .await
+        .unwrap()
+        .into_inner()
+        .builds;
+    assert_eq!(builds[0].failure_reason, "buildkit_unavailable");
+    assert!(!f.hooks.server_builds_enabled());
+    f.h.stop().await;
+}
+
+fn status_of(hooks: &Arc<Hooks>) -> crate::proto::agent::v2::AgentStatus {
+    let mut status = crate::proto::agent::v2::AgentStatus::default();
+    crate::local::status::StatusSources {
+        hooks: Some(hooks.clone()),
+        ..Default::default()
+    }
+    .fill(&mut status, 0);
+    status
+}
+
+/// contracts v1.1.8/v1.1.9 (D-066 #5, D-067 #6): the runner's `diagnose`
+/// check `buildkit_apparmor` decides `server_builds_enabled` and the
+/// degraded reason `buildkit_unavailable`; a refused or malformed answer
+/// (an older runner) changes nothing.
+#[tokio::test]
+async fn the_buildkit_apparmor_check_drives_the_build_status() {
+    let f = fixture("hooks-buildkit-diagnose").await;
+    let answer = |value: Value| *f.h.runner.diagnose_answer.lock().unwrap() = value;
+    answer(json!({"ok": true, "op": "diagnose", "buildkit_apparmor": "absent"}));
+    f.hooks.check_buildkit().await;
+    assert!(!f.hooks.server_builds_enabled());
+    let status = status_of(&f.hooks);
+    assert!(!status.server_builds_enabled);
+    assert_eq!(status.degraded_reasons, vec!["buildkit_unavailable"]);
+    for refused in [
+        json!({"ok": false, "error": {"code": "invalid_request", "message": "unknown check"}}),
+        json!({"ok": true, "op": "diagnose"}),
+    ] {
+        answer(refused);
+        f.hooks.check_buildkit().await;
+        assert!(!f.hooks.server_builds_enabled());
+    }
+    answer(json!({"ok": true, "op": "diagnose", "buildkit_apparmor": "loaded"}));
+    f.hooks.check_buildkit().await;
+    let status = status_of(&f.hooks);
+    assert!(status.server_builds_enabled);
+    assert!(status.degraded_reasons.is_empty(), "{status:?}");
+    let diagnose: Vec<Value> =
+        f.h.runner
+            .requests
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|r| r["op"] == "diagnose")
+            .cloned()
+            .collect();
+    assert_eq!(diagnose.len(), 4);
+    assert!(diagnose
+        .iter()
+        .all(|r| *r == json!({"op": "diagnose", "payload": {"checks": ["buildkit_apparmor"]}})));
+    f.h.stop().await;
+}
+
 /// D-064 #7: a build an admitted `operation.cancel` stopped (runner
 /// `E_CANCELLED`) ends `CANCELLED` with `failure_reason` `cancelled` and
 /// the reason CANCELLED, never a failure.
