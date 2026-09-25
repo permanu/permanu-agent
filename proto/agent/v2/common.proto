@@ -240,4 +240,13 @@ enum ErrorReason {
   // or value (DbFilter.number_value included); the message names the field.
   // Engine API -32008 validation, reason validation.
   ERROR_REASON_VALIDATION = 47;
+  // v2.1.9 (contracts v1.1.9, D-067, agent-protocol.md 3 and 5.1).
+  // FAILED_PRECONDITION from DatabaseService: the database has no working
+  // read-only role permanu_reader (never provisioned, provisioning failed,
+  // or it cannot log in; runner db_query error.reason reader_missing). The
+  // message carries the runner's detail (reader_status and reader_reason of
+  // the running release). Engine API -32015 not_ready, reason reader_missing;
+  // DatabaseService.EnsureReader or the next deploy repairs it. Replaces
+  // EXEC_PRECONDITION for this case (engines accept both from older agents).
+  ERROR_REASON_READER_MISSING = 48;
 }

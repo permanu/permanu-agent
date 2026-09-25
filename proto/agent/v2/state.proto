@@ -26,9 +26,57 @@ import "agent/v2/events.proto";
 // error.reason "timeout") is DEADLINE_EXCEEDED with the message
 // "statement timeout"; a database with no reader role yet is
 // FAILED_PRECONDITION + EXEC_PRECONDITION.
+//
+// v2.1.9 (contracts v1.1.9, D-067): a database without a working
+// permanu_reader (missing, failed to provision, or its login fails) is
+// FAILED_PRECONDITION + READER_MISSING, the runner's detail (reader_status,
+// reader_reason) in the message.
 service DatabaseService {
   rpc ListTables(ListTablesRequest) returns (ListTablesResponse);
   rpc QueryRows(QueryRowsRequest) returns (QueryRowsResponse);
+  // v2.1.9 (contracts v1.1.9, D-067; capability "database.reader.v1").
+  // Re-runs the reader provisioning of a managed PostgreSQL service through
+  // the runner op db_reader_ensure (signed-plan.md 14.3): on the running
+  // release of the service's last admitted spec, with the credentials of its
+  // effective inputs (never from the request), the runner waits up to 120 s
+  // for an authenticated TCP connection, creates or updates permanu_reader
+  // (a new password) and logs in as it. No plan: it changes only the
+  // read-only role. One call per database at a time (a second waits).
+  // INVALID_ARGUMENT + VALIDATION when resource_id is not a managed
+  // PostgreSQL service on this server; FAILED_PRECONDITION +
+  // EXEC_PRECONDITION when no release of its last admitted spec runs. Engine
+  // API services.db.repair_reader (app-only).
+  rpc EnsureReader(EnsureReaderRequest) returns (DbReaderStatus);
+}
+
+message EnsureReaderRequest {
+  // A database service (service_kind database, PostgreSQL) on this server.
+  string resource_id = 1;
+}
+
+// v2.1.9 (contracts v1.1.9, D-067). The read-only role permanu_reader of a
+// managed PostgreSQL service's running release, as the runner recorded it
+// after activation (the reader_status / reader_reason of the action's result
+// line, signed-plan.md 14.8) or after EnsureReader.
+message DbReaderStatus {
+  enum Status {
+    STATUS_UNSPECIFIED = 0;
+    // Created or updated, and the runner logged in as permanu_reader.
+    STATUS_READY = 1;
+    // No provisioning ran for the running release (activated by a runner
+    // before contracts v1.1.9).
+    STATUS_MISSING = 2;
+    // Provisioning ran and failed; reason says why.
+    STATUS_FAILED = 3;
+  }
+  Status status = 1;
+  // For FAILED: "not_ready" (no authenticated TCP connection within 120 s),
+  // "auth_failed", "credentials_missing", "sql_error:<SQLSTATE>" or
+  // "login_failed". Empty otherwise.
+  string reason = 2;
+  // The release (deployment id) the status was recorded on.
+  string deployment_id = 3;
+  google.protobuf.Timestamp checked_at = 4;
 }
 
 message ListTablesRequest {
@@ -116,7 +164,8 @@ message DbCell {
   // True for SQL NULL (text is then empty).
   bool is_null = 1;
   // The value's PostgreSQL text form (every type; bigint and numeric as
-  // decimal strings). v2.1.8 (D-066): cut at 64 KiB on a UTF-8 boundary (it
+  // decimal strings; v2.1.9, D-067: a boolean is "true" or "false", never
+  // PostgreSQL's t/f). v2.1.8 (D-066): cut at 64 KiB on a UTF-8 boundary (it
   // was 4096 bytes), with truncated true; the engine's JSON cell is null, the
   // text, or {text, truncated: true}.
   string text = 2;
@@ -219,6 +268,10 @@ message ServiceState {
   HealthEvent.Status health = 9;
   // Currently deployed commit on its branch, if known.
   string commit_sha = 10;
+  // v2.1.9 (contracts v1.1.9, D-067). For a managed PostgreSQL service, the
+  // reader status recorded on the running release (release_id); unset for
+  // other services.
+  DbReaderStatus db_reader = 11;
 }
 
 message DeploymentState {

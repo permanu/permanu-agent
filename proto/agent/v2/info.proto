@@ -193,7 +193,9 @@ message AgentStatus {
   Health health = 1;
   // Stable lowercase ids, sorted: "runner_unreachable", "telemetry_dropping",
   // "telemetry_ingest_paused", "telemetry_store_reset", "otlp_unbound",
-  // "buildkit_unavailable", "disk_pressure", "clock_unsynced",
+  // "buildkit_unavailable" (v2.1.9, contracts v1.1.9, D-067: the runner's
+  // diagnose check buildkit_apparmor reads absent), "disk_pressure",
+  // "clock_unsynced",
   // "trust_store_invalid", "release_keys_invalid",
   // "recovery_recipient_missing", "scheduler_behind". Clients show an unknown
   // id verbatim. Engine API AgentStatus.health / degraded_reasons carry
