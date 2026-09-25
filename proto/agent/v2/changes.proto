@@ -157,6 +157,16 @@ message Operation {
 //   Scheduled runs (run_cron, backup_run, backup_verify, backup_prune) and
 //   build_image are not plan steps; notify_channel, webhook_verify and
 //   logs_follow_stream are unbound and never appear as steps.
+//   v2.1.10 (contracts v1.1.10, D-068): prune_releases, an operation-only
+//   step after every activate_release whose result is succeeded (keeps the
+//   active release and one previous, removes older releases' containers,
+//   never a volume; its failure never changes the deploy's outcome). When
+//   activate_release of a recreate candidate returns state rolled_back (the
+//   runner handed the volume back to the previous release itself), the
+//   agent calls no recovery op: it records a rollback_release step that
+//   completes without a runner call, then rolled_back. Every step that
+//   started gets its completion before the action's final step, also after
+//   a runner restart (signed-plan.md 14.6).
 //   succeeded, failed, rolled_back, cancelled, expired
 //                                                - final step of one action
 // Clients show an unknown name as a generic step.

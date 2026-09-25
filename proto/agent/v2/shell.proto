@@ -32,6 +32,9 @@ import "agent/v2/common.proto";
 // has its own limit of 20 opens per hour per server (a rolling hour; the
 // 21st ends the stream with RESOURCE_EXHAUSTED + RATE_LIMITED before the plan
 // is admitted, never retried). The permanu-shell user has uid and gid 900100.
+// v2.1.10 (contracts v1.1.10, D-068): each refusal names its limit in the
+// status message: "at most 20 host shell opens per hour" (RATE_LIMITED) and
+// "at most 4 concurrent shells" (LIMIT_EXCEEDED).
 service ShellService {
   rpc Shell(stream ShellClientFrame) returns (stream ShellServerFrame);
 }
