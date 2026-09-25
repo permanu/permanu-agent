@@ -32,7 +32,7 @@ use tokio::time::Instant;
 use tonic::{Request, Response, Status, Streaming};
 use tracing::{info, warn};
 
-use super::change::ChangeSvc;
+use super::change::{ChangeSvc, Limit};
 use super::errors::plan_status;
 use super::execution::ChangeCore;
 use super::runner::{BoxWrite, EventLines, PlanRef};
@@ -141,7 +141,14 @@ impl ShellService for ShellSvc {
         let change = ChangeSvc {
             core: self.core.clone(),
         };
-        let admitted = change.admit(Some(plan)).await?;
+        // D-067 #9: a host shell open (service_id null) is outside the
+        // plan submission limit and has its own hourly one.
+        let limit = if params["service_id"].is_null() {
+            Limit::HostShell
+        } else {
+            Limit::Submissions
+        };
+        let admitted = change.admit_limited(Some(plan), limit).await?;
         if admitted.deduplicated {
             // One signed shell.open opens one session.
             return Err(plan_status(PlanCode::ExecPrecondition));

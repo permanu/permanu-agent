@@ -1510,6 +1510,11 @@ fn apply_verify_result(
                 verification.artifact_id = id.chars().take(64).collect();
             }
             verification.checks = verify_checks(&answer["checks"]);
+            // v2.1.9 (D-067 #8): `no tables` for a verified empty database.
+            verification.note = answer["note"]
+                .as_str()
+                .map(|note| note.chars().take(128).collect())
+                .unwrap_or_default();
             let passed = answer["outcome"].as_str().unwrap_or("succeeded") == "succeeded"
                 && verification.checks.iter().all(|c| c.passed);
             verification.status = if passed {

@@ -10,6 +10,7 @@
 //! the host is an admitted signed plan.
 
 pub mod age_recipient;
+pub mod apparmor;
 pub mod artifacts;
 pub mod change;
 pub mod database;
@@ -380,6 +381,8 @@ fn capabilities(
         CAPABILITY_SERVICE_KIND.to_string(),
         // v2.1.6 (D-064 #1): DatabaseService over the runner's db_query.
         database::CAPABILITY_DATABASE.to_string(),
+        // v2.1.9 (D-067 #3): DatabaseService.EnsureReader.
+        database::CAPABILITY_DATABASE_READER.to_string(),
     ];
     if !age_recipient.is_empty() {
         ids.push(CAPABILITY_AGE.to_string());
@@ -852,6 +855,8 @@ pub async fn run(
         }
         scheduler_tasks.push(hooks.spawn_sweeper());
         scheduler_tasks.push(hooks.spawn_rule_watch());
+        // D-066 #5 / D-067 #6: buildkit_apparmor at start and every 60 s.
+        scheduler_tasks.push(hooks.spawn_buildkit_watch());
     }
     let artifacts = ops
         .clone()
@@ -1221,7 +1226,8 @@ mod tests {
                 "deployment_ids.v1",
                 "logs.containers.v1",
                 "service_kind.v1",
-                "database.v1"
+                "database.v1",
+                "database.reader.v1"
             ]
         );
         assert_eq!(
@@ -1233,6 +1239,7 @@ mod tests {
                 "logs.containers.v1",
                 "service_kind.v1",
                 "database.v1",
+                "database.reader.v1",
                 "age.v1"
             ]
         );
@@ -1246,6 +1253,7 @@ mod tests {
                 "logs.containers.v1",
                 "service_kind.v1",
                 "database.v1",
+                "database.reader.v1",
                 "telemetry.v1",
                 "analytics.v1"
             ]
@@ -1344,6 +1352,7 @@ mod tests {
                 "logs.containers.v1",
                 "service_kind.v1",
                 "database.v1",
+                "database.reader.v1",
                 "age.v1"
             ]
         );

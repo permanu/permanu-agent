@@ -873,3 +873,30 @@ async fn a_manual_verification_learns_its_runner_run_id() {
     assert_eq!(running[0].status, RestoreVerificationStatus::Running as i32);
     assert_eq!(running[0].runner_run_id, VERIFY_RUN);
 }
+
+/// v2.1.9 (D-067 #8): a verification of an empty database passes and
+/// carries the runner's note `no tables`; other answers carry no note.
+#[test]
+fn a_verified_empty_database_carries_the_no_tables_note() {
+    let checks = json!({"plaintext_digest": true, "archive_readable": true,
+        "restore_completed": true, "tables_present": true});
+    let mut empty = RestoreVerification::default();
+    apply_verify_result(
+        &mut empty,
+        &Ok(json!({"outcome": "succeeded", "checks": checks, "note": "no tables"})),
+    );
+    assert_eq!(empty.status, RestoreVerificationStatus::Passed as i32);
+    assert_eq!(empty.note, "no tables");
+    let mut full = RestoreVerification::default();
+    apply_verify_result(
+        &mut full,
+        &Ok(json!({"outcome": "succeeded", "checks": checks, "note": null})),
+    );
+    assert_eq!(full.note, "");
+    let mut long = RestoreVerification::default();
+    apply_verify_result(
+        &mut long,
+        &Ok(json!({"outcome": "succeeded", "checks": checks, "note": "x".repeat(500)})),
+    );
+    assert_eq!(long.note.len(), 128);
+}

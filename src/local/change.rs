@@ -31,6 +31,16 @@ use crate::signed_plan::PlanCode;
 const DEFAULT_PAGE_SIZE: usize = 50;
 const MAX_PAGE_SIZE: usize = 500;
 
+/// Which rate limit an admission counts against (agent-protocol.md 7).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Limit {
+    /// 10 plan submissions per minute.
+    Submissions,
+    /// contracts v1.1.9 (D-067 #9): a host shell open, 20 per hour, never
+    /// counted as a submission.
+    HostShell,
+}
+
 pub struct ChangeSvc {
     pub core: Arc<ChangeCore>,
 }
@@ -126,10 +136,30 @@ impl ChangeSvc {
 
     /// Rate limit, staging checks and admission of a signed plan.
     pub(crate) async fn admit(&self, plan: Option<SignedPlan>) -> Result<OperationRef, Status> {
-        if !self.core.allow_submission() {
+        self.admit_limited(plan, Limit::Submissions).await
+    }
+
+    /// [`Self::admit`] under `limit` (agent-protocol.md 7).
+    pub(crate) async fn admit_limited(
+        &self,
+        plan: Option<SignedPlan>,
+        limit: Limit,
+    ) -> Result<OperationRef, Status> {
+        let (allowed, message) = match limit {
+            Limit::Submissions => (
+                self.core.allow_submission(),
+                "at most 10 plan submissions per minute",
+            ),
+            // D-067 #9: host shell opens have their own limit.
+            Limit::HostShell => (
+                self.core.allow_host_shell(),
+                "at most 20 host shell opens per hour on this server",
+            ),
+        };
+        if !allowed {
             return Err(status_with_reason(
                 Code::ResourceExhausted,
-                "at most 10 plan submissions per minute",
+                message,
                 ErrorReason::RateLimited,
             ));
         }

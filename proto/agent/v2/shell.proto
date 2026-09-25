@@ -27,6 +27,11 @@ import "agent/v2/common.proto";
 // per server with E_SHELL_LIMIT (LIMIT_EXCEEDED). A host shell runs in the
 // transient systemd unit permanu-shell-<plan_id>.service (agent-protocol.md
 // section 8).
+// v2.1.9 (contracts v1.1.9, D-067): a host shell open (service_id null) is
+// not counted by the 10 plan submissions per minute of SubmitSignedPlan; it
+// has its own limit of 20 opens per hour per server (a rolling hour; the
+// 21st ends the stream with RESOURCE_EXHAUSTED + RATE_LIMITED before the plan
+// is admitted, never retried). The permanu-shell user has uid and gid 900100.
 service ShellService {
   rpc Shell(stream ShellClientFrame) returns (stream ShellServerFrame);
 }

@@ -348,6 +348,34 @@ async fn run_doctor(json_mode: bool) -> Result<()> {
         }
     }
 
+    // D-066 #5 / D-067 #6: whether on-server builds may run here, and why
+    // not (the runner enforces the same rule).
+    let (outcome, report) = local::apparmor::buildkit_apparmor(
+        std::path::Path::new(local::apparmor::ENABLED_PATH),
+        std::path::Path::new(local::apparmor::PROFILES_PATH),
+    );
+    let status = match outcome {
+        local::apparmor::Outcome::Loaded => "completed",
+        local::apparmor::Outcome::Absent => "failed",
+        local::apparmor::Outcome::Unknown => "unknown",
+    };
+    if json_mode {
+        json_checks.push(json!({
+            "name": "buildkit_apparmor",
+            "status": status,
+            "output": report,
+        }));
+    } else {
+        println!("\n== buildkit_apparmor ==");
+        println!("{}", report["detail"].as_str().unwrap_or_default());
+        if let Some(fix) = report["fix"].as_str() {
+            println!("fix: {fix}");
+        }
+    }
+    if outcome == local::apparmor::Outcome::Absent {
+        failed = true;
+    }
+
     if json_mode {
         println!(
             "{}",

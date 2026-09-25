@@ -63,6 +63,9 @@ impl Clock for SystemClock {
 
 /// agent-protocol.md section 7: 10 submissions per minute.
 const SUBMISSIONS_PER_MINUTE: usize = 10;
+/// agent-protocol.md 7 (contracts v1.1.9, D-067 #9): host shell opens per
+/// rolling hour, outside the submission limit.
+const HOST_SHELLS_PER_HOUR: usize = 20;
 const MAX_SEALED_SECRETS: usize = 64;
 /// Cancelled actions logged from one `cancel_execution` result (a plan
 /// holds at most 64 actions).
@@ -355,6 +358,8 @@ pub struct ChangeCore {
     execution: tokio::sync::Mutex<()>,
     bootstrap: tokio::sync::Mutex<()>,
     submissions: Mutex<VecDeque<Instant>>,
+    /// When each host shell open was let through (last hour).
+    host_shells: Mutex<VecDeque<Instant>>,
     /// Plans an admitted `operation.cancel` stopped (checked before every
     /// step of their executor).
     cancelled: Mutex<HashSet<String>>,
@@ -400,6 +405,24 @@ async fn blocking<T: Send + 'static>(
         .unwrap_or(Err(PlanCode::Internal))
 }
 
+/// A sliding-window limiter: false once `limit` entries are within
+/// `window`; otherwise records now.
+fn take_slot(entries: &Mutex<VecDeque<Instant>>, limit: usize, window: Duration) -> bool {
+    let mut recent = locked(entries);
+    let now = Instant::now();
+    while recent
+        .front()
+        .is_some_and(|at| now.duration_since(*at) > window)
+    {
+        recent.pop_front();
+    }
+    if recent.len() >= limit {
+        return false;
+    }
+    recent.push_back(now);
+    true
+}
+
 fn locked<T>(mutex: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
     mutex.lock().unwrap_or_else(|p| p.into_inner())
 }
@@ -436,6 +459,7 @@ impl ChangeCore {
             execution: tokio::sync::Mutex::new(()),
             bootstrap: tokio::sync::Mutex::new(()),
             submissions: Mutex::new(VecDeque::new()),
+            host_shells: Mutex::new(VecDeque::new()),
             cancelled: Mutex::new(HashSet::new()),
             running: Mutex::new(HashSet::new()),
             failures: Mutex::new(HashMap::new()),
@@ -452,19 +476,22 @@ impl ChangeCore {
     /// agent-protocol.md section 7: false once 10 submissions arrived in the
     /// last minute.
     pub fn allow_submission(&self) -> bool {
-        let mut recent = locked(&self.submissions);
-        let now = Instant::now();
-        while recent
-            .front()
-            .is_some_and(|at| now.duration_since(*at) > Duration::from_secs(60))
-        {
-            recent.pop_front();
-        }
-        if recent.len() >= SUBMISSIONS_PER_MINUTE {
-            return false;
-        }
-        recent.push_back(now);
-        true
+        take_slot(
+            &self.submissions,
+            SUBMISSIONS_PER_MINUTE,
+            Duration::from_secs(60),
+        )
+    }
+
+    /// agent-protocol.md 7 (contracts v1.1.9, D-067 #9): false once 20
+    /// host shell opens arrived in the last hour. Host shell opens never
+    /// count against [`Self::allow_submission`].
+    pub fn allow_host_shell(&self) -> bool {
+        take_slot(
+            &self.host_shells,
+            HOST_SHELLS_PER_HOUR,
+            Duration::from_secs(3_600),
+        )
     }
 
     /// Tests: the submission window passed.
@@ -737,6 +764,29 @@ impl ChangeCore {
                 line: line.to_owned(),
             }),
         );
+    }
+
+    /// v1.0.17 (D-067 #3): the reader outcome a managed PostgreSQL
+    /// activation carries (`reader_status`, `reader_reason`), as a step log
+    /// line of the activation. A failed reader never fails the deploy.
+    fn reader_line(&self, record: &AdmissionRecord, action: &ActionRecord, result: &Value) {
+        let token = |key: &str| {
+            result[key]
+                .as_str()
+                .filter(|t| !t.is_empty() && t.len() <= 64)
+                .filter(|t| t.bytes().all(|b| b.is_ascii_graphic()))
+        };
+        let Some(status) = token("reader_status") else {
+            return;
+        };
+        let line = match token("reader_reason") {
+            Some(reason) => format!("database reader permanu_reader: {status} ({reason})"),
+            None => format!("database reader permanu_reader: {status}"),
+        };
+        if status != "ready" {
+            warn!(plan_id = %record.plan_id, %status, "database reader not ready after activation");
+        }
+        self.log_line(record, action, "activate_release", &line);
     }
 
     fn deploy_status(
@@ -1666,7 +1716,7 @@ impl ChangeCore {
             Some(failure) => (failure, false),
             None if ran("activate_release") => return Outcome::succeeded().activated(),
             None => match self
-                .op(
+                .op_result(
                     record,
                     plan,
                     action,
@@ -1675,7 +1725,10 @@ impl ChangeCore {
                 )
                 .await
             {
-                Ok(()) => return Outcome::succeeded().activated(),
+                Ok(result) => {
+                    self.reader_line(record, action, &result);
+                    return Outcome::succeeded().activated();
+                }
                 Err(failure) => (
                     StartFailure {
                         failure_code: op_failure_code("deploy", "activate_release", &failure),

@@ -33,6 +33,7 @@ use std::sync::atomic::{AtomicBool, AtomicUsize};
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::Duration;
 
+use serde_json::json;
 use tokio::task::JoinHandle;
 
 use super::events::EventBus;
@@ -59,6 +60,10 @@ pub const STALE_SECONDS: i64 = 900;
 pub const MAX_QUEUED_BUILDS: usize = 32;
 /// `build_image` runs at most 30 min; the agent waits a little longer.
 pub const BUILD_TIMEOUT: Duration = Duration::from_secs(1_800 + 60);
+/// agent-protocol.md 8 (D-066 #5): how often the agent asks the runner's
+/// `diagnose` check `buildkit_apparmor`.
+pub const BUILDKIT_CHECK_EVERY: Duration = Duration::from_secs(60);
+const BUILDKIT_CHECK_TIMEOUT: Duration = Duration::from_secs(10);
 
 /// Everything the webhook path needs.
 #[derive(Clone)]
@@ -166,9 +171,58 @@ impl Hooks {
     }
 
     /// Whether on-server builds look possible (`server_builds_enabled`):
-    /// false after a build failed with `buildkit_unavailable`.
+    /// false while the runner's `diagnose` check `buildkit_apparmor` reads
+    /// `absent`, or after a build failed with `buildkit_unavailable`.
     pub fn server_builds_enabled(&self) -> bool {
         self.buildkit_ok.load(std::sync::atomic::Ordering::SeqCst)
+    }
+
+    /// agent-protocol.md 8 (contracts v1.1.8/v1.1.9, D-066 #5, D-067 #6):
+    /// asks the runner's read-only `diagnose` for `buildkit_apparmor`;
+    /// `loaded` enables server builds, `absent` disables them (degraded
+    /// reason `buildkit_unavailable`). A refusal or a malformed answer (an
+    /// older runner) leaves the state as it is.
+    pub async fn check_buildkit(&self) {
+        let request = json!({"op": "diagnose", "payload": {"checks": ["buildkit_apparmor"]}});
+        let answer = self
+            .deps
+            .core
+            .runner
+            .exchange(request, BUILDKIT_CHECK_TIMEOUT)
+            .await;
+        let loaded = match answer {
+            Ok(result) if result["ok"] == true => match result["buildkit_apparmor"].as_str() {
+                Some("loaded") => true,
+                Some("absent") => false,
+                _ => return,
+            },
+            Ok(_) | Err(_) => return,
+        };
+        let was = self
+            .buildkit_ok
+            .swap(loaded, std::sync::atomic::Ordering::SeqCst);
+        if was != loaded {
+            if loaded {
+                tracing::info!("buildkit_apparmor loaded: server builds enabled");
+            } else {
+                tracing::warn!(
+                    "buildkit_apparmor absent: server builds need AppArmor with the \
+                     permanu-buildkitd profile loaded (buildkit_unavailable)"
+                );
+            }
+        }
+    }
+
+    /// Runs [`Self::check_buildkit`] at start and every 60 s.
+    pub fn spawn_buildkit_watch(self: &Arc<Self>) -> JoinHandle<()> {
+        let hooks = self.clone();
+        tokio::spawn(async move {
+            let mut tick = tokio::time::interval(BUILDKIT_CHECK_EVERY);
+            loop {
+                tick.tick().await;
+                hooks.check_buildkit().await;
+            }
+        })
     }
 
     /// `WebhookQueueStatus.webhook_host` (v2.1.3, D-061): the latest

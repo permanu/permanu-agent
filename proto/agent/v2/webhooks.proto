@@ -196,6 +196,10 @@ message ServerBuild {
   // v2.1.6 (contracts v1.1.6, D-064): also for a rule deploy cancelled after
   // its build, whose deploy operation ends CANCELLED; E_CANCELLED maps to
   // ERROR_REASON_CANCELLED everywhere, never to a failure.
+  // v2.1.9 (contracts v1.1.9, D-067): copied from the runner's build line
+  // failure_reason (signed-plan.md 14.5), so a server without the loaded
+  // permanu-buildkitd AppArmor profile reports "buildkit_unavailable" here;
+  // the engine raises the Inbox item "Builds need AppArmor on this server".
   // Empty otherwise. The engine copies it into Engine API
   // Deployment.failure_detail (failure_code "build").
   string failure_reason = 17;

@@ -1281,6 +1281,42 @@ async fn inputs_are_bound_and_take_the_composed_deploy_outcome() {
     h.stop().await;
 }
 
+/// v1.0.17 (D-067 #3): the reader outcome of a managed PostgreSQL
+/// activation (`reader_status`, `reader_reason` of `activate_release`'s
+/// `result`) is shown on the deploy's steps; a failed reader never fails the
+/// deploy.
+#[tokio::test]
+async fn activation_reader_status_is_shown_and_never_fails_the_deploy() {
+    let Some(owner) = TestSigner::load("owner") else {
+        eprintln!("skipped: docs keys.json not found");
+        return;
+    };
+    let h = Harness::start("deploy-reader", Some(&vector_trust())).await;
+    h.runner.op_extra.lock().unwrap().insert(
+        "activate_release".to_owned(),
+        json!({"reader_status": "failed", "reader_reason": "not_ready"}),
+    );
+    let reference = submit_ok(
+        &h,
+        fresh_deploy(
+            &owner,
+            "0000000000d9",
+            "AAAAAAAAAAAAAAAAAAAAAQ",
+            GENESIS_HEAD,
+        ),
+    )
+    .await;
+    wait_for_state(&h, &reference.operation_id, OperationState::Succeeded).await;
+    let lines = step_logs(&h, &reference.operation_id);
+    assert!(
+        lines
+            .iter()
+            .any(|l| l == "database reader permanu_reader: failed (not_ready)"),
+        "{lines:?}"
+    );
+    h.stop().await;
+}
+
 /// Every `StepLog` line recorded for an operation, including lines recorded
 /// after its `finished` event (which a WatchOperation replay stops at).
 fn step_logs(h: &Harness, operation_id: &str) -> Vec<String> {

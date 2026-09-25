@@ -181,6 +181,11 @@ pub struct FakeRunner {
     pub on_build: Mutex<Option<Box<dyn Fn() + Send>>>,
     /// The image digest a successful `build_image` reports.
     pub build_image_digest: Mutex<String>,
+    /// Extra fields of a bound op's successful wire `result`, per op (for
+    /// example `activate_release`'s `reader_status`, v1.0.17).
+    pub op_extra: Mutex<HashMap<String, Value>>,
+    /// What the read-only `diagnose` op answers (section 14.3).
+    pub diagnose_answer: Mutex<Value>,
     /// Actions a `cancel_execution` closed (v1.0.6, D-048).
     closed: Mutex<HashSet<(String, u32)>>,
     consumed: Mutex<HashSet<(String, u32)>>,
@@ -211,6 +216,7 @@ fn request_shape_ok(request: &Value) -> bool {
                 | "container_logs_follow"
                 | "webhook_verify"
                 | "build_image"
+                | "diagnose"
         )
     );
     map.keys()
@@ -409,6 +415,7 @@ impl FakeRunner {
             "container_logs" => self.container_logs(&request["payload"]),
             "webhook_verify" => self.webhook_verify(&request["payload"]),
             "build_image" => self.build_image(&request["payload"]),
+            "diagnose" => self.diagnose_answer.lock().unwrap().clone(),
             op => self.bound_op(op, &request).await,
         }
     }
@@ -764,7 +771,13 @@ impl FakeRunner {
                 self.result(plan_id, digest, index, outcome);
             }
         }
-        json!({"ok": true})
+        let mut answer = json!({"ok": true});
+        if let Some(Value::Object(extra)) = self.op_extra.lock().unwrap().get(op) {
+            for (key, value) in extra {
+                answer[key] = value.clone();
+            }
+        }
+        answer
     }
 
     pub fn shell_lines(&self) -> Vec<Value> {
@@ -1093,6 +1106,10 @@ impl Harness {
             shell_session_lines: Mutex::new(Vec::new()),
             shell_limit: AtomicBool::new(false),
             build_image_digest: Mutex::new("e".repeat(64)),
+            op_extra: Mutex::new(HashMap::new()),
+            diagnose_answer: Mutex::new(
+                json!({"ok": true, "op": "diagnose", "buildkit_apparmor": "loaded", "otlp_nft": "absent"}),
+            ),
             closed: Mutex::new(HashSet::new()),
             consumed: Mutex::new(HashSet::new()),
             ops: Mutex::new(HashMap::new()),
