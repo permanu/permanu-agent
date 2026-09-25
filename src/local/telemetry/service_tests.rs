@@ -806,3 +806,133 @@ async fn rate_counts_first_samples_and_reaches_back_to_the_previous_sample() {
     );
     h.stop().await;
 }
+
+/// v2.1.9 (D-067 #4, QA_M2 run 4 X1): every batch carries the step the
+/// agent used (`step_seconds`), the requested step rounded up to a multiple
+/// of 10 s, so `Σ rate × step_seconds` is the real count.
+#[tokio::test]
+async fn metric_batches_carry_the_step_used() {
+    let h = harness("svc-step").await;
+    let t = h.telemetry.clone().unwrap();
+    let mut client = TelemetryServiceClient::new(h.channel.clone());
+    let base = now() - 300 * NANOS;
+    let base = base - base.rem_euclid(60 * NANOS);
+    for (offset, value) in [(5, 40.0), (25, 65.0), (70, 80.0)] {
+        t.otlp_state.metric(
+            &t,
+            Producer::System,
+            base + offset * NANOS,
+            MetricSample {
+                name: "dwaar.requests".into(),
+                kind: metric_descriptor::Kind::Counter as i32,
+                source: MetricSource::Proxy as i32,
+                unit: "1".into(),
+                labels: [("route".to_owned(), "a".to_owned())].into(),
+                value,
+                cumulative: true,
+                ..Default::default()
+            },
+        );
+    }
+    t.sync().await;
+    // The engine asks for 12 s (1 h / 300); the agent uses 20 s.
+    let query = MetricQuery {
+        name: "dwaar.requests".into(),
+        range: Some(TimeRange {
+            start: Some(super::ingest::timestamp_of(base)),
+            end: Some(super::ingest::timestamp_of(base + 120 * NANOS)),
+        }),
+        step: Some(prost_types::Duration {
+            seconds: 12,
+            nanos: 0,
+        }),
+        aggregation: MetricAggregation::Rate as i32,
+        ..Default::default()
+    };
+    let mut stream = client.query_metrics(query).await.unwrap().into_inner();
+    let mut steps = Vec::new();
+    let mut count = 0.0;
+    while let Some(frame) = stream.message().await.unwrap() {
+        if let Some(metric_query_response::Frame::Batch(b)) = frame.frame {
+            steps.push(b.step_seconds);
+            for s in b.series {
+                count += s
+                    .points
+                    .iter()
+                    .map(|p| p.value * f64::from(b.step_seconds))
+                    .sum::<f64>();
+            }
+        }
+    }
+    assert_eq!(steps, vec![20]);
+    assert!((count - 80.0).abs() < 1e-9, "{count}");
+    h.stop().await;
+}
+
+/// The backward scan for a series' previous sample is bounded: it reaches
+/// back at most `PREVIOUS_REACH` (2 h) before the window, so a series with
+/// no sample there (a new one) never scans the whole store; the built-in
+/// counters re-emit every live series at least hourly, so a live series
+/// always has one within reach.
+#[tokio::test]
+async fn rate_reaches_back_at_most_two_hours() {
+    let h = harness("svc-rate-reach").await;
+    let t = h.telemetry.clone().unwrap();
+    let mut client = TelemetryServiceClient::new(h.channel.clone());
+    let base = now() - 300 * NANOS;
+    let base = base - base.rem_euclid(60 * NANOS);
+    for (offset, route, value) in [
+        // 90 minutes back: within reach, the increase is 3.
+        (-5_400, "near", 100.0),
+        (65, "near", 103.0),
+        // 3 hours back: past reach, so the series counts from zero.
+        (-10_800, "far", 100.0),
+        (65, "far", 103.0),
+    ] {
+        t.otlp_state.metric(
+            &t,
+            Producer::System,
+            base + offset * NANOS,
+            MetricSample {
+                name: "dwaar.requests".into(),
+                kind: metric_descriptor::Kind::Counter as i32,
+                source: MetricSource::Proxy as i32,
+                unit: "1".into(),
+                labels: [("route".to_owned(), route.to_owned())].into(),
+                value,
+                cumulative: true,
+                ..Default::default()
+            },
+        );
+    }
+    t.sync().await;
+    let query = MetricQuery {
+        name: "dwaar.requests".into(),
+        range: Some(TimeRange {
+            start: Some(super::ingest::timestamp_of(base)),
+            end: Some(super::ingest::timestamp_of(base + 120 * NANOS)),
+        }),
+        step: Some(prost_types::Duration {
+            seconds: 60,
+            nanos: 0,
+        }),
+        aggregation: MetricAggregation::Rate as i32,
+        ..Default::default()
+    };
+    let mut stream = client.query_metrics(query).await.unwrap().into_inner();
+    let mut got: Vec<(String, f64)> = Vec::new();
+    while let Some(frame) = stream.message().await.unwrap() {
+        if let Some(metric_query_response::Frame::Batch(b)) = frame.frame {
+            for s in b.series {
+                let total: f64 = s.points.iter().map(|p| p.value * 60.0).sum();
+                got.push((s.labels["route"].clone(), total.round()));
+            }
+        }
+    }
+    got.sort_by(|a, b| a.0.cmp(&b.0));
+    assert_eq!(
+        got,
+        vec![("far".to_owned(), 103.0), ("near".to_owned(), 3.0)]
+    );
+    h.stop().await;
+}

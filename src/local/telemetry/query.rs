@@ -54,6 +54,12 @@ const MAX_POINTS: usize = 11_000;
 const RAW_WINDOW_NANOS: i64 = 48 * 3600 * NANOS;
 const ROLLUP_STEP_NANOS: i64 = 300 * NANOS;
 const LATENESS: Duration = Duration::from_secs(10);
+/// How far before a RATE window the scan for a series' previous sample
+/// reaches (QA_M2 run 4): a series with no sample there counts from zero,
+/// so a brand-new series never scans the whole store. Built-in counters
+/// re-emit every live series hourly (dwaar_metrics `KEYFRAME_EVERY`), OTLP
+/// exporters every export interval.
+const PREVIOUS_REACH_NANOS: i64 = 2 * 3600 * NANOS;
 const LIST_CACHE: Duration = Duration::from_secs(30);
 
 pub type BoxStream<T> = Pin<Box<dyn Stream<Item = Result<T, Status>> + Send>>;
@@ -889,9 +895,12 @@ impl StoreQueries {
                         kind, "", message, 0,
                     ))),
                 };
+                // v2.1.9 (D-067 #4): every batch names the step used.
+                let step_seconds = u32::try_from(plan.step / NANOS).unwrap_or(u32::MAX);
                 let batch = |series: Vec<MetricSeries>| MetricQueryResponse {
                     frame: Some(metric_query_response::Frame::Batch(MetricSeriesBatch {
                         series,
+                        step_seconds,
                     })),
                 };
                 for chunk in series.chunks(50) {
@@ -1568,9 +1577,10 @@ fn evaluate(
 }
 
 /// Fills `prev` with the last stored sample before `before` of every raw
-/// series in `raw` that has none yet, scanning backwards (bounded by the
-/// metrics retention) and stopping once every such series has one. A series
-/// with no earlier sample is new: its first sample counts from zero.
+/// series in `raw` that has none yet, scanning backwards at most
+/// [`PREVIOUS_REACH_NANOS`] (segments outside it are skipped unread) and
+/// stopping once every such series has one. A series with no earlier sample
+/// within reach is new: its first sample counts from zero.
 fn previous_samples(
     snapshot: &Snapshot,
     plan: &MetricPlan,
@@ -1584,6 +1594,7 @@ fn previous_samples(
     }
     let spec = ScanSpec {
         direction: Direction::Backward,
+        from_ts: before.saturating_sub(PREVIOUS_REACH_NANOS),
         to_ts: before - 1,
         ..Default::default()
     };

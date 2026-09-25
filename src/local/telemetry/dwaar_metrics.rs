@@ -13,7 +13,9 @@
 //! (contracts v1.1.5, D-063 #12) with at most 200 templates per service per
 //! metrics retention period, any further one `other`. Counters and the
 //! histogram are cumulative since the agent started; a series is emitted
-//! when it changed, at most once per [`EMIT_EVERY`].
+//! when it changed, at most once per [`EMIT_EVERY`], and again once
+//! [`KEYFRAME_EVERY`] passed without a change, so a RATE query finds a live
+//! series' previous sample within its bounded reach (query.rs).
 
 use std::collections::{BTreeMap, HashMap, HashSet};
 
@@ -28,6 +30,9 @@ pub const DURATION: &str = "dwaar.request.duration";
 /// Series are emitted at most this often (seconds), like the other built-in
 /// metrics.
 pub const EMIT_EVERY: i64 = 10;
+/// An unchanged series is emitted again this often (seconds); below the
+/// RATE query's 2 h reach for a series' previous sample.
+pub const KEYFRAME_EVERY: i64 = 3_600;
 /// agent-protocol.md 9.5: distinct `route_path` templates per service.
 pub const MAX_TEMPLATES_PER_SERVICE: usize = 200;
 /// The template of every path past the per-service cap; never changes.
@@ -107,6 +112,24 @@ struct Series {
     sum_ms: f64,
     buckets: Vec<u64>,
     dirty: bool,
+    /// When the series was last emitted.
+    emitted_at: Option<i64>,
+}
+
+impl Series {
+    /// Whether the series is emitted at `now_sec`: it changed, or its
+    /// keyframe is due. Marks it emitted.
+    fn take_due(&mut self, now_sec: i64) -> bool {
+        let due = self.dirty
+            || self
+                .emitted_at
+                .is_some_and(|at| now_sec - at >= KEYFRAME_EVERY);
+        if due {
+            self.dirty = false;
+            self.emitted_at = Some(now_sec);
+        }
+        due
+    }
 }
 
 /// The cumulative `dwaar.*` series of this agent.
@@ -198,8 +221,10 @@ impl DwaarMetrics {
         }
         self.last_emit = Some(now_sec);
         let mut out = Vec::new();
-        for (labels, series) in self.requests.iter_mut().filter(|(_, s)| s.dirty) {
-            series.dirty = false;
+        for (labels, series) in self.requests.iter_mut() {
+            if !series.take_due(now_sec) {
+                continue;
+            }
             out.push(sample(
                 REQUESTS,
                 metric_descriptor::Kind::Counter,
@@ -218,8 +243,10 @@ impl DwaarMetrics {
             histogram.counts.clone_from(&series.buckets);
             out.push(histogram);
         }
-        for (labels, series) in self.errors.iter_mut().filter(|(_, s)| s.dirty) {
-            series.dirty = false;
+        for (labels, series) in self.errors.iter_mut() {
+            if !series.take_due(now_sec) {
+                continue;
+            }
             out.push(sample(
                 REQUESTS_5XX,
                 metric_descriptor::Kind::Counter,
@@ -391,5 +418,44 @@ mod tests {
             later.iter().find(|s| s.name == REQUESTS).unwrap().value,
             3.0
         );
+    }
+
+    /// An unchanged series is emitted again once [`KEYFRAME_EVERY`] passed
+    /// since it was last emitted, so a RATE query always finds its previous
+    /// sample within the bounded reach (query.rs `PREVIOUS_REACH`).
+    #[test]
+    fn unchanged_series_are_emitted_again_hourly() {
+        let mut m = DwaarMetrics::default();
+        m.record(1, &access("/", 200, 1_000), &owner(), SERVER);
+        m.record(1, &access("/", 503, 1_000), &owner(), SERVER);
+        let first = m.take_samples(5, false);
+        assert_eq!(first.len(), 5);
+        assert!(m.take_samples(5 + KEYFRAME_EVERY - 10, false).is_empty());
+        let again = m.take_samples(5 + KEYFRAME_EVERY, false);
+        assert_eq!(again.len(), 5, "{again:?}");
+        assert_eq!(
+            again
+                .iter()
+                .filter(|s| s.name == REQUESTS)
+                .map(|s| s.value)
+                .sum::<f64>(),
+            2.0
+        );
+        // A series that changed since is emitted by the change, and its
+        // keyframe clock restarts.
+        m.record(
+            5 + KEYFRAME_EVERY + 20,
+            &access("/", 200, 1_000),
+            &owner(),
+            SERVER,
+        );
+        let changed = m.take_samples(5 + KEYFRAME_EVERY + 30, false);
+        assert_eq!(changed.len(), 2);
+        assert!(m
+            .take_samples(5 + 2 * KEYFRAME_EVERY + 10, false)
+            .iter()
+            .all(|s| s.labels.get("status_class").is_none_or(|c| c != "2xx")));
+        assert_eq!(m.take_samples(5 + 2 * KEYFRAME_EVERY + 40, false).len(), 2);
+        const { assert!(KEYFRAME_EVERY < 2 * 3_600) };
     }
 }
