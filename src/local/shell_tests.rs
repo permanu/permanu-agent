@@ -295,6 +295,8 @@ async fn the_fifth_concurrent_shell_is_refused_before_admission() {
         status.metadata().get("permanu-error-reason").unwrap(),
         "ERROR_REASON_LIMIT_EXCEEDED"
     );
+    // contracts v1.1.10 (D-068 #6): the refusal names its limit.
+    assert_eq!(status.message(), "at most 4 concurrent shells");
     assert_eq!(h.core.store.admissions_after(0, 10).unwrap().len(), 4);
     // One session ends: its slot is free again.
     let mut first = sessions.remove(0);
@@ -400,6 +402,8 @@ async fn the_runners_shell_limit_is_resource_exhausted() {
         status.metadata().get("permanu-error-reason").unwrap(),
         "ERROR_REASON_LIMIT_EXCEEDED"
     );
+    // contracts v1.1.10 (D-068 #6): the runner's refusal names the limit.
+    assert_eq!(status.message(), "at most 4 concurrent shells");
     h.stop().await;
 }
 
@@ -510,7 +514,8 @@ async fn the_21st_host_shell_open_in_an_hour_is_rate_limited() {
         status.metadata().get("permanu-error-reason").unwrap(),
         "ERROR_REASON_RATE_LIMITED"
     );
-    assert!(status.message().contains("20 host shell opens per hour"));
+    // contracts v1.1.10 (D-068 #6): the refusal names its limit.
+    assert_eq!(status.message(), "at most 20 host shell opens per hour");
     assert!(h.core.store.admissions_after(0, 10).unwrap().is_empty());
     // The plan limit is untouched by host shell opens.
     for _ in 0..10 {

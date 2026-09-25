@@ -191,6 +191,9 @@ pub struct FakeRunner {
     consumed: Mutex<HashSet<(String, u32)>>,
     ops: Mutex<HashMap<(String, u32), Vec<String>>>,
     finished: Mutex<HashSet<(String, u32)>>,
+    /// Actions whose `result` line is `succeeded` (v1.0.18, D-068: the one
+    /// state in which a closed `deploy` still accepts `prune_releases`).
+    succeeded: Mutex<HashSet<(String, u32)>>,
     release: tokio::sync::Notify,
     seq: AtomicU64,
     clock: Arc<FixedClock>,
@@ -312,6 +315,12 @@ impl FakeRunner {
             .unwrap()
             .insert((plan_id.to_owned(), index));
         if first {
+            if fields["outcome"] == "succeeded" {
+                self.succeeded
+                    .lock()
+                    .unwrap()
+                    .insert((plan_id.to_owned(), index));
+            }
             self.append("result", plan_id, digest, index, fields);
         }
         first
@@ -689,7 +698,11 @@ impl FakeRunner {
         if self.closed.lock().unwrap().contains(&key) {
             return refuse("E_PLAN_CONSUMED", "closed by cancel_execution");
         }
-        if self.finished.lock().unwrap().contains(&key) {
+        // v1.0.18 (D-068): `prune_releases` is the one op a closed action
+        // accepts, and only after a `succeeded` result.
+        let prune_after_success =
+            op == "prune_releases" && self.succeeded.lock().unwrap().contains(&key);
+        if self.finished.lock().unwrap().contains(&key) && !prune_after_success {
             return refuse("E_PLAN_WINDOW", "action finished");
         }
         self.append("op", plan_id, digest, index, json!({"op": op}));
@@ -1114,6 +1127,7 @@ impl Harness {
             consumed: Mutex::new(HashSet::new()),
             ops: Mutex::new(HashMap::new()),
             finished: Mutex::new(HashSet::new()),
+            succeeded: Mutex::new(HashSet::new()),
             release: tokio::sync::Notify::new(),
             seq: AtomicU64::new(0),
             clock: clock.clone(),

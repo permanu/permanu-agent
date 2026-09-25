@@ -24,6 +24,7 @@ pub mod presence;
 pub mod runner;
 pub mod sched;
 pub mod shell;
+pub mod snapshot;
 pub mod socket;
 pub mod status;
 pub mod telemetry;
@@ -405,6 +406,8 @@ fn capabilities(
 
 pub struct StateSvc {
     probe: Arc<dyn HostProbe>,
+    /// contracts v1.1.10 (D-068 #5): `GetStateSnapshot`.
+    snapshots: snapshot::Snapshots,
 }
 
 #[tonic::async_trait]
@@ -467,11 +470,15 @@ impl StateService for StateSvc {
         }))
     }
 
+    /// contracts v1.1.10 (D-068 #5): served by every agent that advertises
+    /// `database.reader.v1`, with `ServiceState.db_reader`.
     async fn get_state_snapshot(
         &self,
-        _request: Request<GetStateSnapshotRequest>,
+        request: Request<GetStateSnapshotRequest>,
     ) -> Result<Response<StateSnapshot>, Status> {
-        Err(capability_missing())
+        log_peer(&request, "GetStateSnapshot");
+        let scope = request.into_inner().scope.unwrap_or_default();
+        Ok(Response::new(self.snapshots.snapshot(scope).await?))
     }
 }
 
@@ -567,14 +574,33 @@ impl LocalServer {
         })
         .max_decoding_message_size(MAX_MESSAGE_BYTES)
         .max_encoding_message_size(MAX_MESSAGE_BYTES);
-        let state_svc = StateServiceServer::new(StateSvc { probe: self.probe })
-            .max_decoding_message_size(MAX_MESSAGE_BYTES)
-            .max_encoding_message_size(MAX_MESSAGE_BYTES);
+        // D-068 #5: EnsureReader answers feed GetStateSnapshot's reader record.
+        let readers = Arc::new(database::ReaderRecords::default());
+        let trust = self.core.trust.clone();
+        let snapshots = snapshot::Snapshots {
+            store: self.core.store.clone(),
+            runner: self.core.runner.clone(),
+            events: self.core.events.clone(),
+            readers: readers.clone(),
+            clock: self.core.clock.clone(),
+            consumed_log: self.core.consumed_log.clone(),
+            consumed_log_owner: self.core.consumed_log_owner,
+            server_id: Arc::new(move || match trust.load() {
+                TrustState::Valid(store) => store.server_id,
+                _ => String::new(),
+            }),
+        };
+        let state_svc = StateServiceServer::new(StateSvc {
+            probe: self.probe,
+            snapshots,
+        })
+        .max_decoding_message_size(MAX_MESSAGE_BYTES)
+        .max_encoding_message_size(MAX_MESSAGE_BYTES);
         // v2.1.6 (D-064 #1): database rows over the runner's `db_query`.
-        let database_svc = DatabaseServiceServer::new(database::DatabaseSvc::new(
-            self.core.runner.clone(),
-            self.core.store.clone(),
-        ))
+        let database_svc = DatabaseServiceServer::new(
+            database::DatabaseSvc::new(self.core.runner.clone(), self.core.store.clone())
+                .with_readers(readers),
+        )
         .max_decoding_message_size(MAX_MESSAGE_BYTES)
         .max_encoding_message_size(MAX_MESSAGE_BYTES);
         let events = self.core.events.clone();
@@ -1581,16 +1607,16 @@ mod tests {
             telemetry_service_client::TelemetryServiceClient, ListMetricsRequest,
         };
 
+        // contracts v1.1.10 (D-068 #5): an agent that advertises
+        // `database.reader.v1` serves GetStateSnapshot (no service yet).
         let mut state = StateServiceClient::new(h.channel.clone());
-        let status = state
+        let snapshot = state
             .get_state_snapshot(GetStateSnapshotRequest::default())
             .await
-            .unwrap_err();
-        assert_eq!(status.code(), Code::Unimplemented);
-        assert_eq!(
-            reason(&status).as_deref(),
-            Some("ERROR_REASON_CAPABILITY_MISSING")
-        );
+            .unwrap()
+            .into_inner();
+        assert!(snapshot.services.is_empty());
+        assert!(!snapshot.resume_token.is_empty());
 
         let mut telemetry = TelemetryServiceClient::new(h.channel.clone());
         let status = telemetry

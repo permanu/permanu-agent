@@ -414,6 +414,18 @@ pub(crate) mod tests {
         plan_id
     }
 
+    /// Sets the deployment id of every action of an admitted plan (what
+    /// admission records for a `deploy`).
+    pub fn set_deployment(store: &AdmissionStore, plan_id: &str, deployment_id: &str) {
+        store
+            .lock()
+            .execute(
+                "UPDATE admission_actions SET deployment_id = ?2 WHERE plan_id = ?1",
+                params![plan_id, deployment_id],
+            )
+            .unwrap();
+    }
+
     /// Ends every action of an admitted plan with `outcome` (what the
     /// consumed-log reconciliation does).
     pub fn finish(store: &AdmissionStore, plan_id: &str, outcome: &str, at: &str) {

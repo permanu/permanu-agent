@@ -79,6 +79,13 @@ impl EventBus {
         self.live.subscribe()
     }
 
+    /// The token of the newest event: `Subscribe` from it delivers every
+    /// event published after this call (`GetStateSnapshot`).
+    pub fn resume_token(&self) -> String {
+        let ring = self.ring.lock().unwrap_or_else(|p| p.into_inner());
+        format!("{}.{}", self.boot, ring.next_seq - 1)
+    }
+
     pub fn publish(&self, kind: EventKind, scope: Scope, payload: event::Payload) {
         let mut ring = self.ring.lock().unwrap_or_else(|p| p.into_inner());
         let seq = ring.next_seq;
@@ -252,5 +259,21 @@ mod tests {
         assert!(bus.replay("otherboot.1").0.is_none());
         assert!(bus.replay(&format!("{}.99", bus.boot)).0.is_none());
         assert_eq!(bus.replay("").0.unwrap().len(), 0);
+    }
+
+    /// `GetStateSnapshot`'s token replays exactly the events after it, also
+    /// before the first event.
+    #[test]
+    fn the_snapshot_token_replays_every_later_event() {
+        let bus = EventBus::new();
+        let empty = bus.resume_token();
+        assert_eq!(bus.replay(&empty).0.unwrap().len(), 0);
+        bus.publish(EventKind::TrustChanged, Scope::default(), trust("a"));
+        let token = bus.resume_token();
+        bus.publish(EventKind::TrustChanged, Scope::default(), trust("b"));
+        let replay = bus.replay(&token).0.unwrap();
+        assert_eq!(replay.len(), 1);
+        assert_eq!(replay[0].seq, 2);
+        assert_eq!(bus.replay(&empty).0.unwrap().len(), 2);
     }
 }

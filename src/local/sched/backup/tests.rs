@@ -900,3 +900,63 @@ fn a_verified_empty_database_carries_the_no_tables_note() {
     );
     assert_eq!(long.note.len(), 128);
 }
+
+/// contracts v1.1.10 (D-068 #6): the note comes from the runner's result of
+/// every verification, scheduled (the wire `result`) or plan-bound (the
+/// consumed log's `run_result` line), and is kept on the recorded
+/// verification the engine maps into `Backup.verify_note`.
+#[tokio::test]
+async fn every_verification_records_the_runners_note() {
+    let checks = json!({"plaintext_digest": true, "archive_readable": true,
+        "restore_completed": true, "tables_present": true});
+
+    let f = Fixture::new("backup-verify-note-sched", "2026-09-27T03:00:00Z");
+    f.record(
+        1,
+        &[policy(PG, "0 3 * * *", json!("0 4 * * 0"))],
+        "succeeded",
+    );
+    let s = scheduler(&f);
+    s.put_artifact(&BackupArtifact {
+        id: BACKUP_A.to_owned(),
+        policy_id: PG.to_owned(),
+        ..Default::default()
+    });
+    tick_at(&f, &s, "2026-09-27T03:59:55Z").await;
+    f.runner.answer(
+        "backup_verify",
+        json!({"outcome": null, "run_outcome": "succeeded", "backup_id": BACKUP_A,
+               "checks": checks, "verified_at": "2026-09-27T04:00:04Z", "note": "no tables"}),
+    );
+    tick_at(&f, &s, "2026-09-27T04:00:05Z").await;
+    let scheduled = verifications(&f);
+    assert_eq!(scheduled.len(), 1);
+    assert_eq!(
+        scheduled[0].status,
+        RestoreVerificationStatus::Passed as i32
+    );
+    assert_eq!(scheduled[0].note, "no tables");
+
+    let f = Fixture::new("backup-verify-note-plan", "2026-09-23T10:00:00Z");
+    f.record(1, &[policy(PG, "0 3 * * *", Value::Null)], "succeeded");
+    let s = scheduler(&f);
+    s.put_artifact(&BackupArtifact {
+        id: BACKUP_A.to_owned(),
+        policy_id: PG.to_owned(),
+        created_at: Some(pts(1)),
+        ..Default::default()
+    });
+    let plan = f.record(
+        2,
+        &[json!({"kind": "backup.verify", "params": {"resource_id": PG, "backup_id": BACKUP_A}})],
+        "succeeded",
+    );
+    let mut line = verify_line(&plan, checks, json!("2026-09-23T10:00:29Z"));
+    line["note"] = json!("no tables");
+    f.append_consumed(&line);
+    tick_at(&f, &s, "2026-09-23T10:01:00Z").await;
+    let manual = verifications(&f);
+    assert_eq!(manual.len(), 1);
+    assert_eq!(manual[0].status, RestoreVerificationStatus::Passed as i32);
+    assert_eq!(manual[0].note, "no tables");
+}

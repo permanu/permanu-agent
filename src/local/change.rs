@@ -153,7 +153,7 @@ impl ChangeSvc {
             // D-067 #9: host shell opens have their own limit.
             Limit::HostShell => (
                 self.core.allow_host_shell(),
-                "at most 20 host shell opens per hour on this server",
+                "at most 20 host shell opens per hour",
             ),
         };
         if !allowed {

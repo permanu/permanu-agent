@@ -86,9 +86,38 @@ impl ServiceKinds for crate::admissions::AdmissionStore {
     }
 }
 
+/// contracts v1.1.10 (D-068 #5): the latest `EnsureReader` answer per
+/// database service (in memory), read by `GetStateSnapshot` next to the
+/// reader record of the activation.
+#[derive(Default)]
+pub struct ReaderRecords(Mutex<HashMap<String, DbReaderStatus>>);
+
+impl ReaderRecords {
+    pub fn get(&self, resource_id: &str) -> Option<DbReaderStatus> {
+        self.0
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .get(resource_id)
+            .cloned()
+    }
+
+    fn put(&self, resource_id: &str, status: DbReaderStatus) {
+        let mut records = self.0.lock().unwrap_or_else(|p| p.into_inner());
+        // One entry per database service of this server.
+        if records.len() < MAX_READER_RECORDS || records.contains_key(resource_id) {
+            records.insert(resource_id.to_owned(), status);
+        }
+    }
+}
+
+/// [`ReaderRecords`] kept at most.
+const MAX_READER_RECORDS: usize = 10_000;
+
 pub struct DatabaseSvc {
     pub runner: Arc<dyn Runner>,
     pub kinds: Arc<dyn ServiceKinds>,
+    /// The latest `EnsureReader` answer per service (D-068 #5).
+    pub readers: Arc<ReaderRecords>,
     agent: Arc<Semaphore>,
     resources: Mutex<HashMap<String, Arc<tokio::sync::Mutex<()>>>>,
     /// One `EnsureReader` per database at a time (a second waits).
@@ -116,11 +145,18 @@ impl DatabaseSvc {
         Self {
             runner,
             kinds,
+            readers: Arc::default(),
             agent: Arc::new(Semaphore::new(PER_AGENT)),
             resources: Mutex::new(HashMap::new()),
             ensuring: Mutex::new(HashMap::new()),
             wait,
         }
+    }
+
+    /// Shares the reader records with `GetStateSnapshot` (D-068 #5).
+    pub fn with_readers(mut self, readers: Arc<ReaderRecords>) -> Self {
+        self.readers = readers;
+        self
     }
 
     /// `NOT_FOUND` unless `resource_id` is a `database` service here.
@@ -559,6 +595,7 @@ impl DatabaseService for DatabaseSvc {
             .duration_since(std::time::UNIX_EPOCH)
             .map_or(0, |d| i64::try_from(d.as_secs()).unwrap_or(i64::MAX));
         let status = reader_status(&answer, now)?;
+        self.readers.put(&resource_id, status.clone());
         tracing::info!(
             %resource_id,
             status = status.status,
@@ -999,13 +1036,14 @@ mod tests {
                 "reader_status": "failed", "reader_reason": "sql_error:42501"}),
             false,
         );
-        let status = svc(runner)
-            .ensure_reader(ensure(DB))
-            .await
-            .unwrap()
-            .into_inner();
+        let svc = svc(runner);
+        let status = svc.ensure_reader(ensure(DB)).await.unwrap().into_inner();
         assert_eq!(status.status, db_reader_status::Status::Failed as i32);
         assert_eq!(status.reason, "sql_error:42501");
+        // contracts v1.1.10 (D-068 #5): the latest answer is the reader
+        // record GetStateSnapshot compares with the activation's.
+        assert_eq!(svc.readers.get(DB), Some(status));
+        assert_eq!(svc.readers.get(WEB), None);
     }
 
     /// v2.1.9: a resource that is not a database service here is

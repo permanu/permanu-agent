@@ -26,7 +26,7 @@
 //! under the agent's `CronRun`. Host-unit lines (`source: "system"`) go to
 //! [`super::journal`].
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
@@ -107,6 +107,12 @@ pub struct LogIngest {
     routes: Option<Arc<super::routes::RoutesMap>>,
     /// The `dwaar.*` series (agent-protocol.md 9.5, QA_M2 X1).
     dwaar: super::dwaar_metrics::DwaarMetrics,
+    /// QA_M2 run 5 X1: accesses to a host the route map did not name yet
+    /// (second, access), counted once a refresh names it, for up to
+    /// [`UNATTRIBUTED_SECS`].
+    unattributed: VecDeque<(i64, journal::Access)>,
+    /// The route map generation `unattributed` was last matched against.
+    unattributed_generation: u64,
     /// This server's id (`""` before the bootstrap), for `dwaar.*` labels.
     server_id: Option<ServerIdFn>,
     /// The last id read and when.
@@ -118,6 +124,11 @@ pub type ServerIdFn = Arc<dyn Fn() -> String + Send + Sync>;
 
 /// How long a read server id is reused.
 const SERVER_ID_EVERY: Duration = Duration::from_secs(60);
+/// QA_M2 run 5 X1: how long an access to an unknown route host waits for a
+/// `routes_map` refresh that names it (two refresh periods).
+const UNATTRIBUTED_SECS: i64 = 120;
+/// Accesses kept waiting at most (memory bound); the oldest go first.
+const MAX_UNATTRIBUTED: usize = 10_000;
 
 fn valid_container_id(id: &str) -> bool {
     !id.is_empty()
@@ -177,6 +188,8 @@ impl LogIngest {
             cron_runs: None,
             routes: None,
             dwaar: super::dwaar_metrics::DwaarMetrics::default(),
+            unattributed: VecDeque::new(),
+            unattributed_generation: 0,
             server_id: None,
             server_id_cache: (String::new(), None),
         };
@@ -406,6 +419,7 @@ impl LogIngest {
     /// under the service of its route host (D-060, D-063 #9), and the
     /// changed `dwaar.*` series (at most every 10 s).
     pub fn flush_rollups(&mut self, now_sec: i64) {
+        self.attribute_waiting(now_sec);
         for row in self.rollups.closed(now_sec) {
             let ts = row.bucket_start.map_or(now_sec, |t| t.seconds) * NANOS;
             let owner = row
@@ -438,6 +452,31 @@ impl LogIngest {
                 now_sec * NANOS,
                 sample,
             );
+        }
+    }
+
+    /// QA_M2 run 5 X1: after a refresh, the waiting accesses whose host the
+    /// map now names feed the `dwaar.*` series; accesses older than
+    /// [`UNATTRIBUTED_SECS`] are dropped (a host no route names).
+    fn attribute_waiting(&mut self, now_sec: i64) {
+        self.unattributed
+            .retain(|(sec, _)| now_sec.saturating_sub(*sec) <= UNATTRIBUTED_SECS);
+        let Some(routes) = self.routes.clone() else {
+            return;
+        };
+        let generation = routes.generation();
+        if self.unattributed.is_empty() || generation == self.unattributed_generation {
+            self.unattributed_generation = generation;
+            return;
+        }
+        self.unattributed_generation = generation;
+        let server_id = self.server_id(Instant::now());
+        let waiting = std::mem::take(&mut self.unattributed);
+        for (sec, access) in waiting {
+            match routes.owner(&access.host) {
+                Some(owner) => self.dwaar.record(sec, &access, &owner, &server_id),
+                None => self.unattributed.push_back((sec, access)),
+            }
         }
     }
 
@@ -485,6 +524,15 @@ impl LogIngest {
                     let server_id = self.server_id(now);
                     self.dwaar
                         .record(ts.div_euclid(NANOS), &access, owner, &server_id);
+                } else if let Some(routes) = self.routes.as_ref().filter(|r| !r.knows(&access.host))
+                {
+                    // QA_M2 run 5 X1: a route created since the last
+                    // refresh; counted once a refresh names its host.
+                    routes.unknown_host(&access.host);
+                    if self.unattributed.len() == MAX_UNATTRIBUTED {
+                        self.unattributed.pop_front();
+                    }
+                    self.unattributed.push_back((ts.div_euclid(NANOS), access));
                 }
             }
         }
@@ -1319,6 +1367,57 @@ pub(crate) mod tests {
             .find(|r| r.dimensions[0].value == "hooks.example.com")
             .unwrap();
         assert_eq!(other.service_id, "");
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    /// QA_M2 run 5 X1: requests to a route host the map does not name yet
+    /// (a route created seconds ago) are counted once a refresh names it,
+    /// not dropped.
+    #[tokio::test]
+    async fn a_new_routes_first_requests_are_counted_after_the_refresh() {
+        use super::super::records::{MetricSample, TAG_METRIC};
+        const SVC: &str = "01a0cdb5-3500-70c1-8000-000000000001";
+        const SERVER: &str = "01a0cdb5-3500-70a1-8000-000000000001";
+        let dir = temp_dir("ingest-dwaar-new-route");
+        let t = test_support::open(dir.join("telemetry"));
+        let runner = ScriptRunner::new(Vec::new());
+        let routes = Arc::new(super::super::routes::RoutesMap::default());
+        let mut ingest = LogIngest::new(t.clone(), runner, "host-1".into())
+            .with_routes(routes.clone())
+            .with_server_id(Arc::new(|| SERVER.to_owned()));
+        let now = Instant::now();
+        for i in 0..3 {
+            let mut line = system(
+                "dwaar.service",
+                6,
+                &format!("s=1;i={i}"),
+                r#"{"timestamp":"2026-09-23T10:00:05Z","request_id":"r1","method":"GET","path":"/","host":"new.example.com","status":200,"response_time_us":2500,"client_ip":"203.0.113.0","bytes_sent":10}"#,
+            );
+            line["at"] = json!("2026-09-23T10:00:05Z");
+            ingest.handle(&line, now).await;
+        }
+        routes.replace(
+            super::super::routes::parse_routes(&json!({"routes": [{"host": "new.example.com",
+                "service_id": SVC,
+                "project_id": "01a0cdb5-3500-70b1-8000-000000000001",
+                "environment_id": "01a0cdb5-3500-70b2-8000-000000000001",
+                "source": "default"}]}))
+            .unwrap(),
+        );
+        ingest.flush_rollups(timestamp("2026-09-23T10:00:30Z"));
+        t.sync().await;
+        let requests: Vec<MetricSample> = t
+            .snapshot(Kind::Metrics)
+            .scan(ScanSpec::default())
+            .filter_map(Result::ok)
+            .filter(|r| r.tag == TAG_METRIC)
+            .filter_map(|r| MetricSample::decode(r.payload.as_slice()).ok())
+            .filter(|s| s.name == "dwaar.requests")
+            .collect();
+        assert_eq!(requests.len(), 1, "{requests:?}");
+        assert_eq!(requests[0].labels["service_id"], SVC);
+        assert_eq!(requests[0].labels["route"], "new.example.com");
+        assert_eq!(requests[0].value, 3.0, "{requests:?}");
         std::fs::remove_dir_all(dir).unwrap();
     }
 

@@ -63,6 +63,20 @@ pub struct LastSpec {
     pub spec_digest_hex: String,
 }
 
+/// Services listed by [`AdmissionStore::service_specs_in`] at most.
+pub const MAX_SERVICE_SPECS: usize = 10_000;
+
+/// A service's last admitted spec and the signed scope of its admission.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ServiceSpecRow {
+    pub service_id: String,
+    pub project_id: String,
+    pub environment: String,
+    pub environment_id: String,
+    pub spec: Value,
+    pub spec_digest_hex: String,
+}
+
 fn row_of(r: &rusqlite::Row<'_>) -> rusqlite::Result<DeliveryRow> {
     let environments: String = r.get(8)?;
     Ok(DeliveryRow {
@@ -271,6 +285,64 @@ impl AdmissionStore {
         }))
     }
 
+    /// contracts v1.1.10 (D-068 #5): the last admitted spec of every service
+    /// whose admitting plan matches the scope (an empty filter matches all),
+    /// in `service_id` order; at most [`MAX_SERVICE_SPECS`].
+    pub fn service_specs_in(
+        &self,
+        project_id: &str,
+        environment: &str,
+        environment_id: &str,
+        service_id: &str,
+    ) -> Result<Vec<ServiceSpecRow>, StoreError> {
+        let conn = self.lock();
+        let mut statement = conn.prepare(
+            "SELECT c.service_id, a.project_id, a.environment, a.environment_id, s.spec_jcs, \
+             s.spec_digest_hex FROM service_specs c \
+             JOIN specs s ON s.spec_digest_hex = c.spec_digest_hex \
+             JOIN admissions a ON a.plan_id = c.plan_id \
+             WHERE (?1 = '' OR a.project_id = ?1) AND (?2 = '' OR a.environment = ?2) \
+             AND (?3 = '' OR a.environment_id = ?3) AND (?4 = '' OR c.service_id = ?4) \
+             ORDER BY c.service_id LIMIT ?5",
+        )?;
+        let rows = statement
+            .query_map(
+                params![
+                    project_id,
+                    environment,
+                    environment_id,
+                    service_id,
+                    MAX_SERVICE_SPECS as i64
+                ],
+                |r| {
+                    Ok((
+                        r.get::<_, String>(0)?,
+                        r.get::<_, String>(1)?,
+                        r.get::<_, String>(2)?,
+                        r.get::<_, String>(3)?,
+                        r.get::<_, String>(4)?,
+                        r.get::<_, String>(5)?,
+                    ))
+                },
+            )?
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(rows
+            .into_iter()
+            .filter_map(
+                |(service_id, project_id, environment, environment_id, text, digest)| {
+                    parse_strict(text.as_bytes(), 16 * 1024).map(|spec| ServiceSpecRow {
+                        service_id,
+                        project_id,
+                        environment,
+                        environment_id,
+                        spec,
+                        spec_digest_hex: digest,
+                    })
+                },
+            )
+            .collect())
+    }
+
     /// `(project_id, environment, environment_id)` of an admission.
     pub fn admission_signed_scope(
         &self,
@@ -395,6 +467,48 @@ mod tests {
     use super::*;
     use crate::admissions::definitions::tests::open;
     use crate::signed_plan::text::timestamp;
+
+    /// contracts v1.1.10 (D-068 #5): the last admitted spec of every service
+    /// in a scope, with the signed scope of the plan that admitted it.
+    #[test]
+    fn service_specs_are_listed_by_scope() {
+        use crate::admissions::definitions::tests::{record, ENV_ID, PROJECT};
+        const DB: &str = "01a0cdb5-3500-70c1-8000-0000000000d1";
+        const WEB: &str = "01a0cdb5-3500-70c1-8000-0000000000e1";
+        const OTHER: &str = "01a0cdb5-3500-70b1-8000-0000000000ff";
+        let (dir, store) = open("hooks-service-specs");
+        let plan = record(&store, 1, (PROJECT, "production", ENV_ID), &[], "succeeded");
+        let other = record(&store, 2, (OTHER, "staging", ENV_ID), &[], "succeeded");
+        seed::spec(
+            &store,
+            &serde_json::json!({"service_id": DB, "service_kind": "database"}),
+            &plan,
+        );
+        seed::spec(
+            &store,
+            &serde_json::json!({"service_id": WEB, "service_kind": "web"}),
+            &other,
+        );
+        let all = store.service_specs_in("", "", "", "").unwrap();
+        assert_eq!(all.len(), 2);
+        let scoped = store.service_specs_in(PROJECT, "", "", "").unwrap();
+        assert_eq!(scoped.len(), 1);
+        assert_eq!(scoped[0].service_id, DB);
+        assert_eq!(scoped[0].project_id, PROJECT);
+        assert_eq!(scoped[0].environment, "production");
+        assert_eq!(scoped[0].environment_id, ENV_ID);
+        assert_eq!(scoped[0].spec["service_kind"], "database");
+        assert_eq!(scoped[0].spec_digest_hex.len(), 64);
+        assert!(store
+            .service_specs_in(PROJECT, "", "", WEB)
+            .unwrap()
+            .is_empty());
+        assert_eq!(
+            store.service_specs_in("", "staging", "", "").unwrap().len(),
+            1
+        );
+        std::fs::remove_dir_all(dir).unwrap();
+    }
 
     fn delivery(id: &str, digest: &str, status: &str) -> DeliveryRow {
         DeliveryRow {
