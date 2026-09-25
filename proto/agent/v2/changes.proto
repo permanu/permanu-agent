@@ -167,6 +167,17 @@ message Operation {
 //   completes without a runner call, then rolled_back. Every step that
 //   started gets its completion before the action's final step, also after
 //   a runner restart (signed-plan.md 14.6).
+//   v2.1.11 (contracts v1.1.11, D-069): migrate_accounts, an operation-only
+//   step of server.accounts.migrate. The runner may stop permanu-agent
+//   while the op runs; it writes the action result before it starts the
+//   unit again, and the agent reconciles that result on the next start
+//   instead of sending the op again. prune_releases fails closed: an
+//   unreadable active or previous release record, a Docker daemon that is
+//   down, a spawn failure, or oversized output deletes nothing. A recreate
+//   whose candidate fails its health check, with the previous release
+//   running again, ends rolled_back (failure_code candidate_health); the
+//   agent records rollback_release done and does not call rollback_release
+//   after a hand-back whose state is rolled_back.
 //   succeeded, failed, rolled_back, cancelled, expired
 //                                                - final step of one action
 // Clients show an unknown name as a generic step.

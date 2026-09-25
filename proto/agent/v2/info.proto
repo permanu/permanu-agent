@@ -194,7 +194,10 @@ message AgentStatus {
   // Stable lowercase ids, sorted: "runner_unreachable", "telemetry_dropping",
   // "telemetry_ingest_paused", "telemetry_store_reset", "otlp_unbound",
   // "buildkit_unavailable" (v2.1.9, contracts v1.1.9, D-067: the runner's
-  // diagnose check buildkit_apparmor reads absent), "disk_pressure",
+  // diagnose check buildkit_apparmor reads absent),
+  // "account_ids" (v2.1.11, contracts v1.1.11, D-069: diagnose account_ids
+  // reads migrate — a Permanu account is off its fixed id, id-migration is
+  // non-empty, or /home/permanu-shell is not 900100:900100), "disk_pressure",
   // "clock_unsynced",
   // "trust_store_invalid", "release_keys_invalid",
   // "recovery_recipient_missing", "scheduler_behind". Clients show an unknown
