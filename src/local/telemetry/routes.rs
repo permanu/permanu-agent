@@ -2,15 +2,19 @@
 //! D-063 #9; agent-protocol.md 9.5, signed-plan.md 14.3 `routes_map`).
 //!
 //! The agent asks the runner's read-only op `routes_map` at start, every
-//! 60 s and after every finished plan that holds a `domain.*` or
-//! `webhook.host.set` action, and files each Dwaar `http` record under the
-//! `service_id`, `project_id` and `environment_id` of the route host it
-//! matched. A host the map does not name (the webhook host, an unknown
-//! host) is stored with no service ids. A failed refresh keeps the last map.
+//! 60 s, after every finished plan that holds a `domain.*`,
+//! `webhook.host.set`, `deploy` or `rollback` action, and (QA_M2 run 5 X1)
+//! when a Dwaar record names a host the map does not know; it files each
+//! Dwaar `http` record under the `service_id`, `project_id` and
+//! `environment_id` of the route host it matched. A host the map does not
+//! name (the webhook host, an unknown host) is stored with no service ids;
+//! its `dwaar.*` samples wait up to 120 s for a refresh that names it. A
+//! failed refresh keeps the last map.
 
 use std::collections::HashMap;
-use std::sync::{Arc, RwLock};
-use std::time::Duration;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, Mutex, RwLock};
+use std::time::{Duration, Instant};
 
 use serde_json::{json, Value};
 use tokio::sync::Notify;
@@ -24,6 +28,9 @@ use crate::signed_plan::text;
 const MAX_ROUTES: usize = 10_000;
 /// agent-protocol.md 9.5: refreshed every 60 s.
 const REFRESH_EVERY: Duration = Duration::from_secs(60);
+/// QA_M2 run 5 X1: a host the map does not name asks for a refresh at most
+/// this often.
+const UNKNOWN_HOST_EVERY: Duration = Duration::from_secs(5);
 
 /// The owner of one route host (ids are empty for the webhook host).
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -79,6 +86,10 @@ pub fn parse_routes(result: &Value) -> Option<HashMap<String, RouteOwner>> {
 pub struct RoutesMap {
     map: RwLock<HashMap<String, RouteOwner>>,
     nudge: Notify,
+    /// Bumped by every [`RoutesMap::replace`].
+    generation: AtomicU64,
+    /// When an unknown host last asked for a refresh.
+    unknown_nudged: Mutex<Option<Instant>>,
 }
 
 impl RoutesMap {
@@ -93,8 +104,42 @@ impl RoutesMap {
             .cloned()
     }
 
+    /// Whether the map names `host` (any case), with or without a service.
+    pub fn knows(&self, host: &str) -> bool {
+        self.map
+            .read()
+            .unwrap_or_else(|p| p.into_inner())
+            .contains_key(&host.to_ascii_lowercase())
+    }
+
     pub fn replace(&self, map: HashMap<String, RouteOwner>) {
         *self.map.write().unwrap_or_else(|p| p.into_inner()) = map;
+        self.generation.fetch_add(1, Ordering::SeqCst);
+    }
+
+    /// Changes with every refresh that replaced the map.
+    pub fn generation(&self) -> u64 {
+        self.generation.load(Ordering::SeqCst)
+    }
+
+    /// QA_M2 run 5 X1: a Dwaar record named `host`, which the map may not
+    /// know yet (a route created since the last refresh). Asks for a refresh
+    /// when the map does not name the host, at most once per
+    /// [`UNKNOWN_HOST_EVERY`]; true when it asked.
+    pub fn unknown_host(&self, host: &str) -> bool {
+        if self.knows(host) {
+            return false;
+        }
+        let mut last = self
+            .unknown_nudged
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
+        if last.is_some_and(|at| at.elapsed() < UNKNOWN_HOST_EVERY) {
+            return false;
+        }
+        *last = Some(Instant::now());
+        self.nudge();
+        true
     }
 
     /// One `routes_map` call; the map is kept when it fails.
@@ -129,11 +174,14 @@ impl RoutesMap {
     }
 }
 
-/// Whether a finished plan's actions can change the routes.
+/// Whether a finished plan's actions can change the routes: a domain, the
+/// webhook host, or (QA_M2 run 5 X1) a release whose `ServiceSpec.routes`
+/// Dwaar now serves (`deploy`, `rollback`).
 pub fn changes_routes(actions: &[String]) -> bool {
-    actions
-        .iter()
-        .any(|kind| kind.starts_with("domain.") || kind == "webhook.host.set")
+    actions.iter().any(|kind| {
+        kind.starts_with("domain.")
+            || matches!(kind.as_str(), "webhook.host.set" | "deploy" | "rollback")
+    })
 }
 
 #[cfg(test)]
@@ -224,6 +272,30 @@ mod tests {
         assert_eq!(routes.owner("shop.example.com").unwrap().source, "default");
         assert!(changes_routes(&["deploy".into(), "domain.add".into()]));
         assert!(changes_routes(&["webhook.host.set".into()]));
-        assert!(!changes_routes(&["deploy".into()]));
+        // QA_M2 run 5 X1: a deploy or rollback activates a release whose
+        // `ServiceSpec.routes` (default and custom hosts) Dwaar serves.
+        assert!(changes_routes(&["deploy".into()]));
+        assert!(changes_routes(&["rollback".into()]));
+        assert!(!changes_routes(&["cron.run".into()]));
+    }
+
+    /// QA_M2 run 5 X1: a Dwaar record for a host the map does not name asks
+    /// for a refresh, at most once per window; a known host (the webhook
+    /// host names no service) never does. Every replace is a new generation.
+    #[test]
+    fn an_unknown_host_nudges_a_refresh_at_most_once_per_window() {
+        let routes = RoutesMap::default();
+        let first = routes.generation();
+        routes.replace(
+            parse_routes(
+                &json!({"routes": [{"host": "hooks.example.com", "service_id": null,
+                "project_id": null, "environment_id": null, "source": "webhook"}]}),
+            )
+            .unwrap(),
+        );
+        assert_ne!(routes.generation(), first);
+        assert!(!routes.unknown_host("hooks.example.com"));
+        assert!(routes.unknown_host("New.example.com"));
+        assert!(!routes.unknown_host("other.example.com"));
     }
 }
