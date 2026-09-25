@@ -989,6 +989,10 @@ async fn accept_checked(
 
 fn serve_http(listener: TcpListener, receiver: Receiver, gate: Gate) -> JoinHandle<()> {
     tokio::spawn(async move {
+        // D-066 #6 (QA_M2 run 3 O1): hyper's header-read timer also runs
+        // while a kept-alive connection waits for its next request, so it is
+        // the idle time (30 s), never shorter.
+        let header_read = gate.idle;
         while let Some((stream, peer)) = accept_checked(&listener, &gate, None).await {
             let receiver = receiver.clone();
             let state = stream.state.clone();
@@ -1004,7 +1008,7 @@ fn serve_http(listener: TcpListener, receiver: Receiver, gate: Gate) -> JoinHand
                 });
                 let _ = hyper::server::conn::http1::Builder::new()
                     .timer(TokioTimer::new())
-                    .header_read_timeout(Duration::from_secs(10))
+                    .header_read_timeout(header_read)
                     .serve_connection(TokioIo::new(stream), service)
                     .await;
             });
@@ -1482,6 +1486,31 @@ mod tests {
         let read = tokio::time::timeout(Duration::from_secs(3), stream.read_to_end(&mut buf)).await;
         assert!(matches!(read, Ok(Ok(_))), "{read:?}");
         assert!(String::from_utf8_lossy(&buf).starts_with("HTTP/1.1 415"));
+        bound.tasks.iter().for_each(JoinHandle::abort);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    /// D-066 #6 (QA_M2 run 3 O1): OTLP/HTTP has no header-read timeout
+    /// shorter than the idle time; a silent connection lives until it (the
+    /// old fixed 10 s closed it early). Real time: the bug was a fixed 10 s.
+    #[tokio::test]
+    async fn a_silent_http_connection_is_not_closed_before_the_idle_time() {
+        let dir = temp_dir("otlp-http-idle");
+        let t = test_support::open(dir.join("telemetry"));
+        let mut l = listeners(t.clone(), Some("test-br"), true);
+        l.limits.idle = Duration::from_secs(11);
+        l.limits.body_read = Duration::from_secs(11);
+        let bound = l.reconcile(None).await.expect("bound");
+        let listen = t.otlp();
+        let accepted = Instant::now();
+        let mut stream = TcpStream::connect(&listen.http_listen).await.unwrap();
+        let mut buf = Vec::new();
+        let early =
+            tokio::time::timeout(Duration::from_millis(10_500), stream.read_to_end(&mut buf)).await;
+        assert!(early.is_err(), "closed after {:?}", accepted.elapsed());
+        let read = tokio::time::timeout(Duration::from_secs(3), stream.read_to_end(&mut buf)).await;
+        assert!(matches!(read, Ok(Ok(_)) | Ok(Err(_))), "{read:?}");
+        assert!(accepted.elapsed() >= Duration::from_secs(11));
         bound.tasks.iter().for_each(JoinHandle::abort);
         std::fs::remove_dir_all(dir).unwrap();
     }

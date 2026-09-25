@@ -16,6 +16,16 @@ import "agent/v2/events.proto";
 // parameter. There is no SQL field. Rows are not redacted and may hold secret
 // values: the engine serves them only to the app (Engine API services.db.rows
 // / services.db.tables), never to an agent or MCP tool.
+//
+// v2.1.8 (contracts v1.1.8, D-066): the runner connects as the read-only role
+// permanu_reader (created by the service deploy; NOSUPERUSER NOCREATEROLE,
+// pg_read_all_data or explicit SELECT grants) with search_path pinned empty;
+// the schemas pg_catalog, information_schema, pg_toast and any pg_* and every
+// relation that is not a table (relkind r) or partitioned table (p) are
+// refused with INVALID_ARGUMENT + VALIDATION. The statement timeout (runner
+// error.reason "timeout") is DEADLINE_EXCEEDED with the message
+// "statement timeout"; a database with no reader role yet is
+// FAILED_PRECONDITION + EXEC_PRECONDITION.
 service DatabaseService {
   rpc ListTables(ListTablesRequest) returns (ListTablesResponse);
   rpc QueryRows(QueryRowsRequest) returns (QueryRowsResponse);
@@ -56,6 +66,10 @@ message DbFilter {
   string column = 1;
   Op op = 2;
   // Bound as a parameter and cast to the column's type.
+  // v2.1.8 (D-066): a number, bigint or numeric value travels as its decimal
+  // string in string_value (e.g. "9007199254740993", "12.50"), never as a
+  // float; number_value is never sent, and an agent refuses it with
+  // INVALID_ARGUMENT + VALIDATION.
   oneof value {
     bool null_value = 3;
     string string_value = 4;
@@ -83,7 +97,8 @@ message QueryRowsRequest {
   repeated string columns = 4;
   // At most 16, AND-ed.
   repeated DbFilter filters = 5;
-  // At most 4; empty = the primary key ascending, else no order.
+  // At most 4; empty = the primary key ascending, else (v2.1.8, D-066) the
+  // first column ascending; never heap order.
   repeated DbOrder order_by = 6;
   // 1-500 (0 = 100); the runner caps it at 500.
   uint32 limit = 7;
@@ -100,7 +115,10 @@ message DbColumn {
 message DbCell {
   // True for SQL NULL (text is then empty).
   bool is_null = 1;
-  // The value's PostgreSQL text form, cut at 4096 bytes.
+  // The value's PostgreSQL text form (every type; bigint and numeric as
+  // decimal strings). v2.1.8 (D-066): cut at 64 KiB on a UTF-8 boundary (it
+  // was 4096 bytes), with truncated true; the engine's JSON cell is null, the
+  // text, or {text, truncated: true}.
   string text = 2;
   bool truncated = 3;
 }
@@ -109,6 +127,9 @@ message DbRow {
   repeated DbCell cells = 1;
 }
 
+// v2.1.8 (D-066): at most 3 MiB encoded. The runner stops adding rows before
+// its 3 MiB budget and sets next_cursor, so a page can hold fewer than limit
+// rows while next_cursor is not empty; the agent never adds rows.
 message QueryRowsResponse {
   repeated DbColumn columns = 1;
   // At most limit (500) rows.

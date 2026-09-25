@@ -183,6 +183,10 @@ enum RestoreVerificationStatus {
   RESTORE_VERIFICATION_STATUS_RUNNING = 1;
   RESTORE_VERIFICATION_STATUS_PASSED = 2;
   RESTORE_VERIFICATION_STATUS_FAILED = 3;
+  // v2.1.8 (contracts v1.1.8, D-066, agent-protocol.md 10.2). An
+  // operation.cancel naming the verification's runner_run_id stopped it; the
+  // artifact's last_verification keeps its earlier value.
+  RESTORE_VERIFICATION_STATUS_CANCELLED = 4;
 }
 
 // RestoreVerification is the result of restoring an artifact into a

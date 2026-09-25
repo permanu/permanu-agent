@@ -719,3 +719,90 @@ async fn without_the_store_traces_and_run_ids_are_capability_missing() {
     assert_eq!(reason(&status), "ERROR_REASON_CAPABILITY_MISSING");
     h.stop().await;
 }
+
+/// QA_M2 run 3 X1: RATE on a counter takes each series' increase from its
+/// previous stored sample, wherever it lies, and counts a series' first
+/// sample (and the first after a reset) from zero, so a burst that fell in
+/// one emit window is never 0.
+#[tokio::test]
+async fn rate_counts_first_samples_and_reaches_back_to_the_previous_sample() {
+    let h = harness("svc-rate").await;
+    let t = h.telemetry.clone().unwrap();
+    let mut client = TelemetryServiceClient::new(h.channel.clone());
+    let base = now() - 300 * NANOS;
+    let base = base - base.rem_euclid(60 * NANOS);
+    let counter = |route: &str, value: f64, cumulative: bool| MetricSample {
+        name: "dwaar.requests".into(),
+        kind: metric_descriptor::Kind::Counter as i32,
+        source: MetricSource::Proxy as i32,
+        unit: "1".into(),
+        labels: [("route".to_owned(), route.to_owned())].into(),
+        value,
+        cumulative,
+        ..Default::default()
+    };
+    for (offset, route, value, cumulative) in [
+        // A new series: its first sample is a burst of 30.
+        (5, "burst", 30.0, true),
+        // Idle for 10 minutes (far before the one-step lookback), then 3 more.
+        (-600, "idle", 100.0, true),
+        (65, "idle", 103.0, true),
+        // Reset (agent restart): 4 since the restart.
+        (-10, "reset", 50.0, true),
+        (10, "reset", 4.0, true),
+        // Delta samples add up.
+        (20, "delta", 2.0, false),
+        (30, "delta", 3.0, false),
+    ] {
+        t.otlp_state.metric(
+            &t,
+            Producer::System,
+            base + offset * NANOS,
+            counter(route, value, cumulative),
+        );
+    }
+    t.sync().await;
+    let query = MetricQuery {
+        name: "dwaar.requests".into(),
+        range: Some(TimeRange {
+            start: Some(super::ingest::timestamp_of(base)),
+            end: Some(super::ingest::timestamp_of(base + 120 * NANOS)),
+        }),
+        step: Some(prost_types::Duration {
+            seconds: 60,
+            nanos: 0,
+        }),
+        aggregation: MetricAggregation::Rate as i32,
+        ..Default::default()
+    };
+    let mut stream = client.query_metrics(query).await.unwrap().into_inner();
+    let mut got: Vec<(String, Vec<(i64, f64)>)> = Vec::new();
+    while let Some(frame) = stream.message().await.unwrap() {
+        if let Some(metric_query_response::Frame::Batch(b)) = frame.frame {
+            for s in b.series {
+                let route = s.labels["route"].clone();
+                let points = s
+                    .points
+                    .iter()
+                    .map(|p| {
+                        let ts = p.timestamp.unwrap();
+                        ((ts.seconds * NANOS - base) / NANOS, p.value)
+                    })
+                    .collect();
+                got.push((route, points));
+            }
+        }
+    }
+    got.sort_by(|a, b| a.0.cmp(&b.0));
+    let per_minute = |n: f64| n / 60.0;
+    assert_eq!(
+        got,
+        vec![
+            ("burst".to_owned(), vec![(0, per_minute(30.0))]),
+            ("delta".to_owned(), vec![(0, per_minute(5.0))]),
+            ("idle".to_owned(), vec![(60, per_minute(3.0))]),
+            ("reset".to_owned(), vec![(0, per_minute(4.0))]),
+        ]
+    );
+    h.stop().await;
+}

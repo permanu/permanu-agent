@@ -1,5 +1,5 @@
 //! The vendored signed-plan vectors must be byte-identical to the frozen
-//! contract (`docs` tag `contracts-v1.1.7`, `contracts/vectors/signed-plan`).
+//! contract (`docs` tag `contracts-v1.1.8`, `contracts/vectors/signed-plan`).
 //! `keys.json` (public TEST private keys) is deliberately not vendored.
 
 use std::collections::BTreeSet;
@@ -24,13 +24,13 @@ fn vendored_vectors_match_the_contract_tag_checksums() {
         assert_eq!(
             hex::encode(Sha256::digest(&bytes)),
             expected,
-            "{name} differs from contracts-v1.1.7"
+            "{name} differs from contracts-v1.1.8"
         );
         listed.insert(name.to_owned());
     }
     assert_eq!(
         header.as_deref(),
-        Some("contracts-v1.1.7 876aed3b6d24af975c7b65f49e67f1c225da3634 contracts/vectors/signed-plan")
+        Some("contracts-v1.1.8 042aafe330bc5efa3daa7803e5bdf2d982d1f86b contracts/vectors/signed-plan")
     );
     let present: BTreeSet<String> = std::fs::read_dir(&directory)
         .expect("vector directory")
