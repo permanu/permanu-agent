@@ -149,6 +149,14 @@ fn alert_spec_error(kind: &str, params: &Value) -> Option<String> {
     super::sched::alert_spec::parse(text("alert_rule_id"), text("name"), text("spec")).err()
 }
 
+/// No runner op installs a handler that ignores SIGTERM. `migrate_accounts`
+/// in particular must let systemd end the agent while the call is in flight
+/// (signed-plan.md 14.4, D-069).
+fn op_ignores_sigterm(op: &str) -> bool {
+    const IGNORED: &[&str] = &[];
+    IGNORED.contains(&op)
+}
+
 fn exec_of(kind: &str, params: &Value) -> Exec {
     match kind {
         "server.add" | "rule.create" | "service.elevate" => Exec::Agent,
@@ -159,6 +167,9 @@ fn exec_of(kind: &str, params: &Value) -> Exec {
         "operation.cancel" => Exec::Ops(&["cancel_running", "cancel_execution"]),
         // v1.0.11 (D-061): the Dwaar webhook route.
         "webhook.host.set" => Exec::Ops(&["set_webhook_route"]),
+        // v1.0.19 (D-069): one call. The runner may SIGTERM the agent while
+        // it waits; do not ignore that signal (op_ignores_sigterm).
+        "server.accounts.migrate" => Exec::Ops(&["migrate_accounts"]),
         // v1.0.4 (D-040): agent.update runs its own op; install_artifact
         // serves component.update only. v1.0.7 (D-051): the runner's
         // stage_artifact_verify copies and verifies the staged set first.
@@ -314,6 +325,9 @@ struct StartFailure {
     /// The runner refused `prepare_release` with a contract code before it
     /// created anything (F-23: a refused input fold): no recovery runs.
     refused: bool,
+    /// `verify_health` or `activate_release` returned `state: rolled_back`:
+    /// the runner already restarted the previous release (D-068, D-069).
+    handed_back: bool,
 }
 
 /// v2.0.6: the `ErrorReason` for a step's `error_code`; a code outside the
@@ -1349,6 +1363,11 @@ impl ChangeCore {
             if done.iter().any(|d| d == op) {
                 continue;
             }
+            // Signed-plan.md 14.4: no op, including migrate_accounts, may
+            // ignore SIGTERM until the runner returns.
+            if op_ignores_sigterm(op) {
+                warn!(op, "runner op must not ignore SIGTERM");
+            }
             let timeout = if *op == "restart_release" {
                 self.timing.start_timeout
             } else {
@@ -1633,7 +1652,10 @@ impl ChangeCore {
     /// failed `verify_health`, the start timeout or a failed
     /// `activate_release` → `rollback_release` when the service has an
     /// earlier release, else `cleanup_candidate`. A failed recovery op ends
-    /// the action `failed` with failure code `recovery`.
+    /// the action `failed` with failure code `recovery`. A `verify_health`
+    /// or `activate_release` whose `state` is `rolled_back` (D-068, D-069)
+    /// already restarted the previous release: record `rollback_release`
+    /// succeeded without a runner call and end `rolled_back`.
     async fn run_deploy(
         &self,
         record: &AdmissionRecord,
@@ -1653,6 +1675,13 @@ impl ChangeCore {
                 if ran(op) {
                     continue;
                 }
+                // Hold from the health check on so a hand-back result line
+                // cannot emit the final step before the rollback step.
+                if op == "verify_health" {
+                    locked(&self.held)
+                        .entry(record.plan_id.clone())
+                        .or_default();
+                }
                 *locked(&current) = op;
                 if let Err(failure) = self
                     .op(record, plan, action, op, self.timing.start_timeout)
@@ -1665,6 +1694,8 @@ impl ChangeCore {
                         error_code: failure.code.clone(),
                         restorable: !prepare,
                         refused: prepare && refused_by_check(&failure),
+                        handed_back: op == "verify_health"
+                            && failure.state.as_deref() == Some("rolled_back"),
                     });
                 }
                 if self.is_cancelled(&record.plan_id) {
@@ -1696,13 +1727,28 @@ impl ChangeCore {
                     error_code: String::new(),
                     restorable: true,
                     refused: false,
+                    handed_back: false,
                 })
             }
         };
+        // D-069: the runner restarted the previous release inside
+        // verify_health. Do not send rollback_release, even if a cancel
+        // arrived: the action is already closed rolled_back.
+        if let Some(failure) = failure.as_ref().filter(|failure| failure.handed_back) {
+            let failure_code = failure.failure_code.clone();
+            let message = failure.message.clone();
+            let error_code = failure.error_code.clone();
+            self.record_handed_back_rollback(record, plan, action);
+            return Outcome {
+                error_code,
+                ..Outcome::with("rolled_back", &failure_code, message)
+            };
+        }
         if self.is_cancelled(&record.plan_id) {
             return Outcome::with("cancelled", "", "");
         }
         let (failure, activated) = match failure {
+            Some(failure) if failure.handed_back => unreachable!("handled above"),
             // F-23: the runner refused prepare_release at its checks (for
             // example a refused input fold, E_SCOPE_MISMATCH), so there is
             // no candidate to clean up; the deploy fails `prepare` with the
@@ -1738,6 +1784,19 @@ impl ChangeCore {
                         self.prune_releases(record, plan, action).await;
                         return Outcome::succeeded().activated();
                     }
+                    // D-068/D-069: activate_release handed the volume back.
+                    Err(failure) if failure.state.as_deref() == Some("rolled_back") => {
+                        self.record_handed_back_rollback(record, plan, action);
+                        return Outcome {
+                            error_code: failure.code.clone(),
+                            ..Outcome::with(
+                                "rolled_back",
+                                &op_failure_code("deploy", "activate_release", &failure),
+                                describe(&failure),
+                            )
+                        }
+                        .activated();
+                    }
                     Err(failure) => (
                         StartFailure {
                             failure_code: op_failure_code("deploy", "activate_release", &failure),
@@ -1745,6 +1804,7 @@ impl ChangeCore {
                             error_code: failure.code.clone(),
                             restorable: true,
                             refused: false,
+                            handed_back: false,
                         },
                         true,
                     ),
@@ -1798,6 +1858,40 @@ impl ChangeCore {
         } else {
             ended
         }
+    }
+
+    /// A runner hand-back (`state: rolled_back`): the rollback step starts
+    /// and completes succeeded with no runner call (signed-plan.md 14.6).
+    fn record_handed_back_rollback(
+        &self,
+        record: &AdmissionRecord,
+        plan: &Value,
+        action: &ActionRecord,
+    ) {
+        self.step(
+            record,
+            Some(action),
+            "rollback_release",
+            OperationState::Running,
+            "",
+            "",
+        );
+        self.deploy_status(
+            record,
+            plan,
+            action,
+            Phase::RollingBack,
+            "rollback_release",
+            "",
+        );
+        self.step(
+            record,
+            Some(action),
+            "rollback_release",
+            OperationState::Succeeded,
+            "",
+            "",
+        );
     }
 
     /// v1.0.18 (D-068 #3, sections 14.4, 14.6): release retention after a
@@ -2182,6 +2276,16 @@ mod tests {
         for kind in ["server.add", "rule.create", "service.elevate"] {
             assert_eq!(exec_of(kind, &none), Exec::Agent, "{kind}");
         }
+        // v1.0.19 (D-069): one runner call, and that call must not ignore
+        // SIGTERM (the runner stops the agent mid-op).
+        assert_eq!(
+            exec_of("server.accounts.migrate", &none),
+            Exec::Ops(&["migrate_accounts"])
+        );
+        assert!(
+            !op_ignores_sigterm("migrate_accounts"),
+            "migrate_accounts must not ignore SIGTERM"
+        );
         // v1.0.7 definition kinds: bind_plan alone; the runner records them.
         for kind in [
             "cron.create",

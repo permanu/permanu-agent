@@ -244,6 +244,27 @@ impl AdmissionStore {
         Ok((store, report))
     }
 
+    /// Section 7.5 starts the section 6.3 re-seed: move the current store
+    /// aside when one exists, then create an empty store with the 1200 s
+    /// quarantine (`trust_present`).
+    pub fn reseed(config: &StoreConfig, now: i64) -> Result<OpenReport, StoreError> {
+        let moved_aside = match fs::symlink_metadata(&config.path) {
+            Ok(_) => Some(move_aside(&config.path, now)?),
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => None,
+            Err(err) => return Err(err.into()),
+        };
+        let (_store, mut report) = Self::open(config, true, now)?;
+        if !report.recreated {
+            return Err(StoreError::Unsafe(
+                "re-seed opened an existing store".to_owned(),
+            ));
+        }
+        if report.moved_aside.is_none() {
+            report.moved_aside = moved_aside;
+        }
+        Ok(report)
+    }
+
     fn wrap(conn: Connection, config: &StoreConfig) -> Self {
         Self {
             conn: Mutex::new(conn),

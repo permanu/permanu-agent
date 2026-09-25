@@ -126,6 +126,9 @@ pub struct Hooks {
     held: Mutex<Vec<String>>,
     /// Whether `buildkitd` looked usable at the last build (status).
     buildkit_ok: AtomicBool,
+    /// `diagnose` `account_ids` is `migrate` (D-069). Starts clear; a
+    /// refusal or a missing field leaves the last value.
+    account_ids_migrate: AtomicBool,
 }
 
 impl std::fmt::Debug for Hooks {
@@ -152,6 +155,7 @@ impl Hooks {
             hold: AtomicBool::new(false),
             held: Mutex::new(Vec::new()),
             buildkit_ok: AtomicBool::new(true),
+            account_ids_migrate: AtomicBool::new(false),
         })
     }
 
@@ -213,7 +217,45 @@ impl Hooks {
         }
     }
 
-    /// Runs [`Self::check_buildkit`] at start and every 60 s.
+    /// Whether doctor should report degraded reason `account_ids`.
+    pub fn account_ids_degraded(&self) -> bool {
+        self.account_ids_migrate
+            .load(std::sync::atomic::Ordering::SeqCst)
+    }
+
+    /// contracts v1.1.11 (D-069): `diagnose` check `account_ids`. `migrate`
+    /// sets the degraded reason, `fixed` clears it. A refusal or a missing
+    /// field (an older runner) leaves the previous value.
+    pub async fn check_account_ids(&self) {
+        let request = json!({"op": "diagnose", "payload": {"checks": ["account_ids"]}});
+        let answer = self
+            .deps
+            .core
+            .runner
+            .exchange(request, BUILDKIT_CHECK_TIMEOUT)
+            .await;
+        let migrate = match answer {
+            Ok(result) if result["ok"] == true => match result["account_ids"].as_str() {
+                Some("migrate") => true,
+                Some("fixed") => false,
+                _ => return,
+            },
+            Ok(_) | Err(_) => return,
+        };
+        let was = self
+            .account_ids_migrate
+            .swap(migrate, std::sync::atomic::Ordering::SeqCst);
+        if was != migrate {
+            if migrate {
+                tracing::warn!("account_ids need migration (degraded reason account_ids)");
+            } else {
+                tracing::info!("account_ids are on their fixed ids");
+            }
+        }
+    }
+
+    /// Runs [`Self::check_buildkit`] and [`Self::check_account_ids`] at start
+    /// and every 60 s.
     pub fn spawn_buildkit_watch(self: &Arc<Self>) -> JoinHandle<()> {
         let hooks = self.clone();
         tokio::spawn(async move {
@@ -221,6 +263,7 @@ impl Hooks {
             loop {
                 tick.tick().await;
                 hooks.check_buildkit().await;
+                hooks.check_account_ids().await;
             }
         })
     }

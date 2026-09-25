@@ -47,6 +47,23 @@ fn plan_vectors_match_jcs_digest_specs_and_signatures() {
     );
 }
 
+/// contracts v1.1.11 (D-069): the vendored `server-accounts-migrate` plan
+/// is a server-level plan the schema accepts.
+#[test]
+fn the_server_accounts_migrate_vector_is_a_server_plan() {
+    let plans = vector("plans");
+    let case = plans["vectors"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|case| case["name"] == "server-accounts-migrate")
+        .expect("server-accounts-migrate vector");
+    assert!(
+        super::schema::validate_plan(&case["plan"]),
+        "server.accounts.migrate must parse"
+    );
+}
+
 #[test]
 fn state_head_chain_matches_the_worked_vector() {
     let before = "4a98af3eeae054bf7585746ce20fa5907ec9c079ee1b049a7d01146d1c92ebfb";

@@ -566,6 +566,51 @@ async fn the_buildkit_apparmor_check_drives_the_build_status() {
     f.h.stop().await;
 }
 
+/// contracts v1.1.11 (D-069): `diagnose` check `account_ids` adds or removes
+/// degraded reason `account_ids`. A refusal or a missing field (an older
+/// runner) leaves the previous reason unchanged.
+#[tokio::test]
+async fn the_account_ids_check_drives_the_degraded_reason() {
+    let f = fixture("hooks-account-ids").await;
+    let answer = |value: Value| *f.h.runner.diagnose_answer.lock().unwrap() = value;
+    answer(json!({"ok": false, "error": {"code": "invalid_request", "message": "unknown check"}}));
+    f.hooks.check_account_ids().await;
+    assert!(status_of(&f.hooks).degraded_reasons.is_empty());
+    answer(json!({"ok": true, "op": "diagnose"}));
+    f.hooks.check_account_ids().await;
+    assert!(
+        status_of(&f.hooks).degraded_reasons.is_empty(),
+        "an older runner omits account_ids"
+    );
+    answer(json!({"ok": true, "op": "diagnose", "account_ids": "migrate"}));
+    f.hooks.check_account_ids().await;
+    assert_eq!(status_of(&f.hooks).degraded_reasons, vec!["account_ids"]);
+    answer(json!({"ok": false, "error": {"code": "E_INTERNAL", "message": "runner down"}}));
+    f.hooks.check_account_ids().await;
+    assert_eq!(
+        status_of(&f.hooks).degraded_reasons,
+        vec!["account_ids"],
+        "a refusal keeps the previous reason"
+    );
+    answer(json!({"ok": true, "op": "diagnose", "account_ids": "fixed"}));
+    f.hooks.check_account_ids().await;
+    assert!(status_of(&f.hooks).degraded_reasons.is_empty());
+    let diagnose: Vec<Value> =
+        f.h.runner
+            .requests
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|r| r["op"] == "diagnose")
+            .cloned()
+            .collect();
+    assert_eq!(diagnose.len(), 5);
+    assert!(diagnose
+        .iter()
+        .all(|r| *r == json!({"op": "diagnose", "payload": {"checks": ["account_ids"]}})));
+    f.h.stop().await;
+}
+
 /// D-064 #7: a build an admitted `operation.cancel` stopped (runner
 /// `E_CANCELLED`) ends `CANCELLED` with `failure_reason` `cancelled` and
 /// the reason CANCELLED, never a failure.

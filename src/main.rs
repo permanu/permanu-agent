@@ -31,6 +31,7 @@ mod sre_tools;
 mod system;
 mod systemd;
 mod timeutil;
+mod trust_reset;
 mod trusted_keys;
 mod v1_guard;
 
@@ -254,8 +255,14 @@ fn init_tracing() {
 #[derive(Clone, Debug, Eq, PartialEq)]
 enum CliAction {
     Version,
-    Doctor { json: bool },
+    Doctor {
+        json: bool,
+    },
     Help,
+    /// signed-plan.md 7.5. `understand` is `--i-understand`.
+    TrustReset {
+        understand: bool,
+    },
 }
 
 fn parse_cli_action<I>(args: I) -> Result<Option<CliAction>>
@@ -270,6 +277,7 @@ where
     match first.as_str() {
         "--version" | "-V" | "version" => Ok(Some(CliAction::Version)),
         "doctor" => parse_doctor_action(args),
+        "trust" => parse_trust_reset(args),
         "--help" | "-h" | "help" => Ok(Some(CliAction::Help)),
         other => Err(anyhow!("unsupported permanu-agent argument {other:?}")),
     }
@@ -296,6 +304,28 @@ where
     Ok(Some(CliAction::Doctor { json }))
 }
 
+fn parse_trust_reset<I>(args: I) -> Result<Option<CliAction>>
+where
+    I: IntoIterator<Item = String>,
+{
+    let mut args = args.into_iter();
+    match args.next().as_deref() {
+        Some("reset") => {
+            let mut understand = false;
+            for arg in args {
+                match arg.as_str() {
+                    "--i-understand" => understand = true,
+                    "--help" | "-h" => return Ok(Some(CliAction::Help)),
+                    other => return Err(anyhow!("unsupported trust reset argument {other:?}")),
+                }
+            }
+            Ok(Some(CliAction::TrustReset { understand }))
+        }
+        Some(other) => Err(anyhow!("unsupported trust argument {other:?}")),
+        None => Err(anyhow!("unsupported permanu-agent argument \"trust\"")),
+    }
+}
+
 async fn run_cli_action(action: CliAction) -> Result<()> {
     match action {
         CliAction::Version => {
@@ -304,10 +334,53 @@ async fn run_cli_action(action: CliAction) -> Result<()> {
         }
         CliAction::Doctor { json } => run_doctor(json).await,
         CliAction::Help => {
-            println!("permanu-agent [--version|doctor]");
+            println!("permanu-agent [--version|doctor|trust reset --i-understand]");
             Ok(())
         }
+        CliAction::TrustReset { understand } => run_trust_reset(understand),
     }
+}
+
+fn run_trust_reset(understand: bool) -> Result<()> {
+    // SAFETY: geteuid has no preconditions.
+    let euid = unsafe { libc::geteuid() };
+    let tty = std::io::IsTerminal::is_terminal(&std::io::stdin());
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| i64::try_from(d.as_secs()).unwrap_or(i64::MAX));
+    let group = crate::local::socket::resolve_group("permanu-runner").ok();
+    let user = crate::local::socket::resolve_user("permanu-agent").ok();
+    let owner = group.map(|gid| crate::admissions::StoreOwner {
+        uid: user.unwrap_or(0),
+        gid,
+    });
+    let done = trust_reset::trust_reset(
+        &trust_reset::TrustResetPaths::production(),
+        understand,
+        euid,
+        tty,
+        now,
+        owner,
+        || {
+            eprint!("Reset trust and return this server to bootstrap? Type yes to continue: ");
+            let _ = std::io::Write::flush(&mut std::io::stderr());
+            let mut line = String::new();
+            std::io::stdin().read_line(&mut line)?;
+            Ok(line)
+        },
+    )?;
+    match done {
+        trust_reset::TrustResetDone::Reset { backup } => {
+            println!(
+                "trust reset: server is in bootstrap; backup {}",
+                backup.display()
+            );
+        }
+        trust_reset::TrustResetDone::AlreadyBootstrap => {
+            println!("trust reset: trusted-keys.json is absent; server is already in bootstrap");
+        }
+    }
+    Ok(())
 }
 
 async fn run_doctor(json_mode: bool) -> Result<()> {
@@ -428,5 +501,22 @@ mod tests {
         assert!(err
             .to_string()
             .contains("unsupported permanu-agent argument"));
+    }
+
+    #[test]
+    fn parses_trust_reset_with_the_flag() {
+        let got = parse_cli_action(vec![
+            "trust".to_string(),
+            "reset".to_string(),
+            "--i-understand".to_string(),
+        ])
+        .unwrap();
+        assert_eq!(got, Some(CliAction::TrustReset { understand: true }));
+    }
+
+    #[test]
+    fn parses_trust_reset_without_the_flag() {
+        let got = parse_cli_action(vec!["trust".to_string(), "reset".to_string()]).unwrap();
+        assert_eq!(got, Some(CliAction::TrustReset { understand: false }));
     }
 }
