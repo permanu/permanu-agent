@@ -134,6 +134,9 @@ pub enum OpBehavior {
     Fail(&'static str),
     /// Fails with this runner code and `error.failure_code`.
     FailCode(&'static str, &'static str),
+    /// `ok: false` with `state: rolled_back` (D-068/D-069 hand-back). The
+    /// runner already restarted the previous release and closed the action.
+    HandBack,
     /// Never answers until a `cancel_execution` releases it.
     Hang,
 }
@@ -730,6 +733,14 @@ impl FakeRunner {
             OpBehavior::FailCode(code, failure_code) => {
                 return json!({"ok": false, "error": {"code": code,
                     "message": format!("{op} failed"), "failure_code": failure_code}});
+            }
+            OpBehavior::HandBack => {
+                if self.write_results.load(Ordering::SeqCst) {
+                    self.result(plan_id, digest, index, "rolled_back");
+                }
+                return json!({"ok": false, "state": "rolled_back", "error": {
+                    "code": "health_failed",
+                    "message": format!("{op} handed the volume back to the previous release")}});
             }
             OpBehavior::Succeed => {}
         }

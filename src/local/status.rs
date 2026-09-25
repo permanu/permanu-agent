@@ -19,7 +19,7 @@ pub struct StatusSources {
 
 impl StatusSources {
     /// Adds presence, webhook and scheduler fields to `status` (and
-    /// `buildkit_unavailable` to its degraded reasons).
+    /// `buildkit_unavailable` / `account_ids` to its degraded reasons).
     pub fn fill(&self, status: &mut AgentStatus, now: i64) {
         if let Some(presence) = &self.presence {
             let view = presence.view();
@@ -35,6 +35,9 @@ impl StatusSources {
                 status
                     .degraded_reasons
                     .push("buildkit_unavailable".to_owned());
+            }
+            if hooks.account_ids_degraded() {
+                status.degraded_reasons.push("account_ids".to_owned());
             }
         }
         if let Some(schedulers) = &self.schedulers {

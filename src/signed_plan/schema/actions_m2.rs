@@ -209,6 +209,8 @@ pub(super) fn params_for(kind: &str) -> Option<&'static [(&'static str, Shape)]>
         // v1.0.11 (D-061): the hostname Dwaar routes /hooks/* on.
         // v1.0.13 (D-063 #4): or a public IPv4 address.
         "webhook.host.set" => &[("webhook_host", Shape::Pattern(webhook_host))],
+        // v1.0.19 (D-069): fixed-id migration of an already-set-up server.
+        "server.accounts.migrate" => &[("server_id", UUID7)],
         _ => return None,
     })
 }
@@ -232,6 +234,8 @@ pub(super) const SERVER_KINDS_M2: &[&str] = &[
     "release_key.revoke",
     // v1.0.11 (D-061).
     "webhook.host.set",
+    // v1.0.19 (D-069).
+    "server.accounts.migrate",
 ];
 
 /// Largest `backup.destination.set` `ca_pem` (v1.0.14, D-064 #11).
@@ -355,6 +359,10 @@ pub(super) fn action_rules_hold(plan: &Value, kind: &str, params: &Value) -> boo
                 .as_str()
                 .is_some_and(|recipient| *fingerprint == hex(&Sha256::digest(recipient.as_bytes())))
         }),
+        // targets MUST be [server_id] (signed-plan.md 3.2).
+        "server.accounts.migrate" => plan["targets"]
+            .as_array()
+            .is_some_and(|targets| targets.len() == 1 && targets[0] == params["server_id"]),
         _ => true,
     }
 }

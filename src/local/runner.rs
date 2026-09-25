@@ -90,6 +90,8 @@ pub struct RunnerFailure {
     pub consumed_at: Option<String>,
     /// `error.failure_code` of a failed service step (section 14.8).
     pub failure_code: Option<String>,
+    /// Result `state` (`rolled_back` is a runner hand-back, D-068/D-069).
+    pub state: Option<String>,
 }
 
 impl RunnerFailure {
@@ -99,6 +101,7 @@ impl RunnerFailure {
             message: message.into(),
             consumed_at: None,
             failure_code: None,
+            state: None,
         }
     }
 
@@ -153,6 +156,14 @@ fn failure_of(result: &Value) -> RunnerFailure {
         failure_code: error["failure_code"]
             .as_str()
             .filter(|code| !code.is_empty() && code.len() <= 32)
+            .map(str::to_owned),
+        state: result["state"]
+            .as_str()
+            .filter(|state| {
+                !state.is_empty()
+                    && state.len() <= 32
+                    && state.bytes().all(|b| b.is_ascii_lowercase() || b == b'_')
+            })
             .map(str::to_owned),
     }
 }

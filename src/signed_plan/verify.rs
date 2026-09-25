@@ -43,6 +43,8 @@ pub const TID_KINDS: &[&str] = &[
     "environment.delete",
     "project.delete",
     "server.remove",
+    // v1.0.19 (D-069): owner, fresh.
+    "server.accounts.migrate",
     "volume.delete",
     "bucket.delete",
     "bucket.credentials.rotate",

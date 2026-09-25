@@ -967,6 +967,105 @@ async fn a_failed_activate_rolls_back_to_the_previous_release() {
     h.stop().await;
 }
 
+/// D-069: `verify_health` returning `state: rolled_back` means the runner
+/// already restarted the previous release. The executor records the rollback
+/// step done and does not send `rollback_release`.
+#[tokio::test]
+async fn a_health_hand_back_records_rollback_without_calling_it() {
+    let Some(owner) = TestSigner::load("owner") else {
+        eprintln!("skipped: docs keys.json not found");
+        return;
+    };
+    let h = Harness::start("health-handback", Some(&vector_trust())).await;
+    let head = first_release(&h, &owner, "0000000000c1", "PAAAAAAAAAAAAAAAAAAAAA").await;
+    h.runner.behave("verify_health", OpBehavior::HandBack);
+    let second = submit_ok(
+        &h,
+        fresh_deploy(&owner, "0000000000c2", "QAAAAAAAAAAAAAAAAAAAAA", &head),
+    )
+    .await;
+    wait_for_state(&h, &second.operation_id, OperationState::RolledBack).await;
+    assert_eq!(
+        h.runner.ops_for(&second.plan_id),
+        vec![
+            ("prepare_release".to_owned(), 0),
+            ("verify_health".to_owned(), 0),
+        ]
+    );
+    let op = operation(&h, &second.operation_id).await;
+    let health = op.steps.iter().find(|s| s.name == "verify_health").unwrap();
+    assert_eq!(health.state, OperationState::Failed as i32);
+    assert_eq!(health.failure_code, "candidate_health");
+    let rollback = op
+        .steps
+        .iter()
+        .find(|s| s.name == "rollback_release")
+        .unwrap();
+    assert_eq!(rollback.state, OperationState::Succeeded as i32);
+    assert_eq!(rollback.failure_code, "");
+    assert!(!rollback.error.contains("interrupted"), "{rollback:?}");
+    assert_eq!(
+        final_step(&op),
+        (
+            "rolled_back".to_owned(),
+            OperationState::RolledBack as i32,
+            "candidate_health".to_owned()
+        )
+    );
+    h.stop().await;
+}
+
+/// D-069: the same hand-back from `activate_release` keeps `failure_code`
+/// `activate` and sends no `rollback_release`.
+#[tokio::test]
+async fn an_activate_hand_back_records_rollback_without_calling_it() {
+    let Some(owner) = TestSigner::load("owner") else {
+        eprintln!("skipped: docs keys.json not found");
+        return;
+    };
+    let h = Harness::start("activate-handback", Some(&vector_trust())).await;
+    let head = first_release(&h, &owner, "0000000000c3", "RAAAAAAAAAAAAAAAAAAAAA").await;
+    h.runner.behave("activate_release", OpBehavior::HandBack);
+    let second = submit_ok(
+        &h,
+        fresh_deploy(&owner, "0000000000c4", "SAAAAAAAAAAAAAAAAAAAAA", &head),
+    )
+    .await;
+    wait_for_state(&h, &second.operation_id, OperationState::RolledBack).await;
+    assert_eq!(
+        h.runner.ops_for(&second.plan_id),
+        vec![
+            ("prepare_release".to_owned(), 0),
+            ("verify_health".to_owned(), 0),
+            ("activate_release".to_owned(), 0),
+        ]
+    );
+    let op = operation(&h, &second.operation_id).await;
+    let activate = op
+        .steps
+        .iter()
+        .find(|s| s.name == "activate_release")
+        .unwrap();
+    assert_eq!(activate.state, OperationState::Failed as i32);
+    assert_eq!(activate.failure_code, "activate");
+    let rollback = op
+        .steps
+        .iter()
+        .find(|s| s.name == "rollback_release")
+        .unwrap();
+    assert_eq!(rollback.state, OperationState::Succeeded as i32);
+    assert!(!rollback.error.contains("interrupted"), "{rollback:?}");
+    assert_eq!(
+        final_step(&op),
+        (
+            "rolled_back".to_owned(),
+            OperationState::RolledBack as i32,
+            "activate".to_owned()
+        )
+    );
+    h.stop().await;
+}
+
 // D-038: a failed activate_release with no earlier release cleans up.
 #[tokio::test]
 async fn a_failed_activate_without_a_previous_release_cleans_up() {
