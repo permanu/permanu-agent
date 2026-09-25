@@ -28,6 +28,9 @@ service ChangeService {
   // success: the original plan_id and operation_id with deduplicated=true.
   // Nothing returned is a secret. Rule-backed plans are refused
   // (PLAN_AUTHORITY): only the agent's internal webhook path admits them.
+  // v2.1.9 (contracts v1.1.9, D-067): the limit of 10 submissions per
+  // minute (RESOURCE_EXHAUSTED + RATE_LIMITED) does not count host shell
+  // opens (ShellService.Shell), which have their own limit.
   rpc SubmitSignedPlan(SubmitSignedPlanRequest) returns (OperationRef);
   // VerifySignedPlan runs every check SubmitSignedPlan would, without
   // admitting, executing or reserving the nonce. Read-only.

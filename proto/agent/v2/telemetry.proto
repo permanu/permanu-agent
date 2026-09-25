@@ -320,7 +320,9 @@ message MetricQuery {
   string name = 1;
   repeated LabelMatcher matchers = 2;
   TimeRange range = 3;
-  // Resolution. 0 = auto (range / 300, min 10 s).
+  // Resolution. 0 = auto (range / 300, min 10 s). v2.1.9 (contracts v1.1.9,
+  // D-067): auto and a requested step are both rounded up to a multiple of
+  // 10 s; MetricSeriesBatch.step_seconds returns the step used.
   google.protobuf.Duration step = 4;
   MetricAggregation aggregation = 5;
   // Labels kept when aggregating; others are aggregated away.
@@ -345,6 +347,12 @@ message MetricSeries {
 
 message MetricSeriesBatch {
   repeated MetricSeries series = 1;
+  // v2.1.9 (contracts v1.1.9, D-067). The step the agent used, in seconds
+  // (the requested step rounded up to a multiple of 10 s, or the auto step).
+  // A RATE point times step_seconds is the count in its window; the engine
+  // computes metrics.routes requests with this value, never the step it
+  // asked for.
+  uint32 step_seconds = 2;
 }
 
 message MetricQueryResponse {
