@@ -1663,6 +1663,96 @@ async fn cancel_stops_a_running_deploy_and_returns_the_cancel_operation() {
     h.stop().await;
 }
 
+/// D-069: a cancel during a hung `verify_health` still records the prepared
+/// candidate's cleanup. The plan is held from the health check on, so the
+/// held result must not drop `cleanup_candidate`.
+#[tokio::test]
+async fn cancel_during_verify_health() {
+    let Some(owner) = TestSigner::load("owner") else {
+        eprintln!("skipped: docs keys.json not found");
+        return;
+    };
+    let h = Harness::start("cancel-health", Some(&vector_trust())).await;
+    h.runner.behave("verify_health", OpBehavior::Hang);
+    let mut change = ChangeServiceClient::new(h.channel.clone());
+    let deploy = submit_ok(
+        &h,
+        fresh_deploy(
+            &owner,
+            "0000000000f3",
+            "VVVVVVVVVVVVVVVVVVVVVA",
+            GENESIS_HEAD,
+        ),
+    )
+    .await;
+    for _ in 0..500 {
+        if h.runner
+            .ops_for(&deploy.plan_id)
+            .iter()
+            .any(|(op, _)| op == "verify_health")
+        {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    assert!(
+        h.runner
+            .ops_for(&deploy.plan_id)
+            .iter()
+            .any(|(op, _)| op == "verify_health"),
+        "verify_health never started: {:?}",
+        h.runner.ops_for(&deploy.plan_id)
+    );
+
+    let head = next_head(GENESIS_HEAD, &deploy.plan_digest_hex);
+    let cancel_plan = json!({
+        "version": 1, "id": "01a0cdb5-3500-7001-8000-0000000000f4",
+        "project_id": PROJECT, "environment": "production", "environment_id": ENVIRONMENT_ID,
+        "service_ids": [], "targets": [SERVER_A],
+        "actions": [{"kind": "operation.cancel", "params": {
+            "plan_id": deploy.plan_id, "plan_digest_hex": deploy.plan_digest_hex}}],
+        "base": {"force": false, "heads": {SERVER_A: head}},
+        "created_at": "2026-09-23T10:04:00Z", "expires_at": "2026-09-23T10:14:00Z",
+        "nonce": "WWWWWWWWWWWWWWWWWWWWWA",
+        "author": {"kind": "user", "agent_session_id": null}, "invocation": null
+    });
+    let signed_cancel = SignedPlan {
+        envelope_json: owner.envelope(&cancel_plan).into_bytes(),
+        ..Default::default()
+    };
+    let cancel = change
+        .cancel_operation(CancelOperationRequest {
+            operation_id: deploy.operation_id.clone(),
+            plan: Some(signed_cancel),
+        })
+        .await
+        .unwrap()
+        .into_inner();
+    wait_for_state(&h, &cancel.id, OperationState::Succeeded).await;
+    wait_for_state(&h, &deploy.operation_id, OperationState::Cancelled).await;
+    let op = operation(&h, &deploy.operation_id).await;
+    assert_eq!(
+        names(&op, 0),
+        vec![
+            "queued",
+            "bound",
+            "prepare_release",
+            "verify_health",
+            "cleanup_candidate",
+            "cancelled"
+        ]
+    );
+    let cleanup = op
+        .steps
+        .iter()
+        .find(|s| s.name == "cleanup_candidate")
+        .unwrap();
+    assert_eq!(cleanup.state, OperationState::Succeeded as i32);
+    assert_eq!(cleanup.failure_code, "");
+    assert_eq!(op.state, OperationState::Cancelled as i32);
+    h.stop().await;
+}
+
 /// One operation event in the order the agent emitted it:
 /// `(operation_id, "step:<name>:<state>" | "log:<line>" | "finished")`.
 fn describe_event(event: &crate::proto::agent::v2::OperationEvent) -> (String, String) {

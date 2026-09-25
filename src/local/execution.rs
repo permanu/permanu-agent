@@ -2002,8 +2002,18 @@ impl ChangeCore {
                 outcome,
                 cleanup,
             } => {
-                if let Some(skipped) = locked(&self.held).get_mut(&plan_id) {
-                    skipped.push(action_index);
+                // Emit cleanup now. The final step stays deferred until release_held.
+                if locked(&self.held).contains_key(&plan_id) {
+                    if let Some(cleanup) = cleanup.as_deref() {
+                        if let Some((record, _, action)) =
+                            self.action_context(&plan_id, action_index)
+                        {
+                            self.cancel_cleanup_step(&record, &action, cleanup);
+                        }
+                    }
+                    if let Some(skipped) = locked(&self.held).get_mut(&plan_id) {
+                        skipped.push(action_index);
+                    }
                     return;
                 }
                 if let Some((record, plan, action)) = self.action_context(&plan_id, action_index) {
