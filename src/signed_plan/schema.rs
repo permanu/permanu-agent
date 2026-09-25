@@ -231,8 +231,8 @@ const SPEC_FIELDS: &[(&str, Shape)] = &[
 ];
 
 /// A `ServiceSpec` (section 3.7): every field of `SPEC_FIELDS`, plus the
-/// optional members `build` (v1.0.9, D-056) and `routes` (v1.0.14, D-064),
-/// which are never `null`.
+/// optional members `build` (v1.0.9, D-056), `routes` (v1.0.14, D-064) and
+/// `strategy` (v1.0.17, D-067), which are never `null`.
 pub(crate) const SPEC: Shape = Shape::Custom(spec_shape);
 
 fn spec_shape(value: &Value) -> bool {
@@ -251,7 +251,20 @@ fn spec_shape(value: &Value) -> bool {
             return false;
         }
     }
-    check(&Shape::Object(SPEC_FIELDS), &Value::Object(rest))
+    // v1.0.17 (D-067 #1): the optional member `strategy`, never `null`.
+    let strategy = match rest.remove("strategy") {
+        None => None,
+        Some(Value::String(s)) if s == "rolling" || s == "recreate" => Some(s),
+        Some(_) => return false,
+    };
+    if !check(&Shape::Object(SPEC_FIELDS), &Value::Object(rest)) {
+        return false;
+    }
+    // A spec that mounts a named volume is `recreate` (signed or derived)
+    // with at most one replica: never two containers on one volume.
+    let mounts_volume = map["mounts"].as_array().is_some_and(|m| !m.is_empty());
+    !mounts_volume
+        || (strategy.as_deref() != Some("rolling") && map["replicas"].as_i64().unwrap_or(0) <= 1)
 }
 
 /// `ServiceSpec.routes` (v1.0.14, D-064 #9): 0–16 `{hostname, source}`
