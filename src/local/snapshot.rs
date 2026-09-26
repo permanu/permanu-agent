@@ -12,8 +12,11 @@
 //!
 //! The running release is the `permanu.deployment_id` of the service's
 //! running containers (the runner's read-only `list_containers`), so a
-//! rollback reports the release it went back to. The snapshot carries no
-//! `deployments` or `health` entries yet.
+//! rollback reports the release it went back to. `deployments` is every
+//! in-flight deployment in the scope plus the latest finished one per
+//! service. `health` is the latest Docker health of each of those
+//! services' containers. `ServiceState.commit_sha` is the commit of the
+//! running release's deployment when the admitted plan carried one.
 
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -27,9 +30,12 @@ use super::events::EventBus;
 use super::execution::Clock;
 use super::runner::{self, ContainerFilter, Runner, RunnerContainer};
 use crate::admissions::webhooks::ServiceSpecRow;
-use crate::admissions::AdmissionStore;
+use crate::admissions::{AdmissionStore, StoredDeployment};
+use crate::proto::agent::v2::deploy_status_event::Phase;
+use crate::proto::agent::v2::health_event::Status as HealthStatus;
 use crate::proto::agent::v2::{
-    db_reader_status, DbReaderStatus, Scope, ServiceState, StateSnapshot,
+    db_reader_status, DbReaderStatus, DeploymentState, HealthEvent, Scope, ServiceState,
+    StateSnapshot,
 };
 use crate::signed_plan::text;
 
@@ -93,7 +99,7 @@ impl Snapshots {
         } else {
             Vec::new()
         };
-        let services = rows
+        let mut services: Vec<ServiceState> = rows
             .iter()
             .map(|row| {
                 service_state(
@@ -104,6 +110,26 @@ impl Snapshots {
                 )
             })
             .collect();
+        let stored = self
+            .store
+            .deployments_in(
+                &scope.project_id,
+                &scope.environment,
+                &scope.environment_id,
+                &scope.service_id,
+            )
+            .map_err(|_| Status::internal("the admission store could not be read"))?;
+        let deployments = chosen_deployments(stored);
+        for service in &mut services {
+            service.health = service_health(&service.service_id, &containers);
+            if let Some(commit) = deployments
+                .iter()
+                .find(|row| row.deployment_id == service.release_id && !row.commit_sha.is_empty())
+            {
+                service.commit_sha.clone_from(&commit.commit_sha);
+            }
+        }
+        let health = health_events(&services, &containers);
         Ok(StateSnapshot {
             server_id: (self.server_id)(),
             taken_at: Some(prost_types::Timestamp {
@@ -112,8 +138,8 @@ impl Snapshots {
             }),
             resume_token,
             services,
-            deployments: Vec::new(),
-            health: Vec::new(),
+            deployments,
+            health,
         })
     }
 
@@ -298,6 +324,126 @@ pub fn service_state(
     }
 }
 
+/// In-flight deployments, plus the latest finished one of each service.
+fn chosen_deployments(rows: Vec<StoredDeployment>) -> Vec<DeploymentState> {
+    let mut inflight = Vec::new();
+    let mut latest: HashMap<String, StoredDeployment> = HashMap::new();
+    for row in rows {
+        if row.finished_at.is_none() {
+            inflight.push(row);
+            continue;
+        }
+        match latest.get(&row.service_id) {
+            Some(kept) if !later_finish(&row, kept) => {}
+            _ => {
+                latest.insert(row.service_id.clone(), row);
+            }
+        }
+    }
+    let mut chosen = inflight;
+    chosen.extend(latest.into_values());
+    chosen.sort_by(|a, b| {
+        a.service_id
+            .cmp(&b.service_id)
+            .then(a.deployment_id.cmp(&b.deployment_id))
+    });
+    chosen.iter().map(deployment_state).collect()
+}
+
+fn later_finish(row: &StoredDeployment, kept: &StoredDeployment) -> bool {
+    (row.finished_at.as_deref(), row.admission_seq)
+        > (kept.finished_at.as_deref(), kept.admission_seq)
+}
+
+fn deployment_state(row: &StoredDeployment) -> DeploymentState {
+    let phase = match row.outcome.as_str() {
+        "succeeded" => Phase::Live,
+        "rolled_back" => Phase::RolledBack,
+        "cancelled" => Phase::Cancelled,
+        "failed" | "expired" => Phase::Failed,
+        _ if row.consumed_at.is_some() => Phase::Starting,
+        _ => Phase::Queued,
+    };
+    let started = row.consumed_at.as_deref().unwrap_or(&row.admitted_at);
+    DeploymentState {
+        deployment_id: row.deployment_id.clone(),
+        project_id: row.project_id.clone(),
+        service_id: row.service_id.clone(),
+        plan_id: row.plan_id.clone(),
+        operation_id: row.operation_id.clone(),
+        phase: phase as i32,
+        commit_sha: row.commit_sha.clone(),
+        spec_digest_hex: row.spec_digest_hex.clone(),
+        started_at: stamp(started),
+        finished_at: row.finished_at.as_deref().and_then(stamp),
+    }
+}
+
+fn stamp(text: &str) -> Option<prost_types::Timestamp> {
+    text::timestamp(text).map(|seconds| prost_types::Timestamp { seconds, nanos: 0 })
+}
+
+/// Docker's health token in a container status, if it has one.
+fn docker_health(status: &str) -> Option<HealthStatus> {
+    let status = status.to_ascii_lowercase();
+    if status.contains("unhealthy") {
+        Some(HealthStatus::Unhealthy)
+    } else if status.contains("health: starting") {
+        Some(HealthStatus::Starting)
+    } else if status.contains("(healthy)") {
+        Some(HealthStatus::Healthy)
+    } else {
+        None
+    }
+}
+
+fn service_health(service_id: &str, containers: &[RunnerContainer]) -> i32 {
+    containers
+        .iter()
+        .filter(|container| container.service_id == service_id)
+        .filter_map(|container| {
+            docker_health(&container.status).map(|status| (container.created_at.as_str(), status))
+        })
+        .max_by_key(|(created, _)| *created)
+        .map(|(_, status)| status as i32)
+        .unwrap_or_default()
+}
+
+/// One event per container that reports Docker health. The check id is the
+/// container id, so the latest status of that container is the check.
+fn health_events(services: &[ServiceState], containers: &[RunnerContainer]) -> Vec<HealthEvent> {
+    let mut events = Vec::new();
+    for container in containers {
+        let Some(service) = services
+            .iter()
+            .find(|s| s.service_id == container.service_id)
+        else {
+            continue;
+        };
+        let Some(status) = docker_health(&container.status) else {
+            continue;
+        };
+        if container.id.is_empty() {
+            continue;
+        }
+        let project_id = if container.project_id.is_empty() {
+            service.project_id.clone()
+        } else {
+            container.project_id.clone()
+        };
+        events.push(HealthEvent {
+            check_id: container.id.clone(),
+            project_id,
+            service_id: container.service_id.clone(),
+            container_name: container.name.trim_start_matches('/').to_owned(),
+            status: status as i32,
+            ..Default::default()
+        });
+    }
+    events.sort_by(|a, b| a.check_id.cmp(&b.check_id));
+    events
+}
+
 #[cfg(test)]
 mod tests {
     use std::time::Duration;
@@ -305,9 +451,13 @@ mod tests {
     use serde_json::json;
 
     use super::*;
-    use crate::admissions::definitions::tests::{open, record, set_deployment, ENV_ID, PROJECT};
+    use crate::admissions::definitions::tests::{
+        open, record, record_at, set_deployment, ENV_ID, PROJECT,
+    };
     use crate::admissions::webhooks::seed;
     use crate::local::runner::{EventLines, RunnerFailure};
+    use crate::proto::agent::v2::deploy_status_event::Phase;
+    use crate::proto::agent::v2::health_event::Status as Health;
 
     const DB: &str = "01a0cdb5-3500-70c1-8000-0000000000d1";
     const WEB: &str = "01a0cdb5-3500-70c1-8000-0000000000e1";
@@ -569,6 +719,130 @@ mod tests {
             })
             .await
             .is_err());
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    /// In-flight deployments and the latest finished one per service, plus
+    /// the container health of those services. Services stay in the snapshot.
+    #[tokio::test]
+    async fn the_snapshot_includes_the_deployment_and_the_health() {
+        let (dir, store) = open("snapshot-deploy-health");
+        let commit = "a".repeat(40);
+        let digest = "b".repeat(64);
+        let deploy = |deployment: &str| {
+            json!({"kind": "deploy", "params": {
+                "service_id": WEB, "deployment_id": deployment,
+                "commit_sha": commit, "spec_digest_hex": digest,
+            }})
+        };
+        let old = record_at(
+            &store,
+            1,
+            (PROJECT, "production", ENV_ID),
+            &[deploy(OLD)],
+            "succeeded",
+            "2026-09-25T09:00:00Z",
+        );
+        let live = record_at(
+            &store,
+            2,
+            (PROJECT, "production", ENV_ID),
+            &[deploy(NEW)],
+            "succeeded",
+            "2026-09-25T11:00:00Z",
+        );
+        let flight_id = "01a0cdb5-3500-70c7-8000-000000000003";
+        let flight = record_at(
+            &store,
+            3,
+            (PROJECT, "production", ENV_ID),
+            &[deploy(flight_id)],
+            "",
+            "2026-09-25T12:00:00Z",
+        );
+        let foreign_id = "01a0cdb5-3500-70c7-8000-000000000099";
+        let foreign = record_at(
+            &store,
+            4,
+            ("01a0cdb5-3500-70b1-8000-000000000099", "production", ENV_ID),
+            &[deploy(foreign_id)],
+            "succeeded",
+            "2026-09-25T12:30:00Z",
+        );
+        set_deployment(&store, &old, OLD);
+        set_deployment(&store, &live, NEW);
+        set_deployment(&store, &flight, flight_id);
+        set_deployment(&store, &foreign, foreign_id);
+        seed::spec(
+            &store,
+            &json!({"service_id": WEB, "service_kind": "web", "replicas": 2}),
+            &live,
+        );
+        let runner = Containers(vec![json!({
+            "id": "c-web", "name": "web-1", "service_id": WEB, "project_id": PROJECT,
+            "deployment_id": NEW, "state": "running",
+            "status": "Up 2 minutes (healthy)", "created_at": "2026-09-25T11:00:00Z",
+        })]);
+        let snapshots = Snapshots {
+            store: Arc::new(store),
+            runner: Arc::new(runner),
+            events: EventBus::new(),
+            readers: Arc::default(),
+            clock: Arc::new(Fixed),
+            consumed_log: dir.join("consumed.log"),
+            consumed_log_owner: 0,
+            server_id: Arc::new(|| "server-a".to_owned()),
+        };
+        let snapshot = snapshots
+            .snapshot(Scope {
+                project_id: PROJECT.to_owned(),
+                service_id: WEB.to_owned(),
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+        assert_eq!(snapshot.services.len(), 1);
+        assert_eq!(snapshot.services[0].service_id, WEB);
+        assert_eq!(snapshot.services[0].release_id, NEW);
+        assert_eq!(snapshot.services[0].commit_sha, commit);
+        assert_eq!(snapshot.services[0].health, Health::Healthy as i32);
+        let mut ids: Vec<_> = snapshot
+            .deployments
+            .iter()
+            .map(|row| row.deployment_id.as_str())
+            .collect();
+        ids.sort_unstable();
+        assert_eq!(ids, vec![NEW, flight_id]);
+        let finished = snapshot
+            .deployments
+            .iter()
+            .find(|row| row.deployment_id == NEW)
+            .unwrap();
+        assert_eq!(finished.project_id, PROJECT);
+        assert_eq!(finished.service_id, WEB);
+        assert_eq!(finished.plan_id, live);
+        assert_eq!(finished.operation_id, live);
+        assert_eq!(finished.phase, Phase::Live as i32);
+        assert_eq!(finished.commit_sha, commit);
+        assert_eq!(finished.spec_digest_hex, digest);
+        let at = crate::signed_plan::text::timestamp("2026-09-25T11:00:00Z").unwrap();
+        assert_eq!(finished.started_at.unwrap().seconds, at);
+        assert_eq!(finished.finished_at.unwrap().seconds, at);
+        let queued = snapshot
+            .deployments
+            .iter()
+            .find(|row| row.deployment_id == flight_id)
+            .unwrap();
+        assert_eq!(queued.phase, Phase::Queued as i32);
+        assert_eq!(queued.plan_id, flight);
+        assert!(queued.finished_at.is_none());
+        assert_eq!(snapshot.health.len(), 1);
+        let health = &snapshot.health[0];
+        assert_eq!(health.check_id, "c-web");
+        assert_eq!(health.project_id, PROJECT);
+        assert_eq!(health.service_id, WEB);
+        assert_eq!(health.container_name, "web-1");
+        assert_eq!(health.status, Health::Healthy as i32);
         std::fs::remove_dir_all(dir).unwrap();
     }
 }

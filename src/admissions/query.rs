@@ -6,8 +6,99 @@ use rusqlite::{params, OptionalExtension, Row};
 use super::{
     AdmissionStore, StoreError, EXECUTION_WINDOW_SECONDS, OPERATION_EVENT_RETENTION_SECONDS,
 };
-use crate::signed_plan::text::{format_timestamp, timestamp};
+use crate::signed_plan::text::{self, format_timestamp, timestamp};
 use crate::signed_plan::verify::GENESIS_HEAD;
+
+/// How many deployment rows one snapshot reads.
+const MAX_DEPLOYMENT_ROWS: i64 = 10_000;
+
+/// One admitted action that names a deployment.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StoredDeployment {
+    pub deployment_id: String,
+    pub plan_id: String,
+    pub operation_id: String,
+    pub project_id: String,
+    pub environment: String,
+    pub environment_id: String,
+    pub service_id: String,
+    pub admission_seq: i64,
+    pub admitted_at: String,
+    pub consumed_at: Option<String>,
+    pub finished_at: Option<String>,
+    pub outcome: String,
+    pub commit_sha: String,
+    pub spec_digest_hex: String,
+}
+
+#[allow(clippy::type_complexity)]
+fn stored_deployment(
+    row: (
+        String,
+        String,
+        String,
+        String,
+        String,
+        i64,
+        String,
+        String,
+        i64,
+        String,
+        String,
+        Option<String>,
+        Option<String>,
+    ),
+    service_filter: &str,
+) -> Option<StoredDeployment> {
+    let (
+        plan_id,
+        operation_id,
+        project_id,
+        environment,
+        environment_id,
+        admission_seq,
+        admitted_at,
+        signed,
+        action_index,
+        deployment_id,
+        outcome,
+        consumed_at,
+        finished_at,
+    ) = row;
+    if !text::uuid7(&deployment_id) {
+        return None;
+    }
+    let envelope: serde_json::Value = serde_json::from_str(&signed).ok()?;
+    let index = usize::try_from(action_index).ok()?;
+    let params = &envelope["plan"]["actions"][index]["params"];
+    let service_id = params["service_id"].as_str().filter(|id| text::uuid7(id))?;
+    if !service_filter.is_empty() && service_id != service_filter {
+        return None;
+    }
+    let graphic = |key: &str, exact: fn(&str) -> bool| {
+        params[key]
+            .as_str()
+            .filter(|value| exact(value))
+            .unwrap_or_default()
+            .to_owned()
+    };
+    Some(StoredDeployment {
+        deployment_id,
+        plan_id,
+        operation_id,
+        project_id,
+        environment,
+        environment_id,
+        service_id: service_id.to_owned(),
+        admission_seq,
+        admitted_at,
+        consumed_at,
+        finished_at,
+        outcome,
+        commit_sha: graphic("commit_sha", text::hex40),
+        spec_digest_hex: graphic("spec_digest_hex", text::hex64),
+    })
+}
 
 /// One `admissions` row, as the agent serves it.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -401,6 +492,57 @@ impl AdmissionStore {
             "DELETE FROM operation_events WHERE at < ?1",
             params![format_timestamp(now - OPERATION_EVENT_RETENTION_SECONDS)],
         )?)
+    }
+
+    /// Deploy and rollback actions in the scope that carry a deployment id,
+    /// newest admission first, at most [`MAX_DEPLOYMENT_ROWS`]. `service_id`
+    /// is taken from the stored plan (an empty filter matches every service).
+    pub fn deployments_in(
+        &self,
+        project_id: &str,
+        environment: &str,
+        environment_id: &str,
+        service_id: &str,
+    ) -> Result<Vec<StoredDeployment>, StoreError> {
+        let conn = self.lock();
+        let mut statement = conn.prepare(
+            "SELECT a.plan_id, a.operation_id, a.project_id, a.environment, a.environment_id, \
+             a.admission_seq, a.admitted_at, a.signed_plan_json, \
+             x.action_index, x.deployment_id, x.outcome, x.consumed_at, x.finished_at \
+             FROM admission_actions x JOIN admissions a ON a.plan_id = x.plan_id \
+             WHERE x.deployment_id IS NOT NULL AND x.deployment_id != '' \
+             AND (?1 = '' OR a.project_id = ?1) AND (?2 = '' OR a.environment = ?2) \
+             AND (?3 = '' OR a.environment_id = ?3) \
+             ORDER BY a.admission_seq DESC LIMIT ?4",
+        )?;
+        let rows = statement
+            .query_map(
+                params![project_id, environment, environment_id, MAX_DEPLOYMENT_ROWS],
+                |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, String>(1)?,
+                        row.get::<_, String>(2)?,
+                        row.get::<_, String>(3)?,
+                        row.get::<_, String>(4)?,
+                        row.get::<_, i64>(5)?,
+                        row.get::<_, String>(6)?,
+                        row.get::<_, String>(7)?,
+                        row.get::<_, i64>(8)?,
+                        row.get::<_, String>(9)?,
+                        row.get::<_, String>(10)?,
+                        row.get::<_, Option<String>>(11)?,
+                        row.get::<_, Option<String>>(12)?,
+                    ))
+                },
+            )?
+            .collect::<Result<Vec<_>, _>>()?;
+        drop(statement);
+        drop(conn);
+        Ok(rows
+            .into_iter()
+            .filter_map(|row| stored_deployment(row, service_id))
+            .collect())
     }
 }
 

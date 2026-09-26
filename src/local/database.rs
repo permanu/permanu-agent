@@ -26,6 +26,10 @@
 //! runner's unbound `db_reader_ensure`, one call per database at a time.
 
 use std::collections::HashMap;
+use std::fs::{self, OpenOptions};
+use std::io::{self, Write};
+use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt, PermissionsExt};
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -86,15 +90,31 @@ impl ServiceKinds for crate::admissions::AdmissionStore {
     }
 }
 
-/// contracts v1.1.10 (D-068 #5): the latest `EnsureReader` answer per
-/// database service (in memory), read by `GetStateSnapshot` next to the
-/// reader record of the activation.
+/// The latest `EnsureReader` answer per database (D-068 #5), read by
+/// `GetStateSnapshot` next to the activation's reader record. The runner
+/// keeps that record in its root-only `db-readers` directory; the agent
+/// keeps its own copy (same file shape, plus `checked_at`) next to
+/// `admissions.db` so a restart still serves the same status.
 #[derive(Default)]
-pub struct ReaderRecords(Mutex<HashMap<String, DbReaderStatus>>);
+pub struct ReaderRecords {
+    records: Mutex<HashMap<String, DbReaderStatus>>,
+    dir: Option<PathBuf>,
+    owner: Option<crate::admissions::StoreOwner>,
+}
 
 impl ReaderRecords {
+    /// Loads whatever `dir` already holds. A missing directory is empty.
+    pub fn open(dir: impl Into<PathBuf>, owner: Option<crate::admissions::StoreOwner>) -> Self {
+        let dir = dir.into();
+        Self {
+            records: Mutex::new(load_reader_records(&dir)),
+            dir: Some(dir),
+            owner,
+        }
+    }
+
     pub fn get(&self, resource_id: &str) -> Option<DbReaderStatus> {
-        self.0
+        self.records
             .lock()
             .unwrap_or_else(|p| p.into_inner())
             .get(resource_id)
@@ -102,16 +122,171 @@ impl ReaderRecords {
     }
 
     fn put(&self, resource_id: &str, status: DbReaderStatus) {
-        let mut records = self.0.lock().unwrap_or_else(|p| p.into_inner());
+        let mut records = self.records.lock().unwrap_or_else(|p| p.into_inner());
         // One entry per database service of this server.
-        if records.len() < MAX_READER_RECORDS || records.contains_key(resource_id) {
-            records.insert(resource_id.to_owned(), status);
+        if records.len() >= MAX_READER_RECORDS && !records.contains_key(resource_id) {
+            return;
         }
+        if let Some(dir) = &self.dir {
+            if let Err(err) = save_reader_record(dir, resource_id, &status, self.owner) {
+                tracing::warn!(error = %err, "EnsureReader status was not persisted");
+            }
+        }
+        records.insert(resource_id.to_owned(), status);
     }
 }
 
 /// [`ReaderRecords`] kept at most.
 const MAX_READER_RECORDS: usize = 10_000;
+const READER_FILE_MODE: u32 = 0o640;
+const READER_DIR_MODE: u32 = 0o750;
+
+fn load_reader_records(dir: &Path) -> HashMap<String, DbReaderStatus> {
+    let mut found = HashMap::new();
+    let Ok(entries) = fs::read_dir(dir) else {
+        return found;
+    };
+    for entry in entries.flatten() {
+        if found.len() >= MAX_READER_RECORDS {
+            break;
+        }
+        let Some(resource_id) = reader_file_id(&entry.file_name()) else {
+            continue;
+        };
+        let path = entry.path();
+        let Ok(meta) = fs::symlink_metadata(&path) else {
+            continue;
+        };
+        if !meta.is_file() || meta.len() > 4_096 {
+            continue;
+        }
+        let Ok(bytes) = fs::read(&path) else {
+            continue;
+        };
+        if let Some(status) = parse_reader_record(&bytes) {
+            found.insert(resource_id, status);
+        }
+    }
+    found
+}
+
+fn reader_file_id(name: &std::ffi::OsStr) -> Option<String> {
+    let name = name.to_str()?;
+    let resource_id = name.strip_suffix(".status")?;
+    text::uuid7(resource_id).then(|| resource_id.to_owned())
+}
+
+fn parse_reader_record(bytes: &[u8]) -> Option<DbReaderStatus> {
+    use db_reader_status::Status as S;
+    let value: Value = serde_json::from_slice(bytes).ok()?;
+    let (status, reason) = match value["reader_status"].as_str()? {
+        "ready" => (S::Ready, String::new()),
+        "failed" => (
+            S::Failed,
+            value["reader_reason"]
+                .as_str()
+                .filter(|reason| {
+                    !reason.is_empty()
+                        && reason.len() <= 128
+                        && reason.bytes().all(|b| b.is_ascii_graphic())
+                })
+                .unwrap_or_default()
+                .to_owned(),
+        ),
+        _ => return None,
+    };
+    let deployment_id = value["release_id"].as_str().unwrap_or_default();
+    if deployment_id.len() > 64 {
+        return None;
+    }
+    let checked_at = value["checked_at"]
+        .as_str()
+        .and_then(text::timestamp)
+        .map(|seconds| prost_types::Timestamp { seconds, nanos: 0 });
+    Some(DbReaderStatus {
+        status: status as i32,
+        reason,
+        deployment_id: deployment_id.to_owned(),
+        checked_at,
+    })
+}
+
+fn save_reader_record(
+    dir: &Path,
+    resource_id: &str,
+    status: &DbReaderStatus,
+    owner: Option<crate::admissions::StoreOwner>,
+) -> io::Result<()> {
+    use db_reader_status::Status as S;
+    if !text::uuid7(resource_id) {
+        return Err(io::Error::new(io::ErrorKind::InvalidInput, "resource id"));
+    }
+    ensure_reader_dir(dir, owner)?;
+    let reader_status = match S::try_from(status.status) {
+        Ok(S::Ready) => "ready",
+        Ok(S::Failed) => "failed",
+        _ => "missing",
+    };
+    let body = serde_json::to_vec(&json!({
+        "release_id": status.deployment_id,
+        "reader_status": reader_status,
+        "reader_reason": if status.reason.is_empty() {
+            Value::Null
+        } else {
+            Value::String(status.reason.clone())
+        },
+        "checked_at": status.checked_at.as_ref().map(|at| text::format_timestamp(at.seconds)),
+    }))
+    .map_err(|err| io::Error::new(io::ErrorKind::InvalidData, err))?;
+    let name = format!("{resource_id}.status");
+    let final_path = dir.join(&name);
+    if let Ok(meta) = fs::symlink_metadata(&final_path) {
+        if !meta.is_file() {
+            return Err(io::Error::new(
+                io::ErrorKind::AlreadyExists,
+                "reader status is not a file",
+            ));
+        }
+    }
+    let tmp = dir.join(format!(".{name}.{}.tmp", std::process::id()));
+    {
+        let mut file = OpenOptions::new()
+            .write(true)
+            .create(true)
+            .truncate(true)
+            .mode(READER_FILE_MODE)
+            .custom_flags(libc::O_NOFOLLOW)
+            .open(&tmp)?;
+        file.write_all(&body)?;
+        file.write_all(b"\n")?;
+        file.sync_all()?;
+    }
+    if let Some(owner) = owner {
+        std::os::unix::fs::lchown(&tmp, Some(owner.uid), Some(owner.gid))?;
+    }
+    fs::set_permissions(&tmp, fs::Permissions::from_mode(READER_FILE_MODE))?;
+    fs::rename(&tmp, &final_path)?;
+    Ok(())
+}
+
+fn ensure_reader_dir(dir: &Path, owner: Option<crate::admissions::StoreOwner>) -> io::Result<()> {
+    match fs::symlink_metadata(dir) {
+        Ok(meta) if meta.is_dir() => Ok(()),
+        Ok(_) => Err(io::Error::new(
+            io::ErrorKind::AlreadyExists,
+            "reader directory is not a directory",
+        )),
+        Err(err) if err.kind() == io::ErrorKind::NotFound => {
+            fs::DirBuilder::new().mode(READER_DIR_MODE).create(dir)?;
+            if let Some(owner) = owner {
+                std::os::unix::fs::lchown(dir, Some(owner.uid), Some(owner.gid))?;
+                fs::set_permissions(dir, fs::Permissions::from_mode(0o2750))?;
+            }
+            Ok(())
+        }
+        Err(err) => Err(err),
+    }
+}
 
 pub struct DatabaseSvc {
     pub runner: Arc<dyn Runner>,
@@ -1044,6 +1219,28 @@ mod tests {
         // record GetStateSnapshot compares with the activation's.
         assert_eq!(svc.readers.get(DB), Some(status));
         assert_eq!(svc.readers.get(WEB), None);
+    }
+
+    /// The EnsureReader answer is still the one GetStateSnapshot reads
+    /// after the agent process is gone and a new one opens the same records.
+    #[tokio::test]
+    async fn ensure_reader_status_is_the_same_after_a_restart() {
+        let dir = crate::signed_plan::test_support::temp_dir("reader-restart");
+        let path = dir.join("db-readers");
+        let deployment = "01a0cdb5-3500-70d1-8000-000000000009";
+        let runner = DbRunner::new(
+            json!({"ok": true, "op": "db_reader_ensure", "deployment_id": deployment,
+                "reader_status": "failed", "reader_reason": "auth_failed"}),
+            false,
+        );
+        let svc = svc(runner).with_readers(Arc::new(ReaderRecords::open(&path, None)));
+        let status = svc.ensure_reader(ensure(DB)).await.unwrap().into_inner();
+        assert_eq!(status.status, db_reader_status::Status::Failed as i32);
+        assert_eq!(status.reason, "auth_failed");
+        drop(svc);
+        let restored = ReaderRecords::open(&path, None);
+        assert_eq!(restored.get(DB), Some(status));
+        std::fs::remove_dir_all(dir).unwrap();
     }
 
     /// v2.1.9: a resource that is not a database service here is

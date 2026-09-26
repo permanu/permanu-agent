@@ -29,7 +29,7 @@ pub mod webhooks;
 mod tests;
 
 pub use admit::{Admission, AdmitInput, INPUT_KINDS};
-pub use query::{execution_deadline, ActionRecord, AdmissionRecord};
+pub use query::{execution_deadline, ActionRecord, AdmissionRecord, StoredDeployment};
 pub use reconcile::{event_lines, read_consumed_log, run_results, ReconcileEffect};
 
 use std::fs::{self, OpenOptions};
@@ -283,11 +283,6 @@ impl AdmissionStore {
             .unwrap_or_else(|poison| poison.into_inner()) = Some((path, owner_uid));
     }
 
-    #[cfg(test)]
-    pub fn path(&self) -> &Path {
-        &self.path
-    }
-
     /// Records when the runner started a build (its `build_started` line).
     pub fn note_build_started(&self, build_id: &str, started_at: i64) {
         self.build_starts.note(build_id, started_at);
@@ -341,6 +336,14 @@ impl AdmissionStore {
             }
         }
         Ok(())
+    }
+
+    pub fn path(&self) -> &Path {
+        &self.path
+    }
+
+    pub fn owner(&self) -> Option<StoreOwner> {
+        self.owner
     }
 
     /// End of the store-loss quarantine, if one was set.

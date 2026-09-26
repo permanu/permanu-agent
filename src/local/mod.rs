@@ -575,7 +575,10 @@ impl LocalServer {
         .max_decoding_message_size(MAX_MESSAGE_BYTES)
         .max_encoding_message_size(MAX_MESSAGE_BYTES);
         // D-068 #5: EnsureReader answers feed GetStateSnapshot's reader record.
-        let readers = Arc::new(database::ReaderRecords::default());
+        let readers = Arc::new(database::ReaderRecords::open(
+            self.core.store.path().with_file_name("db-readers"),
+            self.core.store.owner(),
+        ));
         let trust = self.core.trust.clone();
         let snapshots = snapshot::Snapshots {
             store: self.core.store.clone(),
