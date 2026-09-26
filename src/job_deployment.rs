@@ -1947,12 +1947,25 @@ fn run_docker_command_with_stdin_and_env(
         .map_err(|err| format!("start docker: {err}"))?;
     if !stdin.is_empty() {
         if let Some(mut child_stdin) = child.stdin.take() {
-            child_stdin
-                .write_all(stdin.as_bytes())
-                .map_err(|err| format!("write docker stdin: {err}"))?;
+            // `docker login --password-stdin` can exit before it reads (bad
+            // args, or a test double that closes stdin). The child's status
+            // is the result; EPIPE here is that exit, not a failed write.
+            if let Err(err) = write_process_stdin(&mut child_stdin, stdin.as_bytes()) {
+                drop(child_stdin);
+                let _ = child.wait();
+                return Err(err);
+            }
         }
     }
     wait_for_child_output(&mut child, timeout, cancellation, None)
+}
+
+fn write_process_stdin(stdin: &mut impl Write, bytes: &[u8]) -> Result<(), String> {
+    match stdin.write_all(bytes) {
+        Ok(()) => Ok(()),
+        Err(err) if err.kind() == std::io::ErrorKind::BrokenPipe => Ok(()),
+        Err(err) => Err(format!("write docker stdin: {err}")),
+    }
 }
 
 struct DockerCredentialSession {
@@ -7038,6 +7051,14 @@ mod ci_cancellation_tests {
         atomic::{AtomicBool, Ordering},
         Arc,
     };
+
+    #[test]
+    fn docker_stdin_write_accepts_a_pipe_the_child_already_closed() {
+        let (reader, mut writer) = std::io::pipe().expect("pipe");
+        drop(reader);
+        write_process_stdin(&mut writer, b"secret-password\n")
+            .expect("closed password pipe is the child exiting, not a failed login");
+    }
 
     #[test]
     fn wait_for_child_output_terminates_process_group_on_cancel_signal() {

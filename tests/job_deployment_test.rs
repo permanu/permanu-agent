@@ -2370,6 +2370,11 @@ fn install_fake_docker(
 set -eu
 printf '%s\n' "$*" >> "{fake_log}"
 case "${{1:-}}" in
+  login)
+    # `docker login --password-stdin` reads the password. Exiting first
+    # closes the pipe and the parent's write fails under load.
+    cat >/dev/null
+    ;;
   run)
     if [ "${{2:-}}" = "--detach" ]; then
       printf 'fake-container-id\n'
