@@ -651,7 +651,7 @@ async fn analytics_are_served_by_service_and_route_host() {
     .await
     .unwrap();
     assert_eq!(measure(&rows[0], AnalyticsMeasure::Requests), Some(138.0));
-    // A dimension the rollups do not record yields no rows, never an error.
+    // A stored row that does not carry the dimension yields no rows, never an error.
     let (rows, _) = analytics(
         &mut client,
         AnalyticsQuery {

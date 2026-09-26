@@ -9,9 +9,10 @@
 //! multiple of 60 s), groups by at most 2 dimensions and keeps the top
 //! `limit` rows per bucket by the first measure.
 //!
-//! The rollups record only the route host, so `DOMAIN` is the one dimension
-//! a row can be grouped by; a query grouped by any other dimension (or with
-//! a `path_prefix` other than `/`) matches no row rather than failing.
+//! The rollups record the route host (`DOMAIN`) and the request's path (the
+//! `route_path` template), referrer domain, country and device. `group_by`
+//! of any other dimension is rejected. A `path_prefix` other than `/` matches
+//! no row rather than failing.
 //! Summing minutes makes `UNIQUE_VISITORS` an upper bound (a visitor of two
 //! minutes counts twice), latency percentiles are request-weighted means of
 //! the minutes' percentiles, and `ERROR_RATE` is 5xx over all requests.
@@ -43,6 +44,18 @@ const MAX_BUCKETS: i64 = 11_000;
 
 fn invalid(message: &str) -> Status {
     Status::invalid_argument(message)
+}
+
+/// Dimensions a rollup row records. Anything else is an unknown `group_by`.
+fn groupable(dimension: AnalyticsDimension) -> bool {
+    matches!(
+        dimension,
+        AnalyticsDimension::Domain
+            | AnalyticsDimension::Path
+            | AnalyticsDimension::Referrer
+            | AnalyticsDimension::Country
+            | AnalyticsDimension::Device
+    )
 }
 
 /// A checked `AnalyticsQuery`.
@@ -93,6 +106,9 @@ pub fn plan(query: &AnalyticsQuery, now_sec: i64) -> Result<AnalyticsPlan, Statu
     for dimension in &query.group_by {
         match AnalyticsDimension::try_from(*dimension) {
             Ok(AnalyticsDimension::Unspecified) | Err(_) => {
+                return Err(invalid("unknown group_by dimension"))
+            }
+            Ok(dimension) if !groupable(dimension) => {
                 return Err(invalid("unknown group_by dimension"))
             }
             Ok(dimension) if group_by.contains(&dimension) => {
@@ -371,5 +387,194 @@ mod tests {
             ..Default::default()
         };
         assert!(super::plan(&prefix, 10_000).unwrap().unanswerable);
+    }
+
+    /// `group_by` of a dimension the rollups do not record is refused.
+    /// `DOMAIN` stays accepted; `PATH`, `REFERRER`, `COUNTRY` and `DEVICE`
+    /// are the other accepted dimensions.
+    #[test]
+    fn an_unknown_group_by_dimension_is_rejected() {
+        for dimension in [
+            AnalyticsDimension::StatusClass as i32,
+            AnalyticsDimension::Bot as i32,
+            AnalyticsDimension::UtmSource as i32,
+            AnalyticsDimension::UtmMedium as i32,
+            AnalyticsDimension::UtmCampaign as i32,
+            AnalyticsDimension::UtmTerm as i32,
+            AnalyticsDimension::UtmContent as i32,
+            AnalyticsDimension::LatencyBucket as i32,
+            99,
+        ] {
+            let err = plan(
+                &AnalyticsQuery {
+                    group_by: vec![dimension],
+                    ..Default::default()
+                },
+                10_000,
+            )
+            .unwrap_err();
+            assert_eq!(err.code(), tonic::Code::InvalidArgument, "{dimension}");
+        }
+        let err = plan(
+            &AnalyticsQuery {
+                group_by: vec![
+                    AnalyticsDimension::Path as i32,
+                    AnalyticsDimension::StatusClass as i32,
+                ],
+                ..Default::default()
+            },
+            10_000,
+        )
+        .unwrap_err();
+        assert_eq!(err.code(), tonic::Code::InvalidArgument);
+    }
+
+    fn access_line(path: &str, referer: &str, country: &str, user_agent: &str) -> String {
+        format!(
+            r#"{{"request_id":"r","method":"GET","host":"app.example.com","status":200,"path":"{path}","referer":"{referer}","country":"{country}","user_agent":"{user_agent}","is_bot":false,"response_time_us":1000,"bytes_sent":10,"client_ip":"203.0.113.9"}}"#
+        )
+    }
+
+    /// Roll the access lines into the store and run `QueryAnalytics`'s
+    /// evaluator grouped by `dimension`.
+    async fn grouped(lines: &[String], dimension: AnalyticsDimension) -> Vec<AnalyticsRow> {
+        use std::time::{SystemTime, UNIX_EPOCH};
+
+        use super::super::journal::{access_of, Rollups};
+        use super::super::records::encode;
+        use super::super::store::{Kind, Producer};
+        use super::super::test_support;
+        use crate::proto::agent::v2::TimeRange;
+        use crate::signed_plan::test_support::temp_dir;
+
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_secs() as i64;
+        let sec = (now - 180) - (now - 180).rem_euclid(60) + 10;
+        let mut rollups = Rollups::new();
+        for (i, line) in lines.iter().enumerate() {
+            let access = access_of(line).unwrap_or_else(|| panic!("access line: {line}"));
+            rollups.add(sec + i as i64, &access);
+        }
+        let minute = sec - sec.rem_euclid(60);
+        let closed = rollups.closed(minute + 60);
+        let dir = temp_dir("analytics-group");
+        let telemetry = test_support::open(dir.join("telemetry"));
+        for row in closed {
+            let ts = row.bucket_start.unwrap().seconds * NANOS;
+            let stored = StoredAnalyticsRow {
+                bucket_start: row.bucket_start,
+                dimensions: row.dimensions,
+                values: row.values,
+                service_id: String::new(),
+                project_id: String::new(),
+                environment_id: String::new(),
+            };
+            telemetry.submit(
+                Kind::Analytics,
+                Producer::System,
+                ts,
+                super::super::ingest::TAG_ANALYTICS_ROW,
+                encode(&stored),
+                false,
+            );
+        }
+        telemetry.sync().await;
+        let query = AnalyticsQuery {
+            range: Some(TimeRange {
+                start: Some(prost_types::Timestamp {
+                    seconds: minute,
+                    nanos: 0,
+                }),
+                end: Some(prost_types::Timestamp {
+                    seconds: minute + 60,
+                    nanos: 0,
+                }),
+            }),
+            group_by: vec![dimension as i32],
+            measures: vec![AnalyticsMeasure::Requests as i32],
+            ..Default::default()
+        };
+        let plan = plan(&query, minute + 120).unwrap();
+        let snapshot = telemetry.snapshot(Kind::Analytics);
+        let rows = evaluate(&snapshot, &plan, plan.from_sec, plan.to_sec).unwrap();
+        std::fs::remove_dir_all(dir).unwrap();
+        rows
+    }
+
+    fn requests_of(row: &AnalyticsRow) -> f64 {
+        row.values
+            .iter()
+            .find(|v| v.measure == AnalyticsMeasure::Requests as i32)
+            .map(|v| v.value)
+            .unwrap_or(0.0)
+    }
+
+    fn assert_two_groups(
+        rows: &[AnalyticsRow],
+        dimension: AnalyticsDimension,
+        high: &str,
+        low: &str,
+    ) {
+        assert_eq!(rows.len(), 2, "{dimension:?} {rows:?}");
+        assert_eq!(rows[0].dimensions.len(), 1, "{rows:?}");
+        assert_eq!(rows[0].dimensions[0].dimension, dimension as i32);
+        assert_eq!(rows[0].dimensions[0].value, high);
+        assert_eq!(requests_of(&rows[0]), 2.0);
+        assert_eq!(rows[1].dimensions[0].dimension, dimension as i32);
+        assert_eq!(rows[1].dimensions[0].value, low);
+        assert_eq!(requests_of(&rows[1]), 1.0);
+    }
+
+    #[tokio::test]
+    async fn query_analytics_groups_by_path() {
+        let lines = vec![
+            access_line("/docs", "https://news.example/a", "US", "Mozilla/5.0"),
+            access_line("/docs", "https://news.example/a", "US", "Mozilla/5.0"),
+            access_line("/pricing", "https://news.example/a", "US", "Mozilla/5.0"),
+        ];
+        let rows = grouped(&lines, AnalyticsDimension::Path).await;
+        assert_two_groups(&rows, AnalyticsDimension::Path, "/docs", "/pricing");
+    }
+
+    #[tokio::test]
+    async fn query_analytics_groups_by_referrer() {
+        let lines = vec![
+            access_line("/docs", "https://news.example/a", "US", "Mozilla/5.0"),
+            access_line("/docs", "https://news.example/b", "US", "Mozilla/5.0"),
+            access_line("/docs", "https://shop.example/c", "US", "Mozilla/5.0"),
+        ];
+        let rows = grouped(&lines, AnalyticsDimension::Referrer).await;
+        assert_two_groups(
+            &rows,
+            AnalyticsDimension::Referrer,
+            "news.example",
+            "shop.example",
+        );
+    }
+
+    #[tokio::test]
+    async fn query_analytics_groups_by_country() {
+        let lines = vec![
+            access_line("/docs", "https://news.example/a", "US", "Mozilla/5.0"),
+            access_line("/docs", "https://news.example/a", "US", "Mozilla/5.0"),
+            access_line("/docs", "https://news.example/a", "DE", "Mozilla/5.0"),
+        ];
+        let rows = grouped(&lines, AnalyticsDimension::Country).await;
+        assert_two_groups(&rows, AnalyticsDimension::Country, "US", "DE");
+    }
+
+    #[tokio::test]
+    async fn query_analytics_groups_by_device() {
+        let desktop = "Mozilla/5.0 (Windows NT 10.0; Win64; x64)";
+        let phone = "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X)";
+        let lines = vec![
+            access_line("/docs", "https://news.example/a", "US", desktop),
+            access_line("/docs", "https://news.example/a", "US", desktop),
+            access_line("/docs", "https://news.example/a", "US", phone),
+        ];
+        let rows = grouped(&lines, AnalyticsDimension::Device).await;
+        assert_two_groups(&rows, AnalyticsDimension::Device, "desktop", "mobile");
     }
 }

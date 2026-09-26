@@ -131,6 +131,10 @@ pub struct Access {
     pub client_ip: String,
     pub user_agent: String,
     pub is_bot: bool,
+    /// `Referer` or `referrer`, as written. Empty when the line has neither.
+    pub referrer: String,
+    /// `country` as written. Empty when the line has none.
+    pub country: String,
 }
 
 /// Parses a Dwaar request-log line; `None` for any other Dwaar output.
@@ -163,7 +167,78 @@ pub fn access_of(line: &str) -> Option<Access> {
         client_ip: value["client_ip"].as_str().unwrap_or_default().to_owned(),
         user_agent: value["user_agent"].as_str().unwrap_or_default().to_owned(),
         is_bot: value["is_bot"].as_bool().unwrap_or(false),
+        referrer: value["referer"]
+            .as_str()
+            .or_else(|| value["referrer"].as_str())
+            .unwrap_or_default()
+            .to_owned(),
+        country: value["country"].as_str().unwrap_or_default().to_owned(),
     })
+}
+
+/// Referrer domain (`REFERRER`): `direct` when absent, `internal` when it is
+/// this route host, `unknown` when it is not a host.
+fn referrer_domain(referrer: &str, host: &str) -> String {
+    let trimmed = referrer.trim();
+    if trimmed.is_empty() {
+        return "direct".to_owned();
+    }
+    let without_scheme = trimmed
+        .strip_prefix("https://")
+        .or_else(|| trimmed.strip_prefix("http://"))
+        .unwrap_or(trimmed);
+    let authority = without_scheme
+        .split(['/', '?', '#'])
+        .next()
+        .unwrap_or("")
+        .rsplit('@')
+        .next()
+        .unwrap_or("");
+    let name = authority
+        .rsplit_once(':')
+        .filter(|(_, port)| !port.is_empty() && port.bytes().all(|b| b.is_ascii_digit()))
+        .map(|(name, _)| name)
+        .unwrap_or(authority);
+    let name = name.trim_end_matches('.').to_ascii_lowercase();
+    if name.is_empty()
+        || name.len() > 253
+        || name
+            .bytes()
+            .any(|byte| !(byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'-')))
+    {
+        return "unknown".to_owned();
+    }
+    if name == host {
+        "internal".to_owned()
+    } else {
+        name
+    }
+}
+
+/// ISO 3166-1 alpha-2, or `XX` when the line has none.
+fn country_code(country: &str) -> String {
+    let country = country.trim();
+    if country.len() == 2 && country.bytes().all(|byte| byte.is_ascii_alphabetic()) {
+        country.to_ascii_uppercase()
+    } else {
+        "XX".to_owned()
+    }
+}
+
+/// `mobile`, `desktop`, `tablet`, `bot` or `unknown`.
+fn device_class(user_agent: &str, is_bot: bool) -> &'static str {
+    let ua = user_agent.to_ascii_lowercase();
+    if is_bot || ua.contains("bot") || ua.contains("spider") || ua.contains("crawler") {
+        "bot"
+    } else if ua.contains("ipad") || ua.contains("tablet") {
+        "tablet"
+    } else if ua.contains("mobile") || ua.contains("iphone") || ua.contains("android") {
+        "mobile"
+    } else if ua.is_empty() {
+        "unknown"
+    } else {
+        "desktop"
+    }
 }
 
 #[derive(Debug, Default)]
@@ -177,19 +252,32 @@ struct Minute {
     latencies_ms: Vec<f64>,
 }
 
-/// Per-minute Dwaar rollups keyed by route host (analytics, 9.1): the
-/// agent writes one `AnalyticsRow` per host per closed minute. Unique
+/// One closed-minute series: the route host plus the dimensions
+/// `QueryAnalytics` groups by (`PATH`, `REFERRER`, `COUNTRY`, `DEVICE`).
+#[derive(Clone, PartialEq, Eq, PartialOrd, Ord)]
+struct SeriesKey {
+    minute: i64,
+    host: String,
+    path: String,
+    referrer: String,
+    country: String,
+    device: String,
+}
+
+/// Per-minute Dwaar rollups (analytics, 9.1): one `AnalyticsRow` per route
+/// host and per path, referrer domain, country and device, for each closed
+/// minute. `DOMAIN` stays the first dimension (attribution reads it). Unique
 /// visitors use a daily salted hash of address and user agent; the salt
 /// lives only in memory and changes at 00:00 UTC (9.6).
 pub struct Rollups {
-    minutes: BTreeMap<(i64, String), Minute>,
+    minutes: BTreeMap<SeriesKey, Minute>,
     salt: [u8; 32],
     salt_day: i64,
 }
 
-/// Latency samples kept per host and minute (percentiles are over these).
+/// Latency samples kept per series (percentiles are over these).
 const MAX_SAMPLES: usize = 10_000;
-/// Hosts per minute; more are dropped from the rollup (not from `http`).
+/// Series per minute; more are dropped from the rollup (not from `http`).
 const MAX_HOSTS: usize = 1_000;
 
 /// A random salt; all zero only if the OS RNG fails, which then only
@@ -233,9 +321,20 @@ impl Rollups {
             self.salt_day = day;
         }
         let minute = sec - sec.rem_euclid(60);
-        let hosts = self.minutes.keys().filter(|(m, _)| *m == minute).count();
-        let key = (minute, access.host.clone());
-        if hosts >= MAX_HOSTS && !self.minutes.contains_key(&key) {
+        let key = SeriesKey {
+            minute,
+            host: access.host.clone(),
+            path: super::dwaar_metrics::route_path(&access.path),
+            referrer: referrer_domain(&access.referrer, &access.host),
+            country: country_code(&access.country),
+            device: device_class(&access.user_agent, access.is_bot).to_owned(),
+        };
+        let series = self
+            .minutes
+            .keys()
+            .filter(|existing| existing.minute == minute)
+            .count();
+        if series >= MAX_HOSTS && !self.minutes.contains_key(&key) {
             return;
         }
         let entry = self.minutes.entry(key).or_default();
@@ -269,23 +368,30 @@ impl Rollups {
     /// `now_sec` (a minute closes 60 s after it starts).
     pub fn closed(&mut self, now_sec: i64) -> Vec<AnalyticsRow> {
         let open_from = now_sec - now_sec.rem_euclid(60);
-        let closed: Vec<(i64, String)> = self
+        let closed: Vec<SeriesKey> = self
             .minutes
             .keys()
-            .filter(|(minute, _)| *minute < open_from)
+            .filter(|key| key.minute < open_from)
             .cloned()
             .collect();
         closed
             .into_iter()
             .filter_map(|key| {
                 let minute = self.minutes.remove(&key)?;
-                Some(row_of(key.0, &key.1, minute))
+                Some(row_of(key, minute))
             })
             .collect()
     }
 }
 
-fn row_of(start: i64, host: &str, mut minute: Minute) -> AnalyticsRow {
+fn dimension(dimension: AnalyticsDimension, value: String) -> AnalyticsDimensionValue {
+    AnalyticsDimensionValue {
+        dimension: dimension as i32,
+        value,
+    }
+}
+
+fn row_of(key: SeriesKey, mut minute: Minute) -> AnalyticsRow {
     minute.latencies_ms.sort_by(f64::total_cmp);
     let measure = |measure: AnalyticsMeasure, value: f64| AnalyticsMeasureValue {
         measure: measure as i32,
@@ -294,13 +400,16 @@ fn row_of(start: i64, host: &str, mut minute: Minute) -> AnalyticsRow {
     let requests = minute.requests as f64;
     AnalyticsRow {
         bucket_start: Some(prost_types::Timestamp {
-            seconds: start,
+            seconds: key.minute,
             nanos: 0,
         }),
-        dimensions: vec![AnalyticsDimensionValue {
-            dimension: AnalyticsDimension::Domain as i32,
-            value: host.to_owned(),
-        }],
+        dimensions: vec![
+            dimension(AnalyticsDimension::Domain, key.host),
+            dimension(AnalyticsDimension::Path, key.path),
+            dimension(AnalyticsDimension::Referrer, key.referrer),
+            dimension(AnalyticsDimension::Country, key.country),
+            dimension(AnalyticsDimension::Device, key.device),
+        ],
         values: vec![
             measure(AnalyticsMeasure::Requests, requests),
             measure(AnalyticsMeasure::PageViews, minute.page_views as f64),
@@ -401,10 +510,17 @@ mod tests {
         );
         assert!(rollups.closed(t + 10).is_empty(), "still open");
         let rows = rollups.closed(t + 30);
-        assert_eq!(rows.len(), 2);
-        let a = &rows[0];
-        assert_eq!(a.dimensions[0].value, "a.example.com");
-        assert_eq!(a.bucket_start.unwrap().seconds, t - 40);
+        // The bot request is its own device series; the host's requests still
+        // add up across those series.
+        assert_eq!(rows.len(), 3, "{rows:?}");
+        fn dim(row: &AnalyticsRow, dimension: AnalyticsDimension) -> &str {
+            row.dimensions
+                .iter()
+                .find(|d| d.dimension == dimension as i32)
+                .unwrap()
+                .value
+                .as_str()
+        }
         let value = |row: &AnalyticsRow, m: AnalyticsMeasure| {
             row.values
                 .iter()
@@ -412,14 +528,41 @@ mod tests {
                 .unwrap()
                 .value
         };
-        assert_eq!(value(a, AnalyticsMeasure::Requests), 3.0);
-        assert_eq!(value(a, AnalyticsMeasure::PageViews), 1.0);
-        assert_eq!(value(a, AnalyticsMeasure::UniqueVisitors), 2.0);
-        assert_eq!(value(a, AnalyticsMeasure::BotRequests), 1.0);
-        assert_eq!(value(a, AnalyticsMeasure::BytesSent), 300.0);
-        assert_eq!(value(a, AnalyticsMeasure::LatencyP50Ms), 20.0);
-        assert_eq!(value(a, AnalyticsMeasure::LatencyP99Ms), 30.0);
-        assert!((value(a, AnalyticsMeasure::ErrorRate) - 1.0 / 3.0).abs() < 1e-9);
+        let a: Vec<_> = rows
+            .iter()
+            .filter(|row| dim(row, AnalyticsDimension::Domain) == "a.example.com")
+            .collect();
+        assert_eq!(a.len(), 2, "{rows:?}");
+        assert!(a.iter().all(|row| {
+            row.bucket_start.unwrap().seconds == t - 40
+                && dim(row, AnalyticsDimension::Path) == "/"
+                && dim(row, AnalyticsDimension::Referrer) == "direct"
+                && dim(row, AnalyticsDimension::Country) == "XX"
+        }));
+        let sum =
+            |measure: AnalyticsMeasure| -> f64 { a.iter().map(|row| value(row, measure)).sum() };
+        assert_eq!(sum(AnalyticsMeasure::Requests), 3.0);
+        assert_eq!(sum(AnalyticsMeasure::PageViews), 1.0);
+        assert_eq!(sum(AnalyticsMeasure::UniqueVisitors), 2.0);
+        assert_eq!(sum(AnalyticsMeasure::BotRequests), 1.0);
+        assert_eq!(sum(AnalyticsMeasure::BytesSent), 300.0);
+        let desktop = a
+            .iter()
+            .find(|row| dim(row, AnalyticsDimension::Device) == "desktop")
+            .unwrap();
+        assert_eq!(value(desktop, AnalyticsMeasure::Requests), 2.0);
+        assert_eq!(value(desktop, AnalyticsMeasure::LatencyP50Ms), 10.0);
+        assert_eq!(value(desktop, AnalyticsMeasure::LatencyP99Ms), 30.0);
+        assert!((value(desktop, AnalyticsMeasure::ErrorRate) - 0.5).abs() < 1e-9);
+        let bot = a
+            .iter()
+            .find(|row| dim(row, AnalyticsDimension::Device) == "bot")
+            .unwrap();
+        assert_eq!(value(bot, AnalyticsMeasure::Requests), 1.0);
+        assert_eq!(value(bot, AnalyticsMeasure::LatencyP50Ms), 20.0);
+        assert!(rows
+            .iter()
+            .any(|row| dim(row, AnalyticsDimension::Domain) == "b.example.com"));
         assert!(rollups.closed(t + 30).is_empty());
     }
 

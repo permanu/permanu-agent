@@ -28,9 +28,10 @@
 //! - Connection limits (contracts v1.1.7, D-065 #8): at most 8 concurrent
 //!   connections per source address (further ones closed at accept and
 //!   counted); a connection with no request in flight for 30 s is closed
-//!   (HTTP/1.1: no request bytes; gRPC: no open stream, with HTTP/2
-//!   keepalive `PING`s after 30 s and a 10 s ack timeout); the 30 s body
-//!   deadline of a connection's first request starts at accept.
+//!   (HTTP/1.1: no request bytes, a TCP close; gRPC: no open stream, an
+//!   HTTP/2 `GOAWAY` and then a close, with HTTP/2 keepalive `PING`s after
+//!   30 s and a 10 s ack timeout); the 30 s body deadline of a connection's
+//!   first request starts at accept.
 
 use std::collections::HashMap;
 use std::future::Future;
@@ -221,7 +222,8 @@ impl Drop for Registered {
 }
 
 /// A TCP connection holding one of the listeners' connection slots and one
-/// of its source's; it reads as closed once idle (D-065 #8).
+/// of its source's; it reads as closed once idle (D-065 #8). gRPC sends
+/// `GOAWAY` first. HTTP/1.1 closes the TCP connection.
 struct Permitted {
     stream: TcpStream,
     _permit: OwnedSemaphorePermit,
@@ -234,12 +236,62 @@ struct Permitted {
     bytes_are_activity: bool,
     timer: Pin<Box<tokio::time::Sleep>>,
     closed: bool,
+    /// gRPC idle close. HTTP/1.1 stays at [`Goaway::Wait`] and ends on EOF.
+    goaway: Goaway,
+}
+
+/// HTTP/2 GOAWAY, `NO_ERROR`, last-stream-id `2^31-1` (no new streams).
+const GOAWAY_FRAME: [u8; 17] = [
+    0, 0, 8, 0x7, 0, 0, 0, 0, 0, 0x7f, 0xff, 0xff, 0xff, 0, 0, 0, 0,
+];
+
+enum Goaway {
+    Wait,
+    Write(usize),
+    Flush,
+    Shutdown,
 }
 
 impl Permitted {
     /// Whether the connection has been idle long enough to close.
     fn idle_expired(&self) -> bool {
         self.state.open.load(Ordering::SeqCst) == 0 && self.state.last().elapsed() >= self.idle
+    }
+}
+
+/// Writes the gRPC idle `GOAWAY`, then ends the read side.
+fn poll_goaway(stream: &mut Permitted, cx: &mut Context<'_>) -> Poll<std::io::Result<()>> {
+    loop {
+        match stream.goaway {
+            Goaway::Wait => return Poll::Pending,
+            Goaway::Write(sent) if sent >= GOAWAY_FRAME.len() => stream.goaway = Goaway::Flush,
+            Goaway::Write(sent) => {
+                match Pin::new(&mut stream.stream).poll_write(cx, &GOAWAY_FRAME[sent..]) {
+                    Poll::Ready(Ok(0)) => {
+                        return Poll::Ready(Err(std::io::Error::new(
+                            std::io::ErrorKind::WriteZero,
+                            "goaway",
+                        )));
+                    }
+                    Poll::Ready(Ok(n)) => stream.goaway = Goaway::Write(sent + n),
+                    Poll::Ready(Err(err)) => return Poll::Ready(Err(err)),
+                    Poll::Pending => return Poll::Pending,
+                }
+            }
+            Goaway::Flush => match Pin::new(&mut stream.stream).poll_flush(cx) {
+                Poll::Ready(Ok(())) => stream.goaway = Goaway::Shutdown,
+                Poll::Ready(Err(err)) => return Poll::Ready(Err(err)),
+                Poll::Pending => return Poll::Pending,
+            },
+            Goaway::Shutdown => match Pin::new(&mut stream.stream).poll_shutdown(cx) {
+                Poll::Ready(Ok(())) => {
+                    stream.closed = true;
+                    return Poll::Ready(Ok(()));
+                }
+                Poll::Ready(Err(err)) => return Poll::Ready(Err(err)),
+                Poll::Pending => return Poll::Pending,
+            },
+        }
     }
 }
 
@@ -253,6 +305,9 @@ impl AsyncRead for Permitted {
         if this.closed {
             return Poll::Ready(Ok(()));
         }
+        if !this.bytes_are_activity && !matches!(this.goaway, Goaway::Wait) {
+            return poll_goaway(this, cx);
+        }
         let before = buf.filled().len();
         if let Poll::Ready(result) = Pin::new(&mut this.stream).poll_read(cx, buf) {
             if this.bytes_are_activity && buf.filled().len() > before {
@@ -262,9 +317,21 @@ impl AsyncRead for Permitted {
         }
         loop {
             if this.idle_expired() {
-                // Read as closed: the server ends the connection.
-                this.closed = true;
-                return Poll::Ready(Ok(()));
+                // A frame that arrived as the timer fired is delivered first,
+                // so the idle close does not leave it unread (a TCP RST).
+                let before = buf.filled().len();
+                if let Poll::Ready(result) = Pin::new(&mut this.stream).poll_read(cx, buf) {
+                    if this.bytes_are_activity && buf.filled().len() > before {
+                        this.state.touch();
+                    }
+                    return Poll::Ready(result);
+                }
+                if this.bytes_are_activity {
+                    this.closed = true;
+                    return Poll::Ready(Ok(()));
+                }
+                this.goaway = Goaway::Write(0);
+                return poll_goaway(this, cx);
             }
             let next = if this.state.open.load(Ordering::SeqCst) == 0 {
                 this.state.last() + this.idle
@@ -969,6 +1036,7 @@ async fn accept_checked(
                                 bytes_are_activity: registry.is_none(),
                                 timer: Box::pin(tokio::time::sleep(gate.idle)),
                                 closed: false,
+                                goaway: Goaway::Wait,
                             },
                             peer,
                         ));
@@ -1488,6 +1556,61 @@ mod tests {
         assert!(String::from_utf8_lossy(&buf).starts_with("HTTP/1.1 415"));
         bound.tasks.iter().for_each(JoinHandle::abort);
         std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    /// D-065 #8: an idle OTLP/gRPC connection is closed with HTTP/2 `GOAWAY`,
+    /// not a bare TCP drop. The idle duration is the listener's `limits.idle`
+    /// (30 s unless a test shortens it).
+    #[tokio::test]
+    async fn an_idle_grpc_close_sends_goaway() {
+        let dir = temp_dir("otlp-goaway");
+        let t = test_support::open(dir.join("telemetry"));
+        let mut l = listeners(t.clone(), Some("test-br"), true);
+        l.limits.idle = Duration::from_millis(200);
+        let bound = l.reconcile(None).await.expect("bound");
+        let listen = t.otlp();
+        let mut stream = TcpStream::connect(&listen.grpc_listen).await.unwrap();
+        let mut preface = b"PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n".to_vec();
+        // Empty SETTINGS so the handshake can finish before the idle close.
+        preface.extend_from_slice(&[0, 0, 0, 4, 0, 0, 0, 0, 0]);
+        stream.write_all(&preface).await.unwrap();
+        let mut buf = Vec::new();
+        let read = tokio::time::timeout(Duration::from_secs(3), stream.read_to_end(&mut buf)).await;
+        assert!(
+            matches!(read, Ok(Ok(_))),
+            "idle close was not a finished read: {read:?} buf={buf:?}"
+        );
+        assert!(
+            http2_has_goaway(&buf),
+            "idle close dropped the connection without GOAWAY: {buf:?}"
+        );
+        bound.tasks.iter().for_each(JoinHandle::abort);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    /// A GOAWAY frame (type 0x7, stream 0) somewhere in an HTTP/2 byte stream
+    /// that starts on a frame boundary.
+    fn http2_has_goaway(buf: &[u8]) -> bool {
+        let mut i = 0;
+        while i + 9 <= buf.len() {
+            let len =
+                ((buf[i] as usize) << 16) | ((buf[i + 1] as usize) << 8) | buf[i + 2] as usize;
+            if len > 16 * 1024 * 1024 {
+                return false;
+            }
+            let kind = buf[i + 3];
+            let stream =
+                u32::from_be_bytes([buf[i + 5], buf[i + 6], buf[i + 7], buf[i + 8]]) & 0x7fff_ffff;
+            if kind == 0x7 && stream == 0 {
+                return true;
+            }
+            let next = i + 9 + len;
+            if next > buf.len() {
+                break;
+            }
+            i = next;
+        }
+        false
     }
 
     /// D-066 #6 (QA_M2 run 3 O1): OTLP/HTTP has no header-read timeout
