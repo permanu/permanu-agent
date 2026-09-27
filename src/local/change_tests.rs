@@ -2066,6 +2066,18 @@ async fn a_rate_limited_plan_admits_nothing_and_its_resubmission_is_admitted() {
         .unwrap()
         .into_inner();
     assert!(admissions.admissions.is_empty());
+    // Verify sees the same limit and still admits nothing (D-071).
+    let verified = change
+        .verify_signed_plan(VerifySignedPlanRequest {
+            plan: Some(plan.clone()),
+        })
+        .await
+        .unwrap_err();
+    assert_eq!(verified.code(), Code::ResourceExhausted);
+    assert_eq!(
+        trailer(&verified, ERROR_REASON_HEADER),
+        "ERROR_REASON_RATE_LIMITED"
+    );
     // The minute passes; the refused attempts were not counted.
     h.core.forget_submissions();
     let admitted = change

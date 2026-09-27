@@ -419,10 +419,7 @@ async fn blocking<T: Send + 'static>(
         .unwrap_or(Err(PlanCode::Internal))
 }
 
-/// A sliding-window limiter: false once `limit` entries are within
-/// `window`; otherwise records now.
-fn take_slot(entries: &Mutex<VecDeque<Instant>>, limit: usize, window: Duration) -> bool {
-    let mut recent = locked(entries);
+fn expire_slots(recent: &mut VecDeque<Instant>, window: Duration) {
     let now = Instant::now();
     while recent
         .front()
@@ -430,10 +427,24 @@ fn take_slot(entries: &Mutex<VecDeque<Instant>>, limit: usize, window: Duration)
     {
         recent.pop_front();
     }
+}
+
+/// Whether another event would fit. Does not record one.
+fn slot_open(entries: &Mutex<VecDeque<Instant>>, limit: usize, window: Duration) -> bool {
+    let mut recent = locked(entries);
+    expire_slots(&mut recent, window);
+    recent.len() < limit
+}
+
+/// A sliding-window limiter: false once `limit` entries are within
+/// `window`; otherwise records now.
+fn take_slot(entries: &Mutex<VecDeque<Instant>>, limit: usize, window: Duration) -> bool {
+    let mut recent = locked(entries);
+    expire_slots(&mut recent, window);
     if recent.len() >= limit {
         return false;
     }
-    recent.push_back(now);
+    recent.push_back(Instant::now());
     true
 }
 
@@ -488,9 +499,20 @@ impl ChangeCore {
     }
 
     /// agent-protocol.md section 7: false once 10 submissions arrived in the
-    /// last minute.
+    /// last minute. Records this attempt when it is allowed.
     pub fn allow_submission(&self) -> bool {
         take_slot(
+            &self.submissions,
+            SUBMISSIONS_PER_MINUTE,
+            Duration::from_secs(60),
+        )
+    }
+
+    /// The same window as [`Self::allow_submission`] without recording an
+    /// attempt. `VerifySignedPlan` uses it so a rate limit refuses before
+    /// any admission (D-071).
+    pub fn submission_allowed(&self) -> bool {
+        slot_open(
             &self.submissions,
             SUBMISSIONS_PER_MINUTE,
             Duration::from_secs(60),
@@ -502,6 +524,15 @@ impl ChangeCore {
     /// count against [`Self::allow_submission`].
     pub fn allow_host_shell(&self) -> bool {
         take_slot(
+            &self.host_shells,
+            HOST_SHELLS_PER_HOUR,
+            Duration::from_secs(3_600),
+        )
+    }
+
+    /// [`Self::allow_host_shell`] without recording an open.
+    pub fn host_shell_allowed(&self) -> bool {
+        slot_open(
             &self.host_shells,
             HOST_SHELLS_PER_HOUR,
             Duration::from_secs(3_600),

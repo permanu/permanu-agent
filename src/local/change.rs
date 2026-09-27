@@ -145,14 +145,47 @@ impl ChangeSvc {
         plan: Option<SignedPlan>,
         limit: Limit,
     ) -> Result<OperationRef, Status> {
+        let submission = self.gate(plan, limit, true).await?;
+        let admission = self
+            .core
+            .submit(submission, Submitter::Client)
+            .await
+            .map_err(plan_status)?;
+        Ok(OperationRef {
+            operation_id: admission.operation_id,
+            plan_digest_hex: admission.plan_digest_hex,
+            accepted_at: ts(&admission.admitted_at),
+            deduplicated: admission.deduplicated,
+            plan_id: admission.plan_id,
+        })
+    }
+
+    /// Rate limit, staging and shape checks SubmitSignedPlan runs before it
+    /// writes an admission. `consume` records a slot; a peek (`false`) is
+    /// what VerifySignedPlan uses so a rate limit is visible before any
+    /// target is admitted (D-071).
+    async fn gate(
+        &self,
+        plan: Option<SignedPlan>,
+        limit: Limit,
+        consume: bool,
+    ) -> Result<Submission, Status> {
         let (allowed, message) = match limit {
             Limit::Submissions => (
-                self.core.allow_submission(),
+                if consume {
+                    self.core.allow_submission()
+                } else {
+                    self.core.submission_allowed()
+                },
                 "at most 10 plan submissions per minute",
             ),
             // D-067 #9: host shell opens have their own limit.
             Limit::HostShell => (
-                self.core.allow_host_shell(),
+                if consume {
+                    self.core.allow_host_shell()
+                } else {
+                    self.core.host_shell_allowed()
+                },
                 "at most 20 host shell opens per hour",
             ),
         };
@@ -186,18 +219,7 @@ impl ChangeSvc {
                 ErrorReason::NotSupportedYet,
             ));
         }
-        let admission = self
-            .core
-            .submit(submission, Submitter::Client)
-            .await
-            .map_err(plan_status)?;
-        Ok(OperationRef {
-            operation_id: admission.operation_id,
-            plan_digest_hex: admission.plan_digest_hex,
-            accepted_at: ts(&admission.admitted_at),
-            deduplicated: admission.deduplicated,
-            plan_id: admission.plan_id,
-        })
+        Ok(submission)
     }
 }
 
@@ -260,7 +282,17 @@ impl ChangeService for ChangeSvc {
         request: Request<VerifySignedPlanRequest>,
     ) -> Result<Response<VerifySignedPlanResponse>, Status> {
         log_peer(&request, "VerifySignedPlan");
-        let submission = submission(request.into_inner().plan)?;
+        let plan = request.into_inner().plan;
+        // Same pre-admission refusals as SubmitSignedPlan, without consuming
+        // a rate-limit slot or admitting (D-071). shell.open is not admitted
+        // on this RPC.
+        if plan
+            .as_ref()
+            .is_some_and(|plan| holds_kind(&plan.envelope_json, "shell.open"))
+        {
+            return Err(plan_status(PlanCode::ExecPrecondition));
+        }
+        let submission = self.gate(plan, Limit::Submissions, false).await?;
         let response = match self.core.verify(submission).await {
             Ok((plan, digest, signers)) => {
                 let field = |name: &str| plan[name].as_str().and_then(ts);
