@@ -17,7 +17,8 @@
 //! `string_value` (`number_value` is refused); cells are cut at 64 KiB; the
 //! statement timeout is `DEADLINE_EXCEEDED` "statement timeout"; a database
 //! without the reader role is `FAILED_PRECONDITION` + `EXEC_PRECONDITION`;
-//! a `QueryRowsResponse` over 3 MiB encoded fails whole (`INTERNAL`).
+//! a page that cannot fit under 3 MiB is `FAILED_PRECONDITION` with message
+//! `the rows page is over 3 MiB` (not `INTERNAL`; D-071).
 //!
 //! Contracts v1.1.9 (D-067 #3, proto v2.1.9): a database without a working
 //! `permanu_reader` is `FAILED_PRECONDITION` + `READER_MISSING` with the
@@ -396,6 +397,11 @@ fn invalid(message: &str) -> Status {
     status_with_reason(Code::InvalidArgument, message, ErrorReason::Validation)
 }
 
+/// One rows page that cannot be encoded under 3 MiB (D-071). Not `INTERNAL`.
+fn page_over_budget() -> Status {
+    Status::failed_precondition("the rows page is over 3 MiB")
+}
+
 /// A runner refusal as a status (agent-protocol.md 4).
 fn runner_error(error: &Value) -> Status {
     let message: String = error["message"]
@@ -409,6 +415,11 @@ fn runner_error(error: &Value) -> Status {
         (Some("not_found"), _) => Status::not_found(message),
         // D-066 #1: the runner's 5 s statement timeout.
         (Some("runtime_failed"), Some("timeout")) => Status::deadline_exceeded("statement timeout"),
+        // D-071: one row still cannot fit under 3 MiB. Not INTERNAL; the
+        // engine maps this sentence to -32015 not_ready, retryable false.
+        (Some("runtime_failed"), _) if message == "the rows page is over 3 MiB" => {
+            page_over_budget()
+        }
         // D-067 #3: no working permanu_reader (never provisioned, failed,
         // or its login fails); the runner's detail travels in the message.
         (Some("runtime_failed"), Some("reader_missing")) => status_with_reason(
@@ -726,11 +737,7 @@ impl DatabaseService for DatabaseSvc {
                 bytes = response.encoded_len(),
                 "db_query page is over the 3 MiB budget"
             );
-            return Err(status_with_reason(
-                Code::Internal,
-                "the rows page is over 3 MiB",
-                ErrorReason::Internal,
-            ));
+            return Err(page_over_budget());
         }
         Ok(Response::new(response))
     }
@@ -1140,8 +1147,32 @@ mod tests {
             .query_rows(Request::new(request))
             .await
             .unwrap_err();
-        assert_eq!(status.code(), Code::Internal);
-        assert_eq!(reason(&status), "ERROR_REASON_INTERNAL");
+        assert_ne!(status.code(), Code::Internal, "{status:?}");
+        assert_eq!(reason(&status), "");
+        assert_eq!(status.message(), "the rows page is over 3 MiB");
+    }
+
+    /// D-071: the runner's over-budget result is not `INTERNAL`. The engine
+    /// maps this sentence to -32015 not_ready, retryable false.
+    #[tokio::test]
+    async fn a_runner_rows_page_over_3_mib_is_not_internal() {
+        let runner = DbRunner::new(
+            json!({"ok": false, "error": {"code": "runtime_failed", "message": "the rows page is over 3 MiB"}}),
+            false,
+        );
+        let status = svc(runner)
+            .query_rows(Request::new(QueryRowsRequest {
+                resource_id: DB.into(),
+                table: "blobs".into(),
+                limit: 1,
+                ..Default::default()
+            }))
+            .await
+            .unwrap_err();
+        assert_ne!(status.code(), Code::Internal, "{status:?}");
+        assert_eq!(status.code(), Code::FailedPrecondition);
+        assert_eq!(reason(&status), "");
+        assert_eq!(status.message(), "the rows page is over 3 MiB");
     }
 
     /// agent-protocol.md 7: one query per resource at a time; a second
