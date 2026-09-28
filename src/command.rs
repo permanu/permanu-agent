@@ -1103,50 +1103,79 @@ fn handle_cancel_command(
     }
 }
 
+async fn resolve_route_targets(
+    targets: &[dwaar_routes::RouteEndpoint],
+) -> Result<Vec<String>, String> {
+    if targets.is_empty() {
+        return Err("invalid payload: upstream is required".to_string());
+    }
+    let needs_docker = targets
+        .iter()
+        .any(|target| !dwaar_routes::host_is_literal(&target.host));
+    let docker = if needs_docker {
+        match docker_observe::docker_client() {
+            Ok(docker) => Some(docker),
+            Err(err) => return Err(format!("docker client: {err}")),
+        }
+    } else {
+        None
+    };
+
+    let mut resolved = Vec::with_capacity(targets.len());
+    for target in targets {
+        let address = if dwaar_routes::host_is_literal(&target.host) {
+            dwaar_routes::literal_upstream(&target.host, target.port)
+        } else {
+            let docker = docker
+                .as_ref()
+                .expect("docker client is opened when a replica host is not literal");
+            match tokio::time::timeout(
+                Duration::from_secs(10),
+                dwaar_routes::resolve_container_addr(
+                    docker,
+                    &target.host,
+                    target.port,
+                    "deploy-net",
+                ),
+            )
+            .await
+            {
+                Ok(Ok(address)) => address,
+                Ok(Err(err)) => {
+                    return Err(format!(
+                        "resolve upstream container {:?}: {err}",
+                        target.host
+                    ))
+                }
+                Err(_) => {
+                    return Err(format!(
+                        "resolve upstream container {:?}: timed out",
+                        target.host
+                    ))
+                }
+            }
+        };
+        if resolved.iter().any(|seen| seen == &address) {
+            return Err(format!("duplicate upstream address: {address}"));
+        }
+        resolved.push(address);
+    }
+    Ok(resolved)
+}
+
 async fn handle_route_add_command(command_id: &str, payload: &[u8]) -> CommandResult {
     let payload = match dwaar_routes::parse_route_add_payload(payload) {
         Ok(payload) => payload,
         Err(err) => return failed_text(command_id, &format!("invalid payload: {err}")),
     };
 
-    let upstream = if dwaar_routes::host_is_literal(&payload.upstream_host) {
-        dwaar_routes::literal_upstream(&payload.upstream_host, payload.upstream_port)
-    } else {
-        let docker = match docker_observe::docker_client() {
-            Ok(docker) => docker,
-            Err(err) => return failed_text(command_id, &format!("docker client: {err}")),
-        };
-        match tokio::time::timeout(
-            Duration::from_secs(10),
-            dwaar_routes::resolve_container_addr(
-                &docker,
-                &payload.upstream_host,
-                payload.upstream_port,
-                "deploy-net",
-            ),
-        )
-        .await
-        {
-            Ok(Ok(upstream)) => upstream,
-            Ok(Err(err)) => {
-                return failed_text(
-                    command_id,
-                    &format!(
-                        "resolve upstream container {:?}: {err}",
-                        payload.upstream_host
-                    ),
-                )
-            }
-            Err(_) => {
-                return failed_text(
-                    command_id,
-                    &format!(
-                        "resolve upstream container {:?}: timed out",
-                        payload.upstream_host
-                    ),
-                )
-            }
-        }
+    let resolved = match resolve_route_targets(&dwaar_routes::route_add_targets(&payload)).await {
+        Ok(resolved) => resolved,
+        Err(err) => return failed_text(command_id, &err),
+    };
+    let upstream = match resolved.first() {
+        Some(upstream) => upstream.clone(),
+        None => return failed_text(command_id, "invalid payload: upstream is required"),
     };
 
     let dwaar = DwaarAdmin::new(DWAAR_ADMIN_SOCKET);
@@ -1167,19 +1196,28 @@ async fn handle_route_add_command(command_id: &str, payload: &[u8]) -> CommandRe
             &format!("route snippet added: {} -> {}", payload.domain, upstream),
         );
     }
-    let request = dwaar_routes::create_route_request(&payload.domain, &upstream);
+    let request = match dwaar_routes::create_route_request_from_resolved(&payload.domain, &resolved)
+    {
+        Ok(request) => request,
+        Err(err) => return failed_text(command_id, &format!("invalid payload: {err}")),
+    };
     if let Err(err) = dwaar_routes::post_route(&dwaar, &request).await {
         return failed_text(command_id, &format!("dwaar admin API: {err}"));
     }
     if let Err(err) = dwaar_routes::reload_dwaar(&dwaar).await {
         return failed_text(command_id, &format!("dwaar reload after route add: {err}"));
     }
-    if let Err(err) = dwaar_routes::persist_route_file(&payload.domain, &upstream) {
-        warn!(domain = %payload.domain, upstream = %upstream, error = ?err, "route file persistence failed");
+    if let Err(err) = dwaar_routes::persist_route_file(&payload.domain, &request.upstream) {
+        warn!(domain = %payload.domain, upstream = %request.upstream, error = ?err, "route file persistence failed");
     }
+    let described = if request.upstreams.len() > 1 {
+        request.upstreams.join(", ")
+    } else {
+        request.upstream
+    };
     completed_text(
         command_id,
-        &format!("route added: {} -> {}", payload.domain, upstream),
+        &format!("route added: {} -> {}", payload.domain, described),
     )
 }
 
