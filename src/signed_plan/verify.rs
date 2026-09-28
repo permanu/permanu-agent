@@ -69,7 +69,8 @@ const OWNER_ONLY_PRESENCE: &[&str] = &[
     "webhook.host.set",
 ];
 const CI_KINDS: &[&str] = &["deploy", "rollback", "restart", "operation.cancel"];
-const RULE_ELIGIBLE: &[&str] = &["deploy"];
+/// Rule-eligible kinds (signed-plan.md 3.4). `scale` is contracts v1.2.1 (D-072).
+const RULE_ELIGIBLE: &[&str] = &["deploy", "scale"];
 
 fn role_allows(role: &str, kind: &str) -> bool {
     match role {
@@ -720,6 +721,15 @@ fn check_rule(
     }
     let actions = plan["actions"].as_array().map_or(&[][..], Vec::as_slice);
     let limits = &rule["limits"];
+    // A stored rule that lists scale with a null cap is malformed. The
+    // replica check below does not run when max_replicas is null, so a scale
+    // action would otherwise slip past it (D-072). Same code as over-cap.
+    let lists_scale = rule["allowed_kinds"]
+        .as_array()
+        .is_some_and(|kinds| kinds.iter().any(|kind| kind == "scale"));
+    if lists_scale && limits["max_replicas"].is_null() {
+        return Err(PlanCode::RuleLimit);
+    }
     for action in actions {
         let digest = action["params"]["spec_digest_hex"]
             .as_str()
@@ -763,6 +773,11 @@ fn check_rule(
     // of it and ended at most 900 s ago.
     if now > received + WEBHOOK_TTL_SECONDS {
         for action in actions {
+            // Commit and build freshness apply to deploy only. A scale
+            // action has no commit_sha (D-072).
+            if action["kind"] != "deploy" {
+                continue;
+            }
             let service = action["params"]["service_id"].as_str().unwrap_or_default();
             let fresh = match ctx.build_window(service, commit_sha)? {
                 (Some(started), Some(built)) => {
@@ -778,6 +793,9 @@ fn check_rule(
     let commit_time = timestamp(&evidence["commit_time"])?;
     let r#ref = evidence["ref"].as_str().unwrap_or_default();
     for action in actions {
+        if action["kind"] != "deploy" {
+            continue;
+        }
         let params = &action["params"];
         if params["commit_sha"] != commit_sha {
             return Err(PlanCode::RuleEvidence);
@@ -791,6 +809,9 @@ fn check_rule(
         }
     }
     for action in actions {
+        if action["kind"] != "deploy" {
+            continue;
+        }
         let params = &action["params"];
         let service = params["service_id"].as_str().unwrap_or_default();
         let digest = params["spec_digest_hex"].as_str().unwrap_or_default();
@@ -804,6 +825,23 @@ fn check_rule(
         }
         let mut rebased = spec.clone();
         rebased["image_digest_hex"] = base["image_digest_hex"].clone();
+        if rebased != base {
+            return Err(PlanCode::RuleSpec);
+        }
+    }
+    for action in actions {
+        if action["kind"] != "scale" {
+            continue;
+        }
+        // Autoscale does not raise permissions: only replicas may differ
+        // from the admitted spec (D-072).
+        let params = &action["params"];
+        let service = params["service_id"].as_str().unwrap_or_default();
+        let digest = params["spec_digest_hex"].as_str().unwrap_or_default();
+        let (spec, _) = specs.get(digest).ok_or(PlanCode::RuleSpec)?;
+        let base = ctx.last_admitted_spec(service)?.ok_or(PlanCode::RuleSpec)?;
+        let mut rebased = spec.clone();
+        rebased["replicas"] = base["replicas"].clone();
         if rebased != base {
             return Err(PlanCode::RuleSpec);
         }

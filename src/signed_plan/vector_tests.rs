@@ -196,3 +196,131 @@ fn bootstrap_cases_match() {
         );
     }
 }
+
+/// A git.push rule whose only allowed kind is `scale` (contracts v1.2.1, D-072).
+/// Built from the vendored deploy rule plan; the corpus itself stays on
+/// contracts-v1.1.11.
+struct ScaleRulePlan {
+    text: Vec<u8>,
+    specs: Vec<String>,
+    ctx: VectorContext,
+    rule: Value,
+}
+
+fn scale_rule_plan(replicas: i64, max_replicas: Option<i64>) -> ScaleRulePlan {
+    let cases = vector("policy-cases");
+    let case = cases["cases"]
+        .as_array()
+        .expect("cases")
+        .iter()
+        .find(|case| case["name"] == "ok_rule_invocation")
+        .expect("ok_rule_invocation");
+    let mut envelope: Value =
+        serde_json::from_str(case["input"].as_str().expect("input")).expect("envelope");
+    let mut ctx = VectorContext::new(false);
+    let rule_id = envelope["plan"]["invocation"]["rule_id"]
+        .as_str()
+        .expect("rule id")
+        .to_owned();
+    let record = ctx.context["rules"]
+        .as_array_mut()
+        .expect("rules")
+        .iter_mut()
+        .find(|record| record["rule"]["id"] == rule_id)
+        .expect("stored rule");
+    record["rule"]["allowed_kinds"] = serde_json::json!(["scale"]);
+    record["rule"]["limits"]["max_replicas"] = match max_replicas {
+        Some(max) => serde_json::json!(max),
+        None => Value::Null,
+    };
+    let digest = {
+        let canonical = canonicalize(&record["rule"]).expect("rule jcs");
+        hex(&prefixed_digest(RULE_PREFIX, &canonical))
+    };
+    record["rule_digest_hex"] = serde_json::json!(digest.clone());
+    let rule = record["rule"].clone();
+    envelope["plan"]["invocation"]["rule_digest_hex"] = serde_json::json!(digest);
+    let service_id = envelope["plan"]["service_ids"][0]
+        .as_str()
+        .expect("service")
+        .to_owned();
+    let mut spec = ctx.context["admitted_specs"][&service_id].clone();
+    spec["replicas"] = serde_json::json!(replicas);
+    let spec_text = canonicalize(&spec).expect("spec jcs");
+    let (_, spec_digest) = parse_spec(&spec_text).expect("scale spec");
+    envelope["plan"]["actions"] = serde_json::json!([{
+        "kind": "scale",
+        "params": {
+            "service_id": service_id,
+            "replicas": replicas,
+            "spec_digest_hex": spec_digest,
+        }
+    }]);
+    ScaleRulePlan {
+        text: serde_json::to_vec(&envelope).expect("envelope json"),
+        specs: vec![spec_text],
+        ctx,
+        rule,
+    }
+}
+
+fn admit_scale(replicas: i64, max_replicas: Option<i64>) -> Result<Verdict, PlanCode> {
+    let plan = scale_rule_plan(replicas, max_replicas);
+    verify_signed_plan(&plan.text, &plan.specs, Submitter::AgentWebhook, &plan.ctx)
+}
+
+#[test]
+fn rule_scale_within_replica_cap_is_admitted() {
+    let plan = scale_rule_plan(4, Some(4));
+    assert!(
+        super::schema::check(&super::schema::RULE, &plan.rule),
+        "a scale rule with max_replicas set must parse"
+    );
+    let actual = verify_signed_plan(&plan.text, &plan.specs, Submitter::AgentWebhook, &plan.ctx);
+    assert!(
+        matches!(actual, Ok(Verdict::Admit(_))),
+        "scale within max_replicas: {actual:?}"
+    );
+}
+
+#[test]
+fn rule_scale_over_replica_cap_is_rule_limit() {
+    let actual = admit_scale(5, Some(4));
+    assert!(matches!(actual, Err(PlanCode::RuleLimit)), "{actual:?}");
+}
+
+#[test]
+fn rule_scale_null_max_replicas_is_rejected() {
+    let plan = scale_rule_plan(4, None);
+    assert!(
+        !super::schema::check(&super::schema::RULE, &plan.rule),
+        "scale with null max_replicas is a parse error"
+    );
+    let actual = verify_signed_plan(&plan.text, &plan.specs, Submitter::AgentWebhook, &plan.ctx);
+    assert!(
+        matches!(actual, Err(PlanCode::RuleLimit)),
+        "stored scale rule with null max_replicas: {actual:?}"
+    );
+}
+
+#[test]
+fn rule_scale_deploy_only_rule_still_verifies() {
+    let cases = vector("policy-cases");
+    let case = cases["cases"]
+        .as_array()
+        .expect("cases")
+        .iter()
+        .find(|case| case["name"] == "ok_rule_invocation")
+        .expect("ok_rule_invocation");
+    let ctx = VectorContext::new(false);
+    let actual = verify_signed_plan(
+        case["input"].as_str().unwrap().as_bytes(),
+        &case_specs(case),
+        Submitter::AgentWebhook,
+        &ctx,
+    );
+    assert!(
+        matches!(actual, Ok(Verdict::Admit(_))),
+        "deploy-only rule: {actual:?}"
+    );
+}

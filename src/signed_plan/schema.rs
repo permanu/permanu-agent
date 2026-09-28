@@ -128,7 +128,7 @@ pub(crate) const REVOCATION: Shape = Shape::Object(&[
     ),
     ("revoked_by", SIGREF),
 ]);
-pub(crate) const RULE: Shape = Shape::Object(&[
+const RULE_FIELDS: &[(&str, Shape)] = &[
     ("version", Shape::Int(1, 1)),
     ("id", UUID7),
     ("label", LABEL),
@@ -144,7 +144,10 @@ pub(crate) const RULE: Shape = Shape::Object(&[
             ("branch_patterns", Shape::Set(&Shape::GitRef(true), 1, 8)),
         ]),
     ),
-    ("allowed_kinds", Shape::Set(&Shape::Enum(&["deploy"]), 1, 8)),
+    (
+        "allowed_kinds",
+        Shape::Set(&Shape::Enum(&["deploy", "scale"]), 1, 8),
+    ),
     (
         "limits",
         Shape::Object(&[
@@ -154,7 +157,24 @@ pub(crate) const RULE: Shape = Shape::Object(&[
     ),
     ("not_before", Shape::Timestamp),
     ("expires_at", Shape::Timestamp),
-]);
+];
+
+/// StandingRule (signed-plan.md 3.4). `scale` requires `limits.max_replicas`
+/// in 1–1000; null is a parse error. A deploy-only rule may leave it null.
+fn standing_rule(value: &Value) -> bool {
+    if !check(&Shape::Object(RULE_FIELDS), value) {
+        return false;
+    }
+    let lists_scale = value["allowed_kinds"]
+        .as_array()
+        .is_some_and(|kinds| kinds.iter().any(|kind| kind == "scale"));
+    !lists_scale
+        || value["limits"]["max_replicas"]
+            .as_i64()
+            .is_some_and(|max| (1..=1000).contains(&max))
+}
+
+pub(crate) const RULE: Shape = Shape::Custom(standing_rule);
 
 const HEALTHCHECK: Shape = Shape::Object(&[
     ("kind", Shape::Enum(&["http", "tcp", "cmd"])),
