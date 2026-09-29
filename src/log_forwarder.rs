@@ -44,30 +44,6 @@ impl LogForwarder {
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::spool::SpoolRecord;
-    use prost::Message;
-
-    #[test]
-    fn decode_spooled_log_records_skips_corrupt_payloads() {
-        let valid = agent_log("info", "kept", HashMap::new()).encode_to_vec();
-        let records = vec![
-            SpoolRecord {
-                payload: b"not a protobuf log entry".to_vec(),
-            },
-            SpoolRecord { payload: valid },
-        ];
-
-        let (decoded, decode_errors) = decode_spooled_log_records(&records);
-
-        assert_eq!(decode_errors, 1);
-        assert_eq!(decoded.len(), 1);
-        assert_eq!(decoded[0].message, "kept");
-    }
-}
-
 pub async fn run(
     cfg: Arc<Config>,
     forwarder: Arc<LogForwarder>,
@@ -251,4 +227,28 @@ async fn drain_once(
         .ack(batch.ack)
         .context("ack log spool batch")?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::spool::SpoolRecord;
+    use prost::Message;
+
+    #[test]
+    fn decode_spooled_log_records_skips_corrupt_payloads() {
+        let valid = agent_log("info", "kept", HashMap::new()).encode_to_vec();
+        let records = vec![
+            SpoolRecord {
+                payload: b"not a protobuf log entry".to_vec(),
+            },
+            SpoolRecord { payload: valid },
+        ];
+
+        let (decoded, decode_errors) = decode_spooled_log_records(&records);
+
+        assert_eq!(decode_errors, 1);
+        assert_eq!(decoded.len(), 1);
+        assert_eq!(decoded[0].message, "kept");
+    }
 }

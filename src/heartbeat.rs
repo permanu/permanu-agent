@@ -70,6 +70,10 @@ pub async fn run(
     }
 }
 
+#[allow(
+    clippy::too_many_arguments,
+    reason = "heartbeat delivery uses explicit transport, identity and shutdown handles"
+)]
 async fn send_once(
     cfg: Arc<Config>,
     mut client: AgentServiceClient<Channel>,

@@ -1119,7 +1119,7 @@ fn parse_ci_service_volumes(
                 return Err(
                     "service volume must be /container/path or name:/container/path[:ro|rw]"
                         .to_string(),
-                )
+                );
             }
         }
     }
@@ -2046,6 +2046,10 @@ fn cleanup_empty_ci_workspace_parents(clone_dir: &Path) {
     }
 }
 
+#[allow(
+    clippy::too_many_arguments,
+    reason = "CI execution passes explicit bounded inputs and ownership handles"
+)]
 fn ci_job_command_result(
     command_id: &str,
     conclusion: &str,
@@ -2078,6 +2082,10 @@ fn ci_job_command_result(
     }
 }
 
+#[allow(
+    clippy::too_many_arguments,
+    reason = "CI execution passes explicit bounded inputs and ownership handles"
+)]
 fn execute_ci_step(
     plan: &CiJobPlan,
     step: &CiStep,
@@ -2288,7 +2296,7 @@ fn docker_image_action(
         if key == "args" {
             continue;
         }
-        let Some(env_key) = composite_input_env_key(&key) else {
+        let Some(env_key) = composite_input_env_key(key) else {
             return Err(format!(
                 "docker action input {key:?} is not a valid env key"
             ));
@@ -3193,12 +3201,17 @@ fn upload_artifact_action(plan: &CiJobPlan, step: &CiStep) -> Result<StepOutcome
 fn validate_upload_artifact_inputs(step: &CiStep) -> Result<(), String> {
     for key in step.with.keys() {
         match key.as_str() {
-            "name" | "path" | "if-no-files-found" | "retention-days" | "compression-level"
-            | "overwrite" | "include-hidden-files" => {}
+            "name"
+            | "path"
+            | "if-no-files-found"
+            | "retention-days"
+            | "compression-level"
+            | "overwrite"
+            | "include-hidden-files" => {}
             _ => {
                 return Err(format!(
                     "actions/upload-artifact@v4 input {key:?} is not supported by the native artifact bridge"
-                ))
+                ));
             }
         }
     }
@@ -3536,10 +3549,10 @@ fn upload_artifact_source_paths(
         if metadata.file_type().is_symlink() {
             return Err("upload-artifact path must not contain symlinks".to_string());
         }
-        if metadata.is_file() || metadata.is_dir() {
-            if include_hidden || !artifact_path_has_hidden_component(&workspace, &source)? {
-                out.push(source);
-            }
+        if (metadata.is_file() || metadata.is_dir())
+            && (include_hidden || !artifact_path_has_hidden_component(&workspace, &source)?)
+        {
+            out.push(source);
         }
     }
     out.sort();
@@ -4652,6 +4665,10 @@ fn emit_enterprise_step_result(
     emitter.emit_line("system", &format!("duration-ms: {}", elapsed.as_millis()));
 }
 
+#[allow(
+    clippy::too_many_arguments,
+    reason = "CI execution passes explicit bounded inputs and ownership handles"
+)]
 fn run_local_composite_action(
     plan: &CiJobPlan,
     step: &CiStep,
@@ -5399,7 +5416,7 @@ fn run_local_javascript_action(
     append_action_command_file_env(plan, &command_files, &mut action_env)?;
     let action_inputs = action_input_values(&action, step);
     for (key, value) in &action_inputs {
-        let Some(env_key) = composite_input_env_key(&key) else {
+        let Some(env_key) = composite_input_env_key(key) else {
             return Err(format!(
                 "JavaScript action input {key:?} is not a valid env key"
             ));
@@ -5455,6 +5472,10 @@ fn run_local_javascript_action(
     })
 }
 
+#[allow(
+    clippy::too_many_arguments,
+    reason = "CI execution passes explicit bounded inputs and ownership handles"
+)]
 fn run_node_action_script(
     plan: &CiJobPlan,
     step: &CiStep,
@@ -5542,7 +5563,7 @@ fn validate_local_action_ref(uses: &str) -> Result<(), String> {
         match component {
             Component::CurDir | Component::Normal(_) => {}
             _ => {
-                return Err("ci job: local action reference must stay inside clone_dir".to_string())
+                return Err("ci job: local action reference must stay inside clone_dir".to_string());
             }
         }
     }
