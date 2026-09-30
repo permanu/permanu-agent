@@ -159,7 +159,7 @@ fn op_ignores_sigterm(op: &str) -> bool {
 
 fn exec_of(kind: &str, params: &Value) -> Exec {
     match kind {
-        "server.add" | "rule.create" | "service.elevate" => Exec::Agent,
+        "server.add" | "rule.create" | "service.elevate" | "telemetry.retention.set" => Exec::Agent,
         "deploy" => Exec::Deploy,
         "rollback" => Exec::Ops(&["rollback_release"]),
         "restart" => Exec::Ops(&["restart_release"]),
@@ -393,6 +393,7 @@ pub struct ChangeCore {
     /// Artifact staging (`artifacts.v1`, D-051): once set, updates are
     /// admitted when their set is staged instead of refused (D-046).
     pub staging: std::sync::OnceLock<Arc<super::artifacts::Artifacts>>,
+    pub telemetry: std::sync::OnceLock<Arc<super::telemetry::Telemetry>>,
 }
 
 /// (failure_code, error, error_code) of an action.
@@ -491,6 +492,7 @@ impl ChangeCore {
             held: Mutex::new(HashMap::new()),
             reconciling: tokio::sync::Mutex::new(()),
             staging: std::sync::OnceLock::new(),
+            telemetry: std::sync::OnceLock::new(),
         })
     }
 
@@ -1957,6 +1959,33 @@ impl ChangeCore {
     /// transaction already wrote rules; `server.add` adopted the server id
     /// at bootstrap; `service.elevate` only authorizes the named spec.
     fn apply_agent_action(&self, action: &ActionRecord, params: &Value) -> Outcome {
+        if action.kind == "telemetry.retention.set" {
+            let Some(telemetry) = self.telemetry.get() else {
+                return Outcome::with("failed", "", "telemetry store unavailable");
+            };
+            let kind = super::telemetry::store::Kind::ALL
+                .into_iter()
+                .find(|kind| Some(kind.dir()) == params["telemetry_kind"].as_str());
+            let age = params["max_age_days"]
+                .as_u64()
+                .and_then(|age| u32::try_from(age).ok());
+            let bytes = params["max_bytes"].as_u64();
+            let (Some(kind), Some(age), Some(bytes)) = (kind, age, bytes) else {
+                return Outcome::with("failed", "", "invalid telemetry retention policy");
+            };
+            if telemetry
+                .set_retention(
+                    kind,
+                    super::telemetry::store::Retention {
+                        max_age_days: age,
+                        max_bytes: bytes,
+                    },
+                )
+                .is_err()
+            {
+                return Outcome::with("failed", "", "telemetry retention policy was not committed");
+            }
+        }
         if let Some(error) = alert_spec_error(&action.kind, params) {
             return Outcome::with("failed", "", format!("invalid alert rule spec: {error}"));
         }
@@ -2372,7 +2401,8 @@ mod tests {
         ] {
             assert_eq!(exec_of(kind, &none), Exec::Agent, "{kind}");
         }
-        for kind in ["scale", "telemetry.retention.set", "db.upgrade"] {
+        assert_eq!(exec_of("telemetry.retention.set", &none), Exec::Agent);
+        for kind in ["scale", "db.upgrade"] {
             assert_eq!(exec_of(kind, &none), Exec::NotImplemented, "{kind}");
         }
     }

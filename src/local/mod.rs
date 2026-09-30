@@ -831,7 +831,6 @@ pub async fn run(
         );
         core.store_recreated();
     }
-    let background = core.spawn_background();
     let presence = presence::Presence::new(Arc::new(execution::SystemClock));
     let ops = open_ops(&cfg, owner);
     let cron_runs = ops
@@ -846,6 +845,10 @@ pub async fn run(
             ))
         });
     let (telemetry, mut telemetry_tasks) = start_telemetry(&cfg, &core, cron_runs);
+    if let Some(telemetry) = &telemetry {
+        let _ = core.telemetry.set(telemetry.clone());
+    }
+    let background = core.spawn_background();
     let schedulers = start_schedulers(
         ops.clone(),
         &core,

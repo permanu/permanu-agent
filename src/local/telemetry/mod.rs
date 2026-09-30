@@ -156,6 +156,12 @@ impl Telemetry {
         SystemTime::now()
     }
 
+    pub fn set_retention(&self, kind: Kind, policy: store::Retention) -> std::io::Result<()> {
+        self.lock().set_retention(kind, policy)?;
+        self.enforce(self.now());
+        Ok(())
+    }
+
     async fn writer(this: std::sync::Weak<Self>, mut rx: mpsc::UnboundedReceiver<Item>) {
         while let Some(first) = rx.recv().await {
             let Some(this) = this.upgrade() else {

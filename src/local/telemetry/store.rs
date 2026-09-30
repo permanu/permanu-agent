@@ -101,10 +101,18 @@ impl Kind {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct Retention {
     pub max_age_days: u32,
     pub max_bytes: u64,
+}
+
+impl Retention {
+    fn valid(self) -> bool {
+        (1..=3_650).contains(&self.max_age_days)
+            && ((1 << 20)..=((1 << 53) - 1)).contains(&self.max_bytes)
+    }
 }
 
 /// Who a record belongs to (9.2).
@@ -517,7 +525,7 @@ impl Store {
     /// Opens (or creates) the store at `opts.root`. An unknown
     /// `store.json.version` moves the directory aside and starts empty
     /// (9.1, `telemetry_store_reset`).
-    pub fn open(opts: StoreOptions, now: SystemTime) -> std::io::Result<Self> {
+    pub fn open(mut opts: StoreOptions, now: SystemTime) -> std::io::Result<Self> {
         let mut reset_at = None;
         let meta_path = opts.root.join("store.json");
         if opts.root.exists() {
@@ -545,6 +553,27 @@ impl Store {
             }
         }
         mkdir(&opts.root, opts.gid)?;
+        let policy_path = opts.root.join("retention.json");
+        match fs::symlink_metadata(&policy_path) {
+            Ok(meta) => {
+                if !meta.is_file() || meta.len() > 4_096 {
+                    return Err(std::io::Error::new(
+                        std::io::ErrorKind::InvalidData,
+                        "invalid retention policy file",
+                    ));
+                }
+                let policies: [Retention; 5] = serde_json::from_slice(&fs::read(&policy_path)?)?;
+                if !policies.iter().all(|policy| policy.valid()) {
+                    return Err(std::io::Error::new(
+                        std::io::ErrorKind::InvalidData,
+                        "invalid retention policy bounds",
+                    ));
+                }
+                opts.retention = policies;
+            }
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
+            Err(err) => return Err(err),
+        }
         if !meta_path.exists() {
             let created = crate::signed_plan::text::format_timestamp(
                 now.duration_since(UNIX_EPOCH)
@@ -577,6 +606,25 @@ impl Store {
 
     pub fn retention(&self, kind: Kind) -> Retention {
         self.opts.retention[kind.index()]
+    }
+
+    pub fn set_retention(&mut self, kind: Kind, policy: Retention) -> std::io::Result<()> {
+        if !policy.valid() {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "invalid retention policy bounds",
+            ));
+        }
+        let mut policies = self.opts.retention;
+        policies[kind.index()] = policy;
+        write_atomic(
+            &self.opts.root.join("retention.json"),
+            &serde_json::to_vec(&policies)?,
+            self.opts.gid,
+        )?;
+        File::open(&self.opts.root)?.sync_all()?;
+        self.opts.retention = policies;
+        Ok(())
     }
 
     fn producer_dir(&self, kind: Kind, producer: &Producer) -> PathBuf {
@@ -1694,6 +1742,60 @@ mod tests {
             Appended::Stored(_)
         ));
         assert_eq!(s.usage(at(0))[0].counters.dropped_total, 2);
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn retention_write_failure_does_not_install_policy() {
+        let (mut s, dir) = store("tel-retention-write-fault", |_| {});
+        let before = s.retention(Kind::Logs);
+        fs::create_dir(dir.join("telemetry/retention.json")).unwrap();
+        assert!(s
+            .set_retention(
+                Kind::Logs,
+                Retention {
+                    max_age_days: 1,
+                    max_bytes: 1 << 20
+                }
+            )
+            .is_err());
+        assert_eq!(s.retention(Kind::Logs), before);
+        drop(s);
+        assert!(Store::open(StoreOptions::new(dir.join("telemetry")), at(0)).is_err());
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn retention_updates_are_bounded_and_survive_restart_for_every_kind() {
+        let (mut s, dir) = store("tel-retention-config", |_| {});
+        for kind in Kind::ALL {
+            let policy = Retention {
+                max_age_days: 9,
+                max_bytes: 3 << 20,
+            };
+            s.set_retention(kind, policy).unwrap();
+            assert_eq!(s.retention(kind), policy);
+        }
+        assert!(s
+            .set_retention(
+                Kind::Logs,
+                Retention {
+                    max_age_days: 0,
+                    max_bytes: 1
+                }
+            )
+            .is_err());
+        drop(s);
+        let reopened = Store::open(StoreOptions::new(dir.join("telemetry")), at(0)).unwrap();
+        for kind in Kind::ALL {
+            assert_eq!(
+                reopened.retention(kind),
+                Retention {
+                    max_age_days: 9,
+                    max_bytes: 3 << 20
+                }
+            );
+        }
         fs::remove_dir_all(dir).unwrap();
     }
 
