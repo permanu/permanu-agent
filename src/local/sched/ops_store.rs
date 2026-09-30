@@ -17,6 +17,10 @@ use prost::Message;
 use rusqlite::{params, Connection, OptionalExtension};
 
 use crate::admissions::{StoreError, StoreOwner};
+use crate::proto::agent::v2::{
+    AlertEvent, BackupArtifact, BackupRun, CronRun, RestoreVerification, ServerBuild,
+    StagedArtifactSet, WebhookDelivery,
+};
 
 const SCHEMA: &str = "
 CREATE TABLE IF NOT EXISTS meta (
@@ -293,14 +297,18 @@ impl OpsStore {
     }
 
     pub fn try_get(&self, kind: RecordKind, id: &str) -> Result<Option<Row>, StoreError> {
-        Ok(self
+        let result = self
             .lock()
             .query_row(
                 "SELECT seq,id,subject,slot,status,at,body FROM records WHERE kind=?1 AND id=?2",
                 params![kind.name(), id],
                 row,
             )
-            .optional()?)
+            .optional()?;
+        if let Some(row) = &result {
+            validate_record(kind, row)?;
+        }
+        Ok(result)
     }
     pub fn get(&self, kind: RecordKind, id: &str) -> Option<Row> {
         self.checked(self.try_get(kind, id)).unwrap_or_else(|err| {
@@ -381,7 +389,11 @@ impl OpsStore {
         let conn = self.lock();
         let mut statement = conn.prepare(&sql)?;
         let rows = statement.query_map(rusqlite::params_from_iter(values), row)?;
-        Ok(rows.collect::<Result<Vec<_>, _>>()?)
+        let rows = rows.collect::<Result<Vec<_>, _>>()?;
+        for row in &rows {
+            validate_record(kind, row)?;
+        }
+        Ok(rows)
     }
 
     /// Records of `kind` with one of `statuses` (all when empty) whose `at`
@@ -420,6 +432,26 @@ impl OpsStore {
     }
 }
 
+fn validate_record(kind: RecordKind, row: &Row) -> Result<(), StoreError> {
+    let valid = row.body.len() <= 256 * 1024
+        && match kind {
+            RecordKind::CronRun => CronRun::decode(row.body.as_slice()).is_ok(),
+            RecordKind::BackupRun => BackupRun::decode(row.body.as_slice()).is_ok(),
+            RecordKind::Verification => RestoreVerification::decode(row.body.as_slice()).is_ok(),
+            RecordKind::Artifact => BackupArtifact::decode(row.body.as_slice()).is_ok(),
+            RecordKind::AlertEvent => AlertEvent::decode(row.body.as_slice()).is_ok(),
+            RecordKind::WebhookDelivery => WebhookDelivery::decode(row.body.as_slice()).is_ok(),
+            RecordKind::ServerBuild => ServerBuild::decode(row.body.as_slice()).is_ok(),
+            RecordKind::StagedSet => StagedArtifactSet::decode(row.body.as_slice()).is_ok(),
+        };
+    if !valid {
+        return Err(StoreError::Unsafe(
+            "scheduler record encoding is invalid".into(),
+        ));
+    }
+    Ok(())
+}
+
 fn row(r: &rusqlite::Row<'_>) -> rusqlite::Result<Row> {
     Ok(Row {
         seq: r.get(0)?,
@@ -455,6 +487,50 @@ mod tests {
             .unwrap();
         let generation = store.failure_generation();
         assert!(store.has_slot(RecordKind::CronRun, "c1", "slot"));
+        assert!(store.failure_generation() > generation);
+    }
+
+    #[test]
+    fn corrupt_history_is_an_error_and_invalidates_scheduler_checkpoint() {
+        let store = OpsStore::in_memory();
+        store
+            .put(
+                RecordKind::CronRun,
+                "r1",
+                "c1",
+                "slot",
+                1,
+                100,
+                &run("r1", "c1", CronRunStatus::Pending),
+            )
+            .unwrap();
+        store
+            .lock()
+            .execute(
+                "UPDATE records SET body=?1 WHERE id='r1'",
+                params![vec![0xff_u8]],
+            )
+            .unwrap();
+        assert!(store.try_get(RecordKind::CronRun, "r1").is_err());
+        assert!(store
+            .try_list(
+                RecordKind::CronRun,
+                &Listing {
+                    limit: 10,
+                    ..Default::default()
+                }
+            )
+            .is_err());
+        let generation = store.failure_generation();
+        assert!(store
+            .list(
+                RecordKind::CronRun,
+                &Listing {
+                    limit: 10,
+                    ..Default::default()
+                }
+            )
+            .is_empty());
         assert!(store.failure_generation() > generation);
     }
 
