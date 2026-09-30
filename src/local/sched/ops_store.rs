@@ -452,24 +452,40 @@ impl OpsStore {
     /// Records of `kind` with one of `statuses` (all when empty) whose `at`
     /// is at least `from`.
     pub fn count(&self, kind: RecordKind, statuses: &[i32], from: Option<i64>) -> u32 {
+        self.checked(self.try_count(kind, statuses, from))
+            .unwrap_or(u32::MAX)
+    }
+    pub fn try_count(
+        &self,
+        kind: RecordKind,
+        statuses: &[i32],
+        from: Option<i64>,
+    ) -> Result<u32, StoreError> {
         let mut sql = String::from("SELECT COUNT(*) FROM records WHERE kind = ?1 AND at >= ?2");
         if !statuses.is_empty() {
             let list: Vec<String> = statuses.iter().map(i32::to_string).collect();
             sql.push_str(&format!(" AND status IN ({})", list.join(",")));
         }
-        self.lock()
-            .query_row(&sql, params![kind.name(), from.unwrap_or(i64::MIN)], |r| {
-                r.get::<_, i64>(0)
-            })
-            .map_or(0, |count| u32::try_from(count).unwrap_or(u32::MAX))
+        let count =
+            self.lock()
+                .query_row(&sql, params![kind.name(), from.unwrap_or(i64::MIN)], |r| {
+                    r.get::<_, i64>(0)
+                })?;
+        Ok(u32::try_from(count).unwrap_or(u32::MAX))
     }
 
     /// Drops one record (a staged set that was deleted).
     pub fn remove(&self, kind: RecordKind, id: &str) {
-        let _ = self.lock().execute(
+        if let Err(error) = self.checked(self.try_remove(kind, id)) {
+            tracing::error!(error = %error, "scheduler record deletion failed");
+        }
+    }
+    pub fn try_remove(&self, kind: RecordKind, id: &str) -> Result<(), StoreError> {
+        self.lock().execute(
             "DELETE FROM records WHERE kind = ?1 AND id = ?2",
             params![kind.name(), id],
-        );
+        )?;
+        Ok(())
     }
 
     /// Drops run history older than 90 days beyond the newest 1,000 records
@@ -477,10 +493,16 @@ impl OpsStore {
     /// rule per policy and rule.
     pub fn prune(&self, now: i64) {
         let _ = self.lock().execute(
-            "DELETE FROM records WHERE at < ?1 AND seq NOT IN ( \
+            "DELETE FROM records WHERE at < ?1 AND (
+               (kind='cron_run' AND status IN (3,4,5,6,7,8)) OR
+               (kind='backup_run' AND status IN (5,6,7,8)) OR
+               (kind='verification' AND status IN (2,3,4)) OR
+               (kind='webhook_delivery' AND status IN (4,5,6,7,8,9,10)) OR
+               (kind='server_build' AND status IN (5,6,7,8)) OR
+               kind IN ('artifact','alert_event','staged_set')) AND seq NOT IN ( \
                SELECT r.seq FROM records r WHERE r.kind = records.kind \
                AND r.subject = records.subject ORDER BY r.seq DESC LIMIT ?2)",
-            params![now - HISTORY_SECONDS, HISTORY_RECORDS],
+            params![now.saturating_sub(HISTORY_SECONDS), HISTORY_RECORDS],
         );
     }
 }
@@ -573,6 +595,17 @@ mod tests {
             .try_get(RecordKind::Artifact, "artifact")
             .unwrap()
             .is_some());
+    }
+
+    #[test]
+    fn unreadable_counts_and_deletions_are_storage_errors() {
+        let store = OpsStore::in_memory();
+        store.lock().execute_batch("DROP TABLE records").unwrap();
+        assert!(store.try_count(RecordKind::CronRun, &[], None).is_err());
+        assert!(store.try_remove(RecordKind::CronRun, "r1").is_err());
+        let before = store.failure_generation();
+        assert_eq!(store.count(RecordKind::CronRun, &[], None), u32::MAX);
+        assert!(store.failure_generation() > before);
     }
 
     #[test]
@@ -719,6 +752,34 @@ mod tests {
             store.try_meta("cron_checkpoint").unwrap().as_deref(),
             Some("123")
         );
+    }
+
+    #[test]
+    fn prune_preserves_unresolved_runs_beyond_history_budget() {
+        let store = OpsStore::in_memory();
+        let old = run("pending", "c1", CronRunStatus::Running);
+        store
+            .put(RecordKind::CronRun, "pending", "c1", "", 2, 0, &old)
+            .unwrap();
+        for index in 0..1001 {
+            let id = format!("done{index}");
+            store
+                .put(
+                    RecordKind::CronRun,
+                    &id,
+                    "c1",
+                    "",
+                    3,
+                    0,
+                    &run(&id, "c1", CronRunStatus::Succeeded),
+                )
+                .unwrap();
+        }
+        store.prune(100 * 86_400);
+        assert!(store
+            .try_get(RecordKind::CronRun, "pending")
+            .unwrap()
+            .is_some());
     }
 
     #[test]

@@ -144,7 +144,7 @@ impl WebhookService for WebhookSvc {
         let ops = &hooks.deps.ops;
         let day = Some(now - 86_400);
         let oldest_pending = ops
-            .list(
+            .try_list(
                 RecordKind::WebhookDelivery,
                 &Listing {
                     statuses: &[WebhookDeliveryStatus::Pending as i32],
@@ -153,32 +153,45 @@ impl WebhookService for WebhookSvc {
                     ..Default::default()
                 },
             )
+            .map_err(|_| Status::internal("webhook history unavailable"))?
             .first()
             .map(|row| pts(row.at));
         let presence = hooks.deps.presence.as_ref().map(|p| p.view());
         Ok(Response::new(WebhookQueueStatus {
-            pending: hooks.pending(),
-            building: ops.count(
-                RecordKind::WebhookDelivery,
-                &[WebhookDeliveryStatus::Building as i32],
-                None,
-            ),
+            pending: ops
+                .try_count(
+                    RecordKind::WebhookDelivery,
+                    &[WebhookDeliveryStatus::Pending as i32],
+                    None,
+                )
+                .map_err(|_| Status::internal("webhook history unavailable"))?,
+            building: ops
+                .try_count(
+                    RecordKind::WebhookDelivery,
+                    &[WebhookDeliveryStatus::Building as i32],
+                    None,
+                )
+                .map_err(|_| Status::internal("webhook history unavailable"))?,
             oldest_pending_at: oldest_pending,
-            processed_24h: ops.count(
-                RecordKind::WebhookDelivery,
-                &[
-                    WebhookDeliveryStatus::Deployed as i32,
-                    WebhookDeliveryStatus::Failed as i32,
-                    WebhookDeliveryStatus::Ignored as i32,
-                    WebhookDeliveryStatus::Stale as i32,
-                ],
-                day,
-            ),
-            failed_24h: ops.count(
-                RecordKind::WebhookDelivery,
-                &[WebhookDeliveryStatus::Failed as i32],
-                day,
-            ),
+            processed_24h: ops
+                .try_count(
+                    RecordKind::WebhookDelivery,
+                    &[
+                        WebhookDeliveryStatus::Deployed as i32,
+                        WebhookDeliveryStatus::Failed as i32,
+                        WebhookDeliveryStatus::Ignored as i32,
+                        WebhookDeliveryStatus::Stale as i32,
+                    ],
+                    day,
+                )
+                .map_err(|_| Status::internal("webhook history unavailable"))?,
+            failed_24h: ops
+                .try_count(
+                    RecordKind::WebhookDelivery,
+                    &[WebhookDeliveryStatus::Failed as i32],
+                    day,
+                )
+                .map_err(|_| Status::internal("webhook history unavailable"))?,
             engine_connected: presence.as_ref().is_some_and(|p| p.engine_online),
             engine_last_seen_at: presence
                 .as_ref()
