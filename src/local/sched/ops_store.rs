@@ -272,7 +272,60 @@ impl OpsStore {
         at: i64,
         message: &M,
     ) -> Result<i64, StoreError> {
-        let conn = self.lock();
+        Self::write_record(&self.lock(), kind, id, subject, slot, status, at, message)
+    }
+
+    /// Commits a terminal backup run and its artifact as one durable fact.
+    pub fn put_backup_completion(
+        &self,
+        run: &BackupRun,
+        slot: &str,
+        artifact: &BackupArtifact,
+    ) -> Result<(), StoreError> {
+        self.checked((|| {
+            let mut connection = self.lock();
+            let transaction =
+                connection.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+            let at = run
+                .started_at
+                .or(run.finished_at)
+                .map_or(0, |value| value.seconds);
+            Self::write_record(
+                &transaction,
+                RecordKind::BackupRun,
+                &run.id,
+                &run.policy_id,
+                slot,
+                run.status,
+                at,
+                run,
+            )?;
+            Self::write_record(
+                &transaction,
+                RecordKind::Artifact,
+                &artifact.id,
+                &artifact.policy_id,
+                "",
+                artifact.last_verification,
+                artifact.created_at.map_or(0, |value| value.seconds),
+                artifact,
+            )?;
+            transaction.commit()?;
+            Ok(())
+        })())
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn write_record<M: Message>(
+        conn: &Connection,
+        kind: RecordKind,
+        id: &str,
+        subject: &str,
+        slot: &str,
+        status: i32,
+        at: i64,
+        message: &M,
+    ) -> Result<i64, StoreError> {
         conn.execute(
             "INSERT INTO records (kind, id, subject, slot, status, at, body) \
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7) \
@@ -476,6 +529,50 @@ mod tests {
             status: status as i32,
             ..Default::default()
         }
+    }
+
+    #[test]
+    fn backup_completion_rolls_back_run_and_artifact_together() {
+        let store = OpsStore::in_memory();
+        let run = BackupRun {
+            id: "run".into(),
+            policy_id: "policy".into(),
+            status: 2,
+            ..Default::default()
+        };
+        let artifact = BackupArtifact {
+            id: "artifact".into(),
+            policy_id: "policy".into(),
+            run_id: "run".into(),
+            ..Default::default()
+        };
+        store.lock().execute_batch("CREATE TRIGGER fail_artifact BEFORE INSERT ON records WHEN NEW.kind='artifact' BEGIN SELECT RAISE(ABORT,'fixture'); END;").unwrap();
+        assert!(store
+            .put_backup_completion(&run, "slot", &artifact)
+            .is_err());
+        assert!(store
+            .try_get(RecordKind::BackupRun, "run")
+            .unwrap()
+            .is_none());
+        assert!(store
+            .try_get(RecordKind::Artifact, "artifact")
+            .unwrap()
+            .is_none());
+        store
+            .lock()
+            .execute_batch("DROP TRIGGER fail_artifact")
+            .unwrap();
+        store
+            .put_backup_completion(&run, "slot", &artifact)
+            .unwrap();
+        assert!(store
+            .try_get(RecordKind::BackupRun, "run")
+            .unwrap()
+            .is_some());
+        assert!(store
+            .try_get(RecordKind::Artifact, "artifact")
+            .unwrap()
+            .is_some());
     }
 
     #[test]

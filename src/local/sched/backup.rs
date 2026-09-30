@@ -402,7 +402,7 @@ impl BackupScheduler {
                 self.apply_backup_result(&policy, &mut run, &Ok(answer), now);
                 run.finished_at = Some(pts(now));
                 if generation != self.deps.ops.failure_generation()
-                    || !self.save_run(&run, &row.slot)
+                    || !self.save_result(&policy, &run, &row.slot, now)
                 {
                     continue;
                 }
@@ -940,10 +940,17 @@ impl BackupScheduler {
         }
         let (retryable, backup_id) = self.apply_backup_result(policy, &mut run, &result, now);
         run.finished_at = Some(pts(now));
-        if writes_before != self.deps.ops.failure_generation() || !self.record_run(&run, &slot) {
+        if writes_before != self.deps.ops.failure_generation()
+            || !self.save_result(policy, &run, &slot, now)
+        {
             self.state().recovering.insert(run.id.clone());
             return;
         }
+        self.deps.events.publish(
+            EventKind::BackupRun,
+            self.scope_for(&run.policy_id),
+            event::Payload::BackupRun(run.clone()),
+        );
         let still_defined = self.state().defs.policies.contains_key(&policy.resource_id);
         let retry = retryable && still_defined && attempt < RUN_ATTEMPTS;
         let mut message = format!(
@@ -1011,10 +1018,10 @@ impl BackupScheduler {
     /// Returns (retryable, backup id of a succeeded run).
     fn apply_backup_result(
         &self,
-        policy: &PolicyDef,
+        _policy: &PolicyDef,
         run: &mut BackupRun,
         result: &Result<Value, RunnerFailure>,
-        now: i64,
+        _now: i64,
     ) -> (bool, Option<String>) {
         if let Ok(answer) = result {
             if let Some(id) = super::runner_run_id_of(answer) {
@@ -1033,7 +1040,6 @@ impl BackupScheduler {
                         .to_owned();
                     run.size_bytes = answer["size_bytes"].as_u64().unwrap_or_default();
                     if crate::signed_plan::text::uuid7(&backup_id) {
-                        self.record_artifact(policy, run, &backup_id, now);
                         (false, Some(backup_id))
                     } else {
                         (false, None)
@@ -1068,7 +1074,27 @@ impl BackupScheduler {
         }
     }
 
-    fn record_artifact(&self, policy: &PolicyDef, run: &BackupRun, backup_id: &str, now: i64) {
+    fn save_result(&self, policy: &PolicyDef, run: &BackupRun, slot: &str, now: i64) -> bool {
+        if run.status != BackupRunStatus::Succeeded as i32
+            || !crate::signed_plan::text::uuid7(&run.artifact_id)
+        {
+            return self.save_run(run, slot);
+        }
+        let artifact = self.make_artifact(policy, run, &run.artifact_id, now);
+        if let Err(error) = self.deps.ops.put_backup_completion(run, slot, &artifact) {
+            warn!(error = %error, "backup completion not committed");
+            return false;
+        }
+        true
+    }
+
+    fn make_artifact(
+        &self,
+        policy: &PolicyDef,
+        run: &BackupRun,
+        backup_id: &str,
+        now: i64,
+    ) -> BackupArtifact {
         let defs = self.state().defs.clone();
         let location = defs
             .destinations
@@ -1086,7 +1112,7 @@ impl BackupScheduler {
         if let Some(recovery) = &defs.recovery_recipient {
             recipients.push(fingerprint(recovery));
         }
-        let artifact = BackupArtifact {
+        BackupArtifact {
             id: backup_id.to_owned(),
             policy_id: policy.resource_id.clone(),
             run_id: run.id.clone(),
@@ -1098,8 +1124,7 @@ impl BackupScheduler {
             created_at: Some(pts(now)),
             expires_at: None,
             last_verification: RestoreVerificationStatus::Unspecified as i32,
-        };
-        self.put_artifact(&artifact);
+        }
     }
 
     fn put_artifact(&self, artifact: &BackupArtifact) {
@@ -1377,7 +1402,19 @@ impl BackupScheduler {
                 if action.outcome == "succeeded" {
                     self.record_manual_artifact(&action, &mut run, now);
                 }
-                self.record_run(&run, &slot);
+                let policy = self.state().defs.policies.get(&resource).cloned();
+                let saved = match &policy {
+                    Some(policy) => self.save_result(policy, &run, &slot, now),
+                    None => self.save_run(&run, &slot),
+                };
+                if !saved {
+                    continue;
+                }
+                self.deps.events.publish(
+                    EventKind::BackupRun,
+                    self.scope_for(&run.policy_id),
+                    event::Payload::BackupRun(run.clone()),
+                );
                 // Section 10.3: `backup_failed` is any failed backup run; a
                 // run an admitted operation.cancel stopped is not a failure.
                 // Reported once: a finished run is skipped above.
@@ -1493,7 +1530,7 @@ impl BackupScheduler {
     /// Records the artifact of a succeeded manual `backup.run` from the
     /// runner's `run_result` line of that action (the only place the runner
     /// writes the backup's id, digest and size).
-    fn record_manual_artifact(&self, action: &AdmittedAction, run: &mut BackupRun, now: i64) {
+    fn record_manual_artifact(&self, action: &AdmittedAction, run: &mut BackupRun, _now: i64) {
         let Some(consumed) = &self.deps.consumed_log else {
             return;
         };
@@ -1523,11 +1560,8 @@ impl BackupScheduler {
             run.trigger = backup_run::Trigger::PreChange as i32;
         }
         let policy = self.state().defs.policies.get(&run.policy_id).cloned();
-        match policy {
-            Some(policy) => self.record_artifact(&policy, run, backup_id, now),
-            None => warn!(
-                "manual backup of a resource without a recorded policy; artifact not recorded"
-            ),
+        if policy.is_none() {
+            warn!("manual backup of a resource without a recorded policy; artifact not recorded");
         }
     }
 
