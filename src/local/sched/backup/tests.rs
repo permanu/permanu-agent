@@ -976,3 +976,36 @@ async fn read_only_state_defers_backup_without_starting_runner_or_advancing_chec
     tick_at(&f, &s, "2026-09-23T03:00:15Z").await;
     assert_eq!(f.runner.ops("backup_run").len(), 1);
 }
+
+#[tokio::test]
+async fn terminal_write_failure_keeps_backup_slot_busy_without_retry_or_prune() {
+    let f = Fixture::new("backup-terminal-write", "2026-09-23T03:00:01Z");
+    f.record(1, &[policy(PG, "0 3 * * *", Value::Null)], "succeeded");
+    let s = scheduler(&f);
+    let policy = s.state().defs.policies[PG].clone();
+    let run = BackupRun {
+        id: "durable-backup".into(),
+        policy_id: PG.into(),
+        status: BackupRunStatus::Dumping as i32,
+        ..Default::default()
+    };
+    let scheduled_for = super::super::test_support::at("2026-09-23T03:00:00Z");
+    assert!(s.record_run(&run, &rfc(scheduled_for)));
+    s.state().busy.insert(PG.into());
+    s.state().server_busy = true;
+    s.state().running = Some((run.clone(), policy.plan.plan_id.clone(), scheduled_for, 1));
+    let pending = Pending {
+        resource_id: PG.into(),
+        run: run.clone(),
+        scheduled_for,
+        retry_at: None,
+    };
+    f.deps.ops.query_only(true);
+    s.finish_backup(&policy, pending, run, 1, Ok(json!({"outcome":"failed"})))
+        .await;
+    assert!(s.state().server_busy);
+    assert!(s.state().busy.contains(PG));
+    assert!(s.state().retries.is_empty());
+    assert!(f.runner.ops("backup_prune").is_empty());
+    f.deps.ops.query_only(false);
+}

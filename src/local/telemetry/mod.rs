@@ -85,6 +85,8 @@ pub enum Submitted {
 }
 
 pub struct Telemetry {
+    #[cfg(test)]
+    test_now: Mutex<Option<SystemTime>>,
     store: Mutex<Store>,
     tx: mpsc::UnboundedSender<Item>,
     kinds: [KindState; 5],
@@ -119,6 +121,8 @@ impl Telemetry {
         let seqs = Kind::ALL.map(|k| watch::channel(store.last_seq(k)).0);
         let (tx, rx) = mpsc::unbounded_channel();
         let telemetry = Arc::new(Self {
+            #[cfg(test)]
+            test_now: Mutex::new(None),
             store: Mutex::new(store),
             tx,
             kinds: Default::default(),
@@ -144,6 +148,14 @@ impl Telemetry {
         self.store.lock().unwrap_or_else(|p| p.into_inner())
     }
 
+    fn now(&self) -> SystemTime {
+        #[cfg(test)]
+        if let Some(now) = *self.test_now.lock().unwrap() {
+            return now;
+        }
+        SystemTime::now()
+    }
+
     async fn writer(this: std::sync::Weak<Self>, mut rx: mpsc::UnboundedReceiver<Item>) {
         while let Some(first) = rx.recv().await {
             let Some(this) = this.upgrade() else {
@@ -153,7 +165,7 @@ impl Telemetry {
             let mut touched = [false; 5];
             {
                 let mut store = this.lock();
-                let now = SystemTime::now();
+                let now = this.now();
                 let mut item = Some(first);
                 let mut n = 0;
                 while let Some(next) = item.take() {
@@ -273,7 +285,7 @@ impl Telemetry {
 
     /// A read view of `kind` (flushed).
     pub fn snapshot(&self, kind: Kind) -> store::Snapshot {
-        self.lock().snapshot(kind, SystemTime::now())
+        self.lock().snapshot(kind, self.now())
     }
 
     pub fn cursor_live(&self, cursor: &store::Cursor) -> bool {

@@ -381,14 +381,18 @@ impl CronScheduler {
         self.state().jobs.clone()
     }
 
-    fn reload(&self) {
+    fn reload(&self) -> bool {
         match self.deps.store.admitted_actions(CRON_KINDS) {
             Ok(actions) => {
                 let jobs = load_jobs(&actions);
                 let mut state = self.state();
                 state.jobs = jobs;
+                true
             }
-            Err(err) => warn!(error = %err, "cron definitions unreadable; keeping the last set"),
+            Err(err) => {
+                warn!(error = %err, "cron definitions unreadable; refusing scheduled work");
+                false
+            }
         }
     }
 
@@ -448,8 +452,13 @@ impl CronScheduler {
     pub fn tick(self: &Arc<Self>) {
         let now = self.now();
         let writes_before = self.deps.ops.failure_generation();
-        self.reload();
+        if !self.reload() {
+            return;
+        }
         self.recover();
+        if writes_before != self.deps.ops.failure_generation() {
+            return;
+        }
         let Ok(checkpoint) = self.deps.ops.try_meta(CHECKPOINT_KEY) else {
             return;
         };
@@ -823,6 +832,10 @@ impl CronScheduler {
         if retry {
             run.next_retry_at = Some(pts(now + backoff(run.attempt)));
         }
+        if !self.record(Some(job), &run) {
+            self.state().recovering.insert(chain_id.to_owned());
+            return;
+        }
         {
             let mut state = self.state();
             state.running = state.running.saturating_sub(1);
@@ -833,7 +846,6 @@ impl CronScheduler {
                 }
             }
         }
-        self.record(Some(job), &run);
         let status = CronRunStatus::try_from(run.status).unwrap_or(CronRunStatus::Failed);
         let level = if status == CronRunStatus::Succeeded {
             LogLevel::Info
@@ -967,7 +979,9 @@ impl CronScheduler {
                 if run.status == CronRunStatus::Pending as i32 {
                     run.status = CronRunStatus::Running as i32;
                     run.started_at = Some(pts(now));
-                    self.save(&run, &slot);
+                    if !self.save(&run, &slot) {
+                        continue;
+                    }
                     self.publish(job, &run);
                 }
                 self.state().chains.entry(run.id.clone()).or_insert(Chain {
@@ -996,7 +1010,9 @@ impl CronScheduler {
                 .as_deref()
                 .and_then(parse_rfc)
                 .unwrap_or(now)));
-            self.save(&run, &slot);
+            if !self.save(&run, &slot) {
+                continue;
+            }
             self.publish(job, &run);
             self.state().chains.remove(&run.id);
             if let Some(job) = job {

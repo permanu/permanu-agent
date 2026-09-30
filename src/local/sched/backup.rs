@@ -398,9 +398,12 @@ impl BackupScheduler {
                     .find(|line| line["run_id"] == id)
             });
             if let (Some(answer), Some(policy)) = (result, policy) {
+                let generation = self.deps.ops.failure_generation();
                 self.apply_backup_result(&policy, &mut run, &Ok(answer), now);
                 run.finished_at = Some(pts(now));
-                if !self.save_run(&run, &row.slot) {
+                if generation != self.deps.ops.failure_generation()
+                    || !self.save_run(&run, &row.slot)
+                {
                     continue;
                 }
                 let mut state = self.state();
@@ -485,10 +488,16 @@ impl BackupScheduler {
         self.state().defs.clone()
     }
 
-    fn reload(&self) {
+    fn reload(&self) -> bool {
         match self.deps.store.admitted_actions(BACKUP_KINDS) {
-            Ok(actions) => self.state().defs = load(&actions),
-            Err(err) => warn!(error = %err, "backup definitions unreadable; keeping the last set"),
+            Ok(actions) => {
+                self.state().defs = load(&actions);
+                true
+            }
+            Err(err) => {
+                warn!(error = %err, "backup definitions unreadable; refusing scheduled work");
+                false
+            }
         }
     }
 
@@ -594,8 +603,13 @@ impl BackupScheduler {
     pub fn tick(self: &Arc<Self>) {
         let now = self.now();
         let writes_before = self.deps.ops.failure_generation();
-        self.reload();
+        if !self.reload() {
+            return;
+        }
         self.recover();
+        if writes_before != self.deps.ops.failure_generation() {
+            return;
+        }
         let Ok(checkpoint) = self.deps.ops.try_meta(CHECKPOINT_KEY) else {
             return;
         };
@@ -911,6 +925,7 @@ impl BackupScheduler {
     ) {
         let now = self.now();
         let slot = rfc(pending.scheduled_for);
+        let writes_before = self.deps.ops.failure_generation();
         if let Some((learned, ..)) = self.state().running.take() {
             if run.runner_run_id.is_empty() && learned.id == run.id {
                 run.runner_run_id = learned.runner_run_id;
@@ -918,7 +933,10 @@ impl BackupScheduler {
         }
         let (retryable, backup_id) = self.apply_backup_result(policy, &mut run, &result, now);
         run.finished_at = Some(pts(now));
-        self.record_run(&run, &slot);
+        if writes_before != self.deps.ops.failure_generation() || !self.record_run(&run, &slot) {
+            self.state().recovering.insert(run.id.clone());
+            return;
+        }
         let still_defined = self.state().defs.policies.contains_key(&policy.resource_id);
         let retry = retryable && still_defined && attempt < RUN_ATTEMPTS;
         let mut message = format!(

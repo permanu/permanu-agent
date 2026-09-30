@@ -319,6 +319,7 @@ impl OpsStore {
             )
             .map_or_else(
                 |err| {
+                    self.failure_generation.fetch_add(1, Ordering::SeqCst);
                     tracing::error!(error=%err,"scheduler slot unreadable; refusing execution");
                     true
                 },
@@ -443,6 +444,18 @@ mod tests {
             status: status as i32,
             ..Default::default()
         }
+    }
+
+    #[test]
+    fn unreadable_slots_fail_closed_and_invalidate_checkpoint() {
+        let store = OpsStore::in_memory();
+        store
+            .lock()
+            .execute_batch("DROP TABLE claimed_slots")
+            .unwrap();
+        let generation = store.failure_generation();
+        assert!(store.has_slot(RecordKind::CronRun, "c1", "slot"));
+        assert!(store.failure_generation() > generation);
     }
 
     #[test]

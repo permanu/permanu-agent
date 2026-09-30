@@ -855,3 +855,45 @@ async fn restart_keeps_unknown_run_until_trusted_terminal_evidence_arrives() {
     assert_eq!(runs(&f)[0].status, CronRunStatus::Succeeded as i32);
     assert!(f.runner.ops("run_cron").is_empty());
 }
+
+#[tokio::test]
+async fn terminal_write_failure_keeps_overlap_occupied_and_does_not_queue_retry() {
+    let f = Fixture::new("cron-terminal-write", "2026-09-23T10:15:01Z");
+    f.record(
+        1,
+        &[cron("cron.create", "*/15 * * * *", "skip", 2)],
+        "succeeded",
+    );
+    let s = scheduler(&f);
+    let job = s.jobs().remove(CRON).unwrap();
+    let run = CronRun {
+        id: "durable-running".into(),
+        cron_id: CRON.into(),
+        status: CronRunStatus::Running as i32,
+        attempt: 1,
+        scheduled_for: Some(pts(at("2026-09-23T10:15:00Z"))),
+        ..Default::default()
+    };
+    assert!(s.record(Some(&job), &run));
+    s.state().running = 1;
+    s.state().chains.insert(
+        run.id.clone(),
+        Chain {
+            cron_id: CRON.into(),
+            run: run.clone(),
+            retry_at: None,
+            waiting: false,
+        },
+    );
+    f.deps.ops.query_only(true);
+    s.finish(
+        &job,
+        &run.id.clone(),
+        run,
+        Ok(json!({"outcome":"failed", "exit_code":1})),
+    );
+    assert_eq!(s.state().running, 1);
+    assert!(s.state().chains["durable-running"].retry_at.is_none());
+    assert_eq!(runs(&f)[0].status, CronRunStatus::Running as i32);
+    f.deps.ops.query_only(false);
+}

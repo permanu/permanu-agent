@@ -279,7 +279,13 @@ impl LogIngest {
 
     /// Writes `checkpoint.json` (every 5 s and on reconnect).
     pub fn save_checkpoint(&mut self) {
-        let oldest = now_nanos() / NANOS - CHECKPOINT_MAX_AGE_SECS;
+        let oldest = self
+            .telemetry
+            .now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs() as i64
+            - CHECKPOINT_MAX_AGE_SECS;
         self.checks.retain(|_, c| c.sec >= oldest);
         let logs: serde_json::Map<String, Value> = self
             .checks
@@ -920,6 +926,7 @@ pub(crate) mod tests {
     async fn lines_are_redacted_labelled_and_stored() {
         let dir = temp_dir("ingest-basic");
         let t = test_support::open(dir.join("telemetry"));
+        *t.test_now.lock().unwrap() = Some(UNIX_EPOCH + Duration::from_secs(1_790_161_200));
         let runner = ScriptRunner::new(vec![container("c1", "web"), container("c2", "database")]);
         let mut ingest = LogIngest::new(t.clone(), runner.clone(), "host-1".into());
         let now = Instant::now();
@@ -982,6 +989,7 @@ pub(crate) mod tests {
     async fn per_container_limits_drop_and_report() {
         let dir = temp_dir("ingest-limit");
         let t = test_support::open(dir.join("telemetry"));
+        *t.test_now.lock().unwrap() = Some(UNIX_EPOCH + Duration::from_secs(1_790_161_200));
         let runner = ScriptRunner::new(vec![container("c1", "web")]);
         let mut ingest = LogIngest::new(t.clone(), runner, "h".into());
         let now = Instant::now();
@@ -1018,6 +1026,7 @@ pub(crate) mod tests {
     async fn reconnect_resumes_from_the_checkpoint_without_duplicates() {
         let dir = temp_dir("ingest-resume");
         let t = test_support::open(dir.join("telemetry"));
+        *t.test_now.lock().unwrap() = Some(UNIX_EPOCH + Duration::from_secs(1_790_161_200));
         let runner = ScriptRunner::new(vec![container("c1", "web")]);
         runner.connections.lock().unwrap().extend([
             vec![
@@ -1084,6 +1093,7 @@ pub(crate) mod tests {
     async fn reconnect_sends_each_source_its_cursor() {
         let dir = temp_dir("ingest-cursors");
         let t = test_support::open(dir.join("telemetry"));
+        *t.test_now.lock().unwrap() = Some(UNIX_EPOCH + Duration::from_secs(1_790_161_200));
         let runner = ScriptRunner::new(Vec::new());
         runner.connections.lock().unwrap().extend([
             vec![
@@ -1131,6 +1141,7 @@ pub(crate) mod tests {
         }
         let dir = temp_dir("ingest-fields");
         let t = test_support::open(dir.join("telemetry"));
+        *t.test_now.lock().unwrap() = Some(UNIX_EPOCH + Duration::from_secs(1_790_161_200));
         let runner = ScriptRunner::new(Vec::new());
         let mut ingest =
             LogIngest::new(t.clone(), runner, "h".into()).with_cron_runs(Arc::new(Runs));
@@ -1180,6 +1191,7 @@ pub(crate) mod tests {
         let project = "01a0cdb5-3500-70b1-8000-000000000001";
         let dir = temp_dir("ingest-units");
         let t = test_support::open(dir.join("telemetry"));
+        *t.test_now.lock().unwrap() = Some(UNIX_EPOCH + Duration::from_secs(1_790_161_200));
         let runner = ScriptRunner::new(Vec::new());
         let mut ingest = LogIngest::new(t.clone(), runner, "host-1".into());
         let now = Instant::now();
@@ -1237,6 +1249,7 @@ pub(crate) mod tests {
     async fn dwaar_records_are_attributed_by_route_host() {
         let dir = temp_dir("ingest-routes");
         let t = test_support::open(dir.join("telemetry"));
+        *t.test_now.lock().unwrap() = Some(UNIX_EPOCH + Duration::from_secs(1_790_161_200));
         let runner = ScriptRunner::new(Vec::new());
         let routes = Arc::new(super::super::routes::RoutesMap::default());
         routes.replace(
@@ -1286,6 +1299,7 @@ pub(crate) mod tests {
         const SERVER: &str = "01a0cdb5-3500-70a1-8000-000000000001";
         let dir = temp_dir("ingest-dwaar-metrics");
         let t = test_support::open(dir.join("telemetry"));
+        *t.test_now.lock().unwrap() = Some(UNIX_EPOCH + Duration::from_secs(1_790_161_200));
         let runner = ScriptRunner::new(Vec::new());
         let routes = Arc::new(super::super::routes::RoutesMap::default());
         routes.replace(
@@ -1380,6 +1394,7 @@ pub(crate) mod tests {
         const SERVER: &str = "01a0cdb5-3500-70a1-8000-000000000001";
         let dir = temp_dir("ingest-dwaar-new-route");
         let t = test_support::open(dir.join("telemetry"));
+        *t.test_now.lock().unwrap() = Some(UNIX_EPOCH + Duration::from_secs(1_790_161_200));
         let runner = ScriptRunner::new(Vec::new());
         let routes = Arc::new(super::super::routes::RoutesMap::default());
         let mut ingest = LogIngest::new(t.clone(), runner, "host-1".into())
