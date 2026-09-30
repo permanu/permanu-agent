@@ -897,3 +897,21 @@ async fn terminal_write_failure_keeps_overlap_occupied_and_does_not_queue_retry(
     assert_eq!(runs(&f)[0].status, CronRunStatus::Running as i32);
     f.deps.ops.query_only(false);
 }
+
+#[tokio::test]
+async fn corrupt_checkpoint_is_preserved_and_defers_execution() {
+    let f = Fixture::new("cron-corrupt-checkpoint", "2026-09-23T10:00:00Z");
+    f.record(
+        1,
+        &[cron("cron.create", "*/15 * * * *", "skip", 0)],
+        "succeeded",
+    );
+    let s = scheduler(&f);
+    f.deps.ops.try_set_meta(CHECKPOINT_KEY, "invalid").unwrap();
+    tick_at(&f, &s, "2026-09-23T10:15:05Z").await;
+    assert!(f.runner.ops("run_cron").is_empty());
+    assert_eq!(
+        f.deps.ops.try_meta(CHECKPOINT_KEY).unwrap().as_deref(),
+        Some("invalid")
+    );
+}

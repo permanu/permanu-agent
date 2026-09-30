@@ -1009,3 +1009,17 @@ async fn terminal_write_failure_keeps_backup_slot_busy_without_retry_or_prune() 
     assert!(f.runner.ops("backup_prune").is_empty());
     f.deps.ops.query_only(false);
 }
+
+#[tokio::test]
+async fn corrupt_checkpoint_is_preserved_and_defers_execution() {
+    let f = Fixture::new("backup-corrupt-checkpoint", "2026-09-23T02:00:00Z");
+    f.record(1, &[policy(PG, "0 3 * * *", Value::Null)], "succeeded");
+    let s = scheduler(&f);
+    f.deps.ops.try_set_meta(CHECKPOINT_KEY, "invalid").unwrap();
+    tick_at(&f, &s, "2026-09-23T03:00:05Z").await;
+    assert!(f.runner.ops("backup_run").is_empty());
+    assert_eq!(
+        f.deps.ops.try_meta(CHECKPOINT_KEY).unwrap().as_deref(),
+        Some("invalid")
+    );
+}

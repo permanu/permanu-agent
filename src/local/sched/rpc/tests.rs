@@ -242,3 +242,21 @@ async fn backup_lists_page_newest_first() {
         .await
         .is_err());
 }
+
+#[tokio::test]
+async fn database_read_failure_is_internal_instead_of_not_found() {
+    let f = Fixture::new("rpc-corrupt", "2026-09-23T10:00:00Z");
+    let path = f.dir.join("rpc-ops.db");
+    let ops = Arc::new(OpsStore::open(&path, None).unwrap());
+    let connection = rusqlite::Connection::open(&path).unwrap();
+    connection.execute_batch("DROP TABLE records").unwrap();
+    let mut svc = backup_svc(&f, f.dir.join("backups"));
+    svc.ops = ops;
+    let error = svc
+        .get_backup_run(Request::new(GetBackupRunRequest {
+            run_id: BACKUP.to_owned(),
+        }))
+        .await
+        .unwrap_err();
+    assert_eq!(error.code(), Code::Internal);
+}

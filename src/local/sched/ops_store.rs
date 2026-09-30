@@ -321,7 +321,7 @@ impl OpsStore {
     pub fn has_slot(&self, kind: RecordKind, subject: &str, slot: &str) -> bool {
         self.lock()
             .query_row(
-                "SELECT COUNT(*) FROM (SELECT kind,subject,slot FROM records UNION ALL SELECT kind,subject,slot FROM claimed_slots) WHERE kind = ?1 AND subject = ?2 AND slot = ?3",
+                "SELECT EXISTS(SELECT 1 FROM records WHERE kind=?1 AND subject=?2 AND slot=?3) OR EXISTS(SELECT 1 FROM claimed_slots WHERE kind=?1 AND subject=?2 AND slot=?3)",
                 params![kind.name(), subject, slot],
                 |r| r.get::<_, i64>(0),
             )

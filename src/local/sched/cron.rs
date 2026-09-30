@@ -462,9 +462,16 @@ impl CronScheduler {
         let Ok(checkpoint) = self.deps.ops.try_meta(CHECKPOINT_KEY) else {
             return;
         };
-        let checkpoint = checkpoint
-            .and_then(|v| v.parse::<i64>().ok())
-            .unwrap_or(now);
+        let checkpoint = match checkpoint {
+            None => now,
+            Some(value) => match value.parse::<i64>() {
+                Ok(checkpoint) => checkpoint,
+                Err(_) => {
+                    tracing::error!("scheduler checkpoint is invalid; refusing execution");
+                    return;
+                }
+            },
+        };
         let from = checkpoint.min(now);
         let downtime = now - checkpoint > DOWNTIME_SECONDS;
         let jobs: Vec<JobDef> = self.state().jobs.values().cloned().collect();

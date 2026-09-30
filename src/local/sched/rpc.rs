@@ -274,7 +274,8 @@ impl ScheduleService for ScheduleSvc {
         let run_id = request.into_inner().run_id;
         id_arg(&run_id, "run_id")?;
         self.ops
-            .get(RecordKind::CronRun, &run_id)
+            .try_get(RecordKind::CronRun, &run_id)
+            .map_err(|_| Status::internal("scheduler history unavailable"))?
             .and_then(|row| row.decode())
             .map(Response::new)
             .ok_or_else(|| Status::not_found("unknown cron run"))
@@ -337,7 +338,12 @@ impl ScheduleService for ScheduleSvc {
         let Some(telemetry) = &self.telemetry else {
             return Err(capability_missing());
         };
-        if self.ops.get(RecordKind::CronRun, &request.run_id).is_none() {
+        if self
+            .ops
+            .try_get(RecordKind::CronRun, &request.run_id)
+            .map_err(|_| Status::internal("scheduler history unavailable"))?
+            .is_none()
+        {
             return Err(Status::not_found("unknown cron run"));
         }
         let stream = StoreQueries::new(telemetry.clone())
@@ -455,7 +461,8 @@ impl BackupService for BackupSvc {
         let run_id = request.into_inner().run_id;
         id_arg(&run_id, "run_id")?;
         self.ops
-            .get(RecordKind::BackupRun, &run_id)
+            .try_get(RecordKind::BackupRun, &run_id)
+            .map_err(|_| Status::internal("scheduler history unavailable"))?
             .and_then(|row| row.decode())
             .map(Response::new)
             .ok_or_else(|| Status::not_found("unknown backup run"))
@@ -534,7 +541,8 @@ impl BackupService for BackupSvc {
         id_arg(&request.artifact_id, "artifact_id")?;
         let artifact: BackupArtifact = self
             .ops
-            .get(RecordKind::Artifact, &request.artifact_id)
+            .try_get(RecordKind::Artifact, &request.artifact_id)
+            .map_err(|_| Status::internal("scheduler history unavailable"))?
             .and_then(|row| row.decode())
             .ok_or_else(|| Status::not_found("unknown backup artifact"))?;
         let precondition = |message: &str| {
