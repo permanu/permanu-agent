@@ -794,3 +794,64 @@ fn runner_run_ids_resolve_to_cron_runs() {
     assert_eq!(index.cron_run("rr-sched", "other-cron"), None);
     assert_eq!(index.cron_run("rr-unknown", CRON), None);
 }
+
+#[tokio::test]
+async fn read_only_state_defers_cron_without_starting_runner_or_advancing_checkpoint() {
+    let f = Fixture::new("cron-read-only", "2026-09-23T10:00:00Z");
+    f.record(
+        1,
+        &[cron("cron.create", "*/15 * * * *", "skip", 0)],
+        "succeeded",
+    );
+    let s = scheduler(&f);
+    tick_at(&f, &s, "2026-09-23T10:14:55Z").await;
+    let before = f.deps.ops.try_meta(CHECKPOINT_KEY).unwrap();
+    f.deps.ops.query_only(true);
+    tick_at(&f, &s, "2026-09-23T10:15:05Z").await;
+    assert!(f.runner.ops("run_cron").is_empty());
+    assert_eq!(f.deps.ops.try_meta(CHECKPOINT_KEY).unwrap(), before);
+    f.deps.ops.query_only(false);
+    tick_at(&f, &s, "2026-09-23T10:15:15Z").await;
+    assert_eq!(f.runner.ops("run_cron").len(), 1);
+}
+
+#[tokio::test]
+async fn restart_keeps_unknown_run_until_trusted_terminal_evidence_arrives() {
+    let f = Fixture::new("cron-restart-evidence", "2026-09-23T10:15:01Z");
+    let plan = f.record(
+        1,
+        &[cron("cron.create", "*/15 * * * *", "skip", 0)],
+        "succeeded",
+    );
+    let run = CronRun {
+        id: "restart-run".into(),
+        cron_id: CRON.into(),
+        plan_id: plan.clone(),
+        attempt: 1,
+        scheduled_for: Some(pts(at("2026-09-23T10:15:00Z"))),
+        status: CronRunStatus::Running as i32,
+        trigger: CronTrigger::Schedule as i32,
+        ..Default::default()
+    };
+    f.deps
+        .ops
+        .put(
+            RecordKind::CronRun,
+            &run.id,
+            CRON,
+            "2026-09-23T10:15:00Z",
+            run.status,
+            run.scheduled_for.unwrap().seconds,
+            &run,
+        )
+        .unwrap();
+    let s = scheduler(&f);
+    assert_eq!(runs(&f)[0].status, CronRunStatus::Running as i32);
+    assert!(f.runner.ops("run_cron").is_empty());
+    let binding = |seq, event| json!({"v":1,"seq":seq,"at":"2026-09-23T10:15:01Z","event":event,"plan_id":plan,"plan_digest_hex":format!("{:064x}",1),"action_index":0,"op":"run_cron","scheduled_for":"2026-09-23T10:15:00Z","attempt":1,"run_id":"01a0cdb5-3500-70e1-8000-0000000000aa","outcome":"succeeded","exit_code":0});
+    f.append_consumed(&binding(1, "run"));
+    f.append_consumed(&binding(2, "run_result"));
+    tick_at(&f, &s, "2026-09-23T10:15:11Z").await;
+    assert_eq!(runs(&f)[0].status, CronRunStatus::Succeeded as i32);
+    assert!(f.runner.ops("run_cron").is_empty());
+}

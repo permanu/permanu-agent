@@ -123,18 +123,20 @@ pub(crate) fn seq_page<M: prost::Message + Default>(
     let mut last_seq = None;
     // Filtering after decode may need more than one read.
     'pages: loop {
-        let rows: Vec<Row> = ops.list(
-            kind,
-            &Listing {
-                subject,
-                statuses,
-                from,
-                to,
-                before,
-                limit: size * 2 + 1,
-                ..Default::default()
-            },
-        );
+        let rows: Vec<Row> = ops
+            .try_list(
+                kind,
+                &Listing {
+                    subject,
+                    statuses,
+                    from,
+                    to,
+                    before,
+                    limit: size * 2 + 1,
+                    ..Default::default()
+                },
+            )
+            .map_err(|_| Status::internal("scheduler history unavailable"))?;
         if rows.is_empty() {
             break;
         }

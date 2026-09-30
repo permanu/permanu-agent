@@ -10,6 +10,7 @@
 //! the newest 1,000 records per job or policy, whichever is more.
 
 use std::path::Path;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Mutex, MutexGuard};
 
 use prost::Message;
@@ -35,6 +36,12 @@ CREATE TABLE IF NOT EXISTS records (
 );
 CREATE INDEX IF NOT EXISTS records_subject ON records (kind, subject, seq);
 CREATE INDEX IF NOT EXISTS records_slot ON records (kind, subject, slot);
+CREATE TABLE IF NOT EXISTS claimed_slots (
+ kind TEXT NOT NULL, subject TEXT NOT NULL, slot TEXT NOT NULL,
+ PRIMARY KEY(kind, subject, slot)
+);
+INSERT OR IGNORE INTO claimed_slots SELECT DISTINCT kind, subject, slot FROM records WHERE slot <> '';
+
 ";
 
 /// Run history retention (agent-protocol.md 10).
@@ -106,6 +113,7 @@ pub struct Listing<'a> {
 
 pub struct OpsStore {
     conn: Mutex<Connection>,
+    failure_generation: AtomicU64,
 }
 
 impl std::fmt::Debug for OpsStore {
@@ -127,7 +135,7 @@ impl OpsStore {
         }
         let conn = Connection::open(path)?;
         conn.pragma_update(None, "journal_mode", "WAL")?;
-        conn.pragma_update(None, "synchronous", "NORMAL")?;
+        conn.pragma_update(None, "synchronous", "FULL")?;
         conn.busy_timeout(std::time::Duration::from_secs(5))?;
         conn.execute_batch(SCHEMA)?;
         for suffix in ["", "-wal", "-shm"] {
@@ -144,6 +152,7 @@ impl OpsStore {
         }
         Ok(Self {
             conn: Mutex::new(conn),
+            failure_generation: AtomicU64::new(0),
         })
     }
 
@@ -153,35 +162,103 @@ impl OpsStore {
         conn.execute_batch(SCHEMA).expect("schema");
         Self {
             conn: Mutex::new(conn),
+            failure_generation: AtomicU64::new(0),
         }
+    }
+
+    pub fn failure_generation(&self) -> u64 {
+        self.failure_generation.load(Ordering::SeqCst)
+    }
+    fn checked<T>(&self, result: Result<T, StoreError>) -> Result<T, StoreError> {
+        if result.is_err() {
+            self.failure_generation.fetch_add(1, Ordering::SeqCst);
+        }
+        result
+    }
+
+    #[cfg(test)]
+    pub fn query_only(&self, enabled: bool) {
+        self.lock()
+            .pragma_update(None, "query_only", enabled)
+            .unwrap();
     }
 
     fn lock(&self) -> MutexGuard<'_, Connection> {
         self.conn.lock().unwrap_or_else(|p| p.into_inner())
     }
 
-    pub fn meta(&self, key: &str) -> Option<String> {
-        self.lock()
-            .query_row("SELECT value FROM meta WHERE key = ?1", params![key], |r| {
-                r.get(0)
-            })
-            .optional()
-            .ok()
-            .flatten()
+    #[allow(clippy::too_many_arguments)]
+    pub fn claim<M: Message>(
+        &self,
+        kind: RecordKind,
+        id: &str,
+        subject: &str,
+        slot: &str,
+        status: i32,
+        at: i64,
+        message: &M,
+    ) -> Result<bool, StoreError> {
+        self.checked(self.claim_inner(kind, id, subject, slot, status, at, message))
     }
 
-    pub fn set_meta(&self, key: &str, value: &str) {
-        let _ = self.lock().execute(
-            "INSERT INTO meta (key, value) VALUES (?1, ?2) \
-             ON CONFLICT (key) DO UPDATE SET value = excluded.value",
-            params![key, value],
-        );
+    /// Claims a scheduled fire time and records its initial run atomically.
+    /// Claims survive history pruning, so an old clock cannot replay work.
+    #[allow(clippy::too_many_arguments)]
+    fn claim_inner<M: Message>(
+        &self,
+        kind: RecordKind,
+        id: &str,
+        subject: &str,
+        slot: &str,
+        status: i32,
+        at: i64,
+        message: &M,
+    ) -> Result<bool, StoreError> {
+        let mut conn = self.lock();
+        let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+        if tx.execute(
+            "INSERT OR IGNORE INTO claimed_slots(kind, subject, slot) VALUES (?1, ?2, ?3)",
+            params![kind.name(), subject, slot],
+        )? == 0
+        {
+            return Ok(false);
+        }
+        tx.execute("INSERT INTO records(kind,id,subject,slot,status,at,body) VALUES (?1,?2,?3,?4,?5,?6,?7)", params![kind.name(),id,subject,slot,status,at,message.encode_to_vec()])?;
+        tx.commit()?;
+        Ok(true)
+    }
+
+    pub fn try_meta(&self, key: &str) -> Result<Option<String>, StoreError> {
+        Ok(self
+            .lock()
+            .query_row("SELECT value FROM meta WHERE key=?1", params![key], |r| {
+                r.get(0)
+            })
+            .optional()?)
+    }
+    pub fn try_set_meta(&self, key: &str, value: &str) -> Result<(), StoreError> {
+        self.lock().execute("INSERT INTO meta(key,value) VALUES (?1,?2) ON CONFLICT(key) DO UPDATE SET value=excluded.value",params![key,value])?;
+        Ok(())
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn put<M: Message>(
+        &self,
+        kind: RecordKind,
+        id: &str,
+        subject: &str,
+        slot: &str,
+        status: i32,
+        at: i64,
+        message: &M,
+    ) -> Result<i64, StoreError> {
+        self.checked(self.put_inner(kind, id, subject, slot, status, at, message))
     }
 
     /// Inserts or replaces a record by `(kind, id)`; its `seq` (listing
     /// order) is kept on update.
     #[allow(clippy::too_many_arguments)]
-    pub fn put<M: Message>(
+    fn put_inner<M: Message>(
         &self,
         kind: RecordKind,
         id: &str,
@@ -215,31 +292,52 @@ impl OpsStore {
         )?)
     }
 
-    pub fn get(&self, kind: RecordKind, id: &str) -> Option<Row> {
-        self.lock()
+    pub fn try_get(&self, kind: RecordKind, id: &str) -> Result<Option<Row>, StoreError> {
+        Ok(self
+            .lock()
             .query_row(
-                "SELECT seq, id, subject, slot, status, at, body FROM records \
-                 WHERE kind = ?1 AND id = ?2",
+                "SELECT seq,id,subject,slot,status,at,body FROM records WHERE kind=?1 AND id=?2",
                 params![kind.name(), id],
                 row,
             )
-            .optional()
-            .ok()
-            .flatten()
+            .optional()?)
+    }
+    pub fn get(&self, kind: RecordKind, id: &str) -> Option<Row> {
+        self.checked(self.try_get(kind, id)).unwrap_or_else(|err| {
+            tracing::error!(error=%err,"scheduler record unreadable");
+            None
+        })
     }
 
     /// Whether `subject` already has a record in `slot` (a fire time).
     pub fn has_slot(&self, kind: RecordKind, subject: &str, slot: &str) -> bool {
         self.lock()
             .query_row(
-                "SELECT COUNT(*) FROM records WHERE kind = ?1 AND subject = ?2 AND slot = ?3",
+                "SELECT COUNT(*) FROM (SELECT kind,subject,slot FROM records UNION ALL SELECT kind,subject,slot FROM claimed_slots) WHERE kind = ?1 AND subject = ?2 AND slot = ?3",
                 params![kind.name(), subject, slot],
                 |r| r.get::<_, i64>(0),
             )
-            .is_ok_and(|count| count > 0)
+            .map_or_else(
+                |err| {
+                    tracing::error!(error=%err,"scheduler slot unreadable; refusing execution");
+                    true
+                },
+                |count| count > 0,
+            )
     }
 
     pub fn list(&self, kind: RecordKind, listing: &Listing<'_>) -> Vec<Row> {
+        self.checked(self.try_list(kind, listing))
+            .unwrap_or_else(|err| {
+                tracing::error!(error=%err,"scheduler history unreadable");
+                Vec::new()
+            })
+    }
+    pub fn try_list(
+        &self,
+        kind: RecordKind,
+        listing: &Listing<'_>,
+    ) -> Result<Vec<Row>, StoreError> {
         let mut sql = String::from(
             "SELECT seq, id, subject, slot, status, at, body FROM records WHERE kind = ?1",
         );
@@ -280,13 +378,9 @@ impl OpsStore {
                 .into(),
         );
         let conn = self.lock();
-        let Ok(mut statement) = conn.prepare(&sql) else {
-            return Vec::new();
-        };
-        statement
-            .query_map(rusqlite::params_from_iter(values), row)
-            .map(|rows| rows.filter_map(Result::ok).collect())
-            .unwrap_or_default()
+        let mut statement = conn.prepare(&sql)?;
+        let rows = statement.query_map(rusqlite::params_from_iter(values), row)?;
+        Ok(rows.collect::<Result<Vec<_>, _>>()?)
     }
 
     /// Records of `kind` with one of `statuses` (all when empty) whose `at`
@@ -352,6 +446,27 @@ mod tests {
     }
 
     #[test]
+    fn slot_claim_and_initial_record_commit_together() {
+        let store = OpsStore::in_memory();
+        let first = run("r1", "c1", CronRunStatus::Pending);
+        assert!(store
+            .claim(RecordKind::CronRun, "r1", "c1", "slot", 1, 100, &first)
+            .unwrap());
+        assert!(!store
+            .claim(RecordKind::CronRun, "r2", "c1", "slot", 1, 100, &first)
+            .unwrap());
+        assert!(store.get(RecordKind::CronRun, "r2").is_none());
+        store.lock().execute_batch("PRAGMA query_only=ON").unwrap();
+        assert!(store
+            .claim(RecordKind::CronRun, "r3", "c1", "next", 1, 101, &first)
+            .is_err());
+        store.lock().execute_batch("PRAGMA query_only=OFF").unwrap();
+        assert!(store
+            .claim(RecordKind::CronRun, "r3", "c1", "next", 1, 101, &first)
+            .unwrap());
+    }
+
+    #[test]
     fn records_round_trip_keep_their_order_and_filter() {
         let store = OpsStore::in_memory();
         let kind = RecordKind::CronRun;
@@ -413,8 +528,11 @@ mod tests {
             },
         );
         assert_eq!(page[0].id, "r1");
-        store.set_meta("cron_checkpoint", "123");
-        assert_eq!(store.meta("cron_checkpoint").as_deref(), Some("123"));
+        store.try_set_meta("cron_checkpoint", "123").unwrap();
+        assert_eq!(
+            store.try_meta("cron_checkpoint").unwrap().as_deref(),
+            Some("123")
+        );
     }
 
     #[test]

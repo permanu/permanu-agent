@@ -960,3 +960,19 @@ async fn every_verification_records_the_runners_note() {
     assert_eq!(manual[0].status, RestoreVerificationStatus::Passed as i32);
     assert_eq!(manual[0].note, "no tables");
 }
+
+#[tokio::test]
+async fn read_only_state_defers_backup_without_starting_runner_or_advancing_checkpoint() {
+    let f = Fixture::new("backup-read-only", "2026-09-23T02:00:00Z");
+    f.record(1, &[policy(PG, "0 3 * * *", Value::Null)], "succeeded");
+    let s = scheduler(&f);
+    tick_at(&f, &s, "2026-09-23T02:59:55Z").await;
+    let before = f.deps.ops.try_meta(CHECKPOINT_KEY).unwrap();
+    f.deps.ops.query_only(true);
+    tick_at(&f, &s, "2026-09-23T03:00:05Z").await;
+    assert!(f.runner.ops("backup_run").is_empty());
+    assert_eq!(f.deps.ops.try_meta(CHECKPOINT_KEY).unwrap(), before);
+    f.deps.ops.query_only(false);
+    tick_at(&f, &s, "2026-09-23T03:00:15Z").await;
+    assert_eq!(f.runner.ops("backup_run").len(), 1);
+}

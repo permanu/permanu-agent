@@ -306,6 +306,7 @@ struct State {
     server_busy: bool,
     queue: VecDeque<Pending>,
     retries: Vec<Pending>,
+    recovering: HashSet<String>,
     /// The scheduled backup in flight: its run, binding plan, fire time and
     /// attempt (D-063 #10: its runner `run_id` comes from the `run` line).
     running: Option<(BackupRun, String, i64, u32)>,
@@ -332,6 +333,7 @@ impl BackupScheduler {
             state: Mutex::new(State::default()),
             tasks: Mutex::new(Vec::new()),
         });
+        scheduler.reload();
         scheduler.recover();
         scheduler
     }
@@ -366,10 +368,57 @@ impl BackupScheduler {
             if run.trigger == backup_run::Trigger::Manual as i32 {
                 continue;
             }
-            run.status = BackupRunStatus::Failed as i32;
-            run.error = "interrupted: the agent restarted during this run".to_owned();
-            run.finished_at = Some(pts(now));
-            self.save_run(&run, &row.slot);
+            {
+                let state = self.state();
+                if state
+                    .running
+                    .as_ref()
+                    .is_some_and(|(active, ..)| active.id == run.id)
+                    || state.queue.iter().any(|p| p.run.id == run.id)
+                {
+                    continue;
+                }
+            }
+            let policy = self.state().defs.policies.get(&run.policy_id).cloned();
+            let result = self.deps.consumed_log.as_ref().and_then(|consumed| {
+                let id = if run.runner_run_id.is_empty() {
+                    super::find_runner_run_id(
+                        &consumed.run_lines("backup_run"),
+                        &policy.as_ref()?.plan.plan_id,
+                        parse_rfc(&row.slot),
+                        1,
+                    )?
+                } else {
+                    run.runner_run_id.clone()
+                };
+                run.runner_run_id = id.clone();
+                crate::admissions::run_results(&consumed.path, consumed.owner_uid, "backup_run")
+                    .into_iter()
+                    .rev()
+                    .find(|line| line["run_id"] == id)
+            });
+            if let (Some(answer), Some(policy)) = (result, policy) {
+                self.apply_backup_result(&policy, &mut run, &Ok(answer), now);
+                run.finished_at = Some(pts(now));
+                if !self.save_run(&run, &row.slot) {
+                    continue;
+                }
+                let mut state = self.state();
+                state.recovering.remove(&run.id);
+                state.busy.remove(&run.policy_id);
+                if state.recovering.is_empty() && state.running.is_none() {
+                    state.server_busy = false;
+                }
+            } else {
+                run.error = "Execution outcome requires reconciliation after restart".to_owned();
+                if !self.save_run(&run, &row.slot) {
+                    continue;
+                }
+                let mut state = self.state();
+                state.recovering.insert(run.id.clone());
+                state.busy.insert(run.policy_id.clone());
+                state.server_busy = true;
+            }
         }
         let running = [RestoreVerificationStatus::Running as i32];
         for row in self.deps.ops.list(
@@ -386,10 +435,47 @@ impl BackupScheduler {
             if verification.trigger == backup_run::Trigger::Manual as i32 {
                 continue;
             }
-            verification.status = RestoreVerificationStatus::Failed as i32;
-            verification.error = "interrupted: the agent restarted during this run".to_owned();
-            verification.finished_at = Some(pts(now));
-            self.save_verification(&verification, &row.slot);
+            if self.state().verifies.contains_key(&verification.id) {
+                continue;
+            }
+            let policy = self
+                .state()
+                .defs
+                .policies
+                .get(&verification.policy_id)
+                .cloned();
+            let result = self.deps.consumed_log.as_ref().and_then(|consumed| {
+                let id = if verification.runner_run_id.is_empty() {
+                    super::find_runner_run_id(
+                        &consumed.run_lines("backup_verify"),
+                        &policy.as_ref()?.plan.plan_id,
+                        parse_rfc(&row.slot),
+                        1,
+                    )?
+                } else {
+                    verification.runner_run_id.clone()
+                };
+                verification.runner_run_id = id.clone();
+                crate::admissions::run_results(&consumed.path, consumed.owner_uid, "backup_verify")
+                    .into_iter()
+                    .rev()
+                    .find(|line| line["run_id"] == id)
+            });
+            if let Some(answer) = result {
+                apply_verify_result(&mut verification, &Ok(answer));
+                verification.finished_at = Some(pts(now));
+                if self.save_verification(&verification, &row.slot) {
+                    self.state().verifying.remove(&verification.policy_id);
+                }
+            } else {
+                verification.error =
+                    "Execution outcome requires reconciliation after restart".to_owned();
+                if self.save_verification(&verification, &row.slot) {
+                    self.state()
+                        .verifying
+                        .insert(verification.policy_id.clone());
+                }
+            }
         }
     }
 
@@ -406,7 +492,7 @@ impl BackupScheduler {
         }
     }
 
-    fn save_run(&self, run: &BackupRun, slot: &str) {
+    fn save_run(&self, run: &BackupRun, slot: &str) -> bool {
         let at = run.started_at.map_or_else(|| self.now(), |t| t.seconds);
         if let Err(err) = self.deps.ops.put(
             RecordKind::BackupRun,
@@ -418,10 +504,12 @@ impl BackupScheduler {
             run,
         ) {
             warn!(error = %err, "backup run not recorded");
+            return false;
         }
+        true
     }
 
-    fn save_verification(&self, verification: &RestoreVerification, slot: &str) {
+    fn save_verification(&self, verification: &RestoreVerification, slot: &str) -> bool {
         let at = verification
             .started_at
             .map_or_else(|| self.now(), |t| t.seconds);
@@ -435,7 +523,9 @@ impl BackupScheduler {
             verification,
         ) {
             warn!(error = %err, "restore verification not recorded");
+            return false;
         }
+        true
     }
 
     fn scope_for(&self, resource_id: &str) -> crate::proto::agent::v2::Scope {
@@ -447,22 +537,28 @@ impl BackupScheduler {
             .unwrap_or_default()
     }
 
-    fn record_run(&self, run: &BackupRun, slot: &str) {
-        self.save_run(run, slot);
+    fn record_run(&self, run: &BackupRun, slot: &str) -> bool {
+        if !self.save_run(run, slot) {
+            return false;
+        }
         self.deps.events.publish(
             EventKind::BackupRun,
             self.scope_for(&run.policy_id),
             event::Payload::BackupRun(run.clone()),
         );
+        true
     }
 
-    fn record_verification(&self, verification: &RestoreVerification, slot: &str) {
-        self.save_verification(verification, slot);
+    fn record_verification(&self, verification: &RestoreVerification, slot: &str) -> bool {
+        if !self.save_verification(verification, slot) {
+            return false;
+        }
         self.deps.events.publish(
             EventKind::RestoreVerification,
             self.scope_for(&verification.policy_id),
             event::Payload::RestoreVerification(verification.clone()),
         );
+        true
     }
 
     fn log(&self, policy: &PolicyDef, run_id: &str, level: LogLevel, message: &str) {
@@ -497,11 +593,13 @@ impl BackupScheduler {
     /// One scheduler pass at the clock's now.
     pub fn tick(self: &Arc<Self>) {
         let now = self.now();
+        let writes_before = self.deps.ops.failure_generation();
         self.reload();
-        let checkpoint = self
-            .deps
-            .ops
-            .meta(CHECKPOINT_KEY)
+        self.recover();
+        let Ok(checkpoint) = self.deps.ops.try_meta(CHECKPOINT_KEY) else {
+            return;
+        };
+        let checkpoint = checkpoint
             .and_then(|v| v.parse::<i64>().ok())
             .unwrap_or(now);
         let from = checkpoint.min(now);
@@ -536,7 +634,12 @@ impl BackupScheduler {
         self.retries_due(now);
         self.reconcile_manual(now);
         self.note_runner_id();
-        self.deps.ops.set_meta(CHECKPOINT_KEY, &now.to_string());
+        if writes_before != self.deps.ops.failure_generation() {
+            return;
+        }
+        if let Err(err) = self.deps.ops.try_set_meta(CHECKPOINT_KEY, &now.to_string()) {
+            warn!(error = %err, "backup checkpoint not recorded");
+        }
     }
 
     /// contracts v1.1.5 (D-063 #10): the running scheduled backup takes the
@@ -673,6 +776,21 @@ impl BackupScheduler {
             trigger: backup_run::Trigger::Schedule as i32,
             ..Default::default()
         };
+        match self.deps.ops.claim(
+            RecordKind::BackupRun,
+            &run.id,
+            &run.policy_id,
+            &slot,
+            run.status,
+            scheduled_for,
+            &run,
+        ) {
+            Ok(true) => {}
+            _ => {
+                state.busy.remove(&policy.resource_id);
+                return;
+            }
+        }
         state.queue.push_back(Pending {
             resource_id: policy.resource_id.clone(),
             run: run.clone(),
@@ -722,7 +840,12 @@ impl BackupScheduler {
         run.status = BackupRunStatus::Dumping as i32;
         run.started_at = Some(pts(self.now()));
         let slot = rfc(pending.scheduled_for);
-        self.record_run(&run, &slot);
+        if !self.record_run(&run, &slot) {
+            let mut state = self.state();
+            state.server_busy = false;
+            state.queue.push_front(pending);
+            return;
+        }
         self.state().running = Some((
             run.clone(),
             policy.plan.plan_id.clone(),
@@ -1043,7 +1166,25 @@ impl BackupScheduler {
             trigger: backup_run::Trigger::Schedule as i32,
             ..Default::default()
         };
-        self.record_verification(&verification, &slot);
+        match self.deps.ops.claim(
+            RecordKind::Verification,
+            &verification.id,
+            &verification.policy_id,
+            &slot,
+            verification.status,
+            scheduled_for,
+            &verification,
+        ) {
+            Ok(true) => {}
+            _ => {
+                self.state().verifying.remove(&policy.resource_id);
+                return;
+            }
+        }
+        if !self.record_verification(&verification, &slot) {
+            self.state().verifying.remove(&policy.resource_id);
+            return;
+        }
         self.state().verifies.insert(
             verification.id.clone(),
             (

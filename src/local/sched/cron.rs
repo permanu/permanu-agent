@@ -266,6 +266,7 @@ struct State {
     jobs: BTreeMap<String, JobDef>,
     chains: HashMap<String, Chain>,
     running: usize,
+    recovering: HashSet<String>,
     /// Chains waiting for a container slot, in start order.
     slots: VecDeque<String>,
     /// `queue` jobs: the one chain waiting for the active one to end.
@@ -301,9 +302,8 @@ impl CronScheduler {
         self.deps.clock.now()
     }
 
-    /// Runs left `RUNNING` or `PENDING` by a previous agent process end as
-    /// `FAILED`: their outcome is unknown here (the runner's consumed log
-    /// holds it), and nothing is re-run for their fire time.
+    /// Reconcile interrupted runs from trusted consumed-log terminal evidence.
+    /// Unknown outcomes retain their slot and count against overlap limits.
     fn recover(&self) {
         let statuses = [CronRunStatus::Running as i32, CronRunStatus::Pending as i32];
         let rows = self.deps.ops.list(
@@ -323,10 +323,55 @@ impl CronScheduler {
                 // Manual runs are reconciled from their admission.
                 continue;
             }
-            run.status = CronRunStatus::Failed as i32;
-            run.error = "interrupted: the agent restarted during this run".to_owned();
-            run.finished_at = Some(pts(now));
-            self.save(&run, &row.slot);
+            {
+                let state = self.state();
+                if state.chains.contains_key(&run.id) && !state.recovering.contains(&run.id) {
+                    continue;
+                }
+            }
+            let result = self.deps.consumed_log.as_ref().and_then(|consumed| {
+                let id = super::find_runner_run_id(
+                    &consumed.run_lines("run_cron"),
+                    &run.plan_id,
+                    run.scheduled_for.map(|t| t.seconds),
+                    run.attempt,
+                )?;
+                run.runner_run_id = id.clone();
+                crate::admissions::run_results(&consumed.path, consumed.owner_uid, "run_cron")
+                    .into_iter()
+                    .rev()
+                    .find(|line| line["run_id"] == id)
+            });
+            if let Some(answer) = result {
+                apply_result(&mut run, &Ok(answer));
+                run.finished_at = Some(pts(now));
+                if !self.save(&run, &row.slot) {
+                    continue;
+                }
+                let mut state = self.state();
+                if state.recovering.remove(&run.id) {
+                    state.running = state.running.saturating_sub(1);
+                }
+                state.chains.remove(&run.id);
+            } else {
+                run.error = "Execution outcome requires reconciliation after restart".to_owned();
+                if !self.save(&run, &row.slot) {
+                    continue;
+                }
+                let mut state = self.state();
+                if state.recovering.insert(run.id.clone()) {
+                    state.running += 1;
+                }
+                state.chains.insert(
+                    run.id.clone(),
+                    Chain {
+                        cron_id: run.cron_id.clone(),
+                        run,
+                        retry_at: None,
+                        waiting: false,
+                    },
+                );
+            }
         }
     }
 
@@ -347,7 +392,7 @@ impl CronScheduler {
         }
     }
 
-    fn save(&self, run: &CronRun, slot: &str) {
+    fn save(&self, run: &CronRun, slot: &str) -> bool {
         let at = run
             .scheduled_for
             .as_ref()
@@ -363,7 +408,9 @@ impl CronScheduler {
             run,
         ) {
             warn!(error = %err, "cron run not recorded");
+            return false;
         }
+        true
     }
 
     fn publish(&self, job: Option<&JobDef>, run: &CronRun) {
@@ -384,24 +431,29 @@ impl CronScheduler {
     }
 
     /// Records a run (and its event) in one step.
-    fn record(&self, job: Option<&JobDef>, run: &CronRun) {
+    fn record(&self, job: Option<&JobDef>, run: &CronRun) -> bool {
         let slot = run
             .scheduled_for
             .as_ref()
             .map(|t| rfc(t.seconds))
             .unwrap_or_default();
-        self.save(run, &slot);
+        if !self.save(run, &slot) {
+            return false;
+        }
         self.publish(job, run);
+        true
     }
 
     /// One scheduler pass at the clock's now (every 10 s).
     pub fn tick(self: &Arc<Self>) {
         let now = self.now();
+        let writes_before = self.deps.ops.failure_generation();
         self.reload();
-        let checkpoint = self
-            .deps
-            .ops
-            .meta(CHECKPOINT_KEY)
+        self.recover();
+        let Ok(checkpoint) = self.deps.ops.try_meta(CHECKPOINT_KEY) else {
+            return;
+        };
+        let checkpoint = checkpoint
             .and_then(|v| v.parse::<i64>().ok())
             .unwrap_or(now);
         let from = checkpoint.min(now);
@@ -415,7 +467,12 @@ impl CronScheduler {
         self.retries_due(now);
         self.reconcile_manual(now);
         self.note_runner_ids();
-        self.deps.ops.set_meta(CHECKPOINT_KEY, &now.to_string());
+        if writes_before != self.deps.ops.failure_generation() {
+            return;
+        }
+        if let Err(err) = self.deps.ops.try_set_meta(CHECKPOINT_KEY, &now.to_string()) {
+            warn!(error = %err, "cron checkpoint not recorded");
+        }
     }
 
     /// contracts v1.1.5 (D-063 #10): a running attempt takes the runner's
@@ -582,12 +639,27 @@ impl CronScheduler {
             plan_id: job.plan.plan_id.clone(),
             ..Default::default()
         };
-        self.start_chain(job, run, now);
+        match self.deps.ops.claim(
+            RecordKind::CronRun,
+            &run.id,
+            &run.cron_id,
+            &rfc(scheduled_for),
+            run.status,
+            scheduled_for,
+            &run,
+        ) {
+            Ok(true) => self.start_chain(job, run, now),
+            Ok(false) => {}
+            Err(err) => warn!(error = %err, "cron slot not committed; execution deferred"),
+        }
     }
 
     /// The overlap policy (section 10.1) decides whether the chain starts,
     /// waits or is skipped.
     fn start_chain(self: &Arc<Self>, job: &JobDef, mut run: CronRun, now: i64) {
+        if !self.record(Some(job), &run) {
+            return;
+        }
         let mut state = self.state();
         let active = Self::active_chains(&state, &job.cron_id);
         let skip = match job.overlap {
@@ -673,8 +745,16 @@ impl CronScheduler {
         let now = self.now();
         run.status = CronRunStatus::Running as i32;
         run.started_at = Some(pts(now));
+        if !self.record(Some(&job), &run) {
+            let mut state = self.state();
+            state.running = state.running.saturating_sub(1);
+            if let Some(chain) = state.chains.get_mut(&chain_id) {
+                chain.waiting = true;
+            }
+            state.slots.push_front(chain_id);
+            return;
+        }
         self.update_chain_run(&chain_id, &run);
-        self.record(Some(&job), &run);
         self.log(
             &job,
             &run,
