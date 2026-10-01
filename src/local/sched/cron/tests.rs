@@ -915,3 +915,51 @@ async fn corrupt_checkpoint_is_preserved_and_defers_execution() {
         Some("invalid")
     );
 }
+
+#[tokio::test]
+async fn deleted_queued_cron_keeps_its_chain_until_cancellation_commits() {
+    let f = Fixture::new("cron-deleted-queued-write", "2026-09-23T03:00:01Z");
+    f.record(
+        1,
+        &[cron("cron.create", "0 3 * * *", "queue", 0)],
+        "succeeded",
+    );
+    let s = scheduler(&f);
+    let job = s.jobs().remove(CRON).unwrap();
+    let run = CronRun {
+        id: "queued-deleted-cron".into(),
+        cron_id: CRON.into(),
+        plan_id: job.plan.plan_id.clone(),
+        attempt: 1,
+        scheduled_for: Some(pts(at("2026-09-23T03:00:00Z"))),
+        status: CronRunStatus::Pending as i32,
+        ..Default::default()
+    };
+    assert!(s.record(Some(&job), &run));
+    {
+        let mut state = s.state();
+        state.chains.insert(
+            run.id.clone(),
+            Chain {
+                cron_id: CRON.into(),
+                run: run.clone(),
+                retry_at: None,
+                waiting: true,
+            },
+        );
+        state.slots.push_back(run.id.clone());
+        state.jobs.remove(CRON);
+    }
+    f.deps.ops.query_only(true);
+    s.fill_slots();
+    assert!(
+        s.state().chains.contains_key(&run.id),
+        "uncommitted cancellation released the overlap chain"
+    );
+    assert_eq!(s.state().slots.len(), 1);
+    f.deps.ops.query_only(false);
+    s.fill_slots();
+    assert!(!s.state().chains.contains_key(&run.id));
+    assert_eq!(runs(&f)[0].status, CronRunStatus::Cancelled as i32);
+    assert!(f.runner.ops("run_cron").is_empty());
+}

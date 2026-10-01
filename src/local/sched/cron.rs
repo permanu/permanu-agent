@@ -736,14 +736,18 @@ impl CronScheduler {
                 // Deleted while waiting: the chain ends without running.
                 let mut run = state
                     .chains
-                    .remove(&chain_id)
-                    .map(|c| c.run)
+                    .get(&chain_id)
+                    .map(|c| c.run.clone())
                     .unwrap_or_default();
                 drop(state);
                 run.status = CronRunStatus::Cancelled as i32;
                 run.error = "the job was deleted before the run started".to_owned();
                 run.finished_at = Some(pts(self.now()));
-                self.record(None, &run);
+                if !self.record(None, &run) {
+                    self.state().slots.push_front(chain_id);
+                    return;
+                }
+                self.state().chains.remove(&chain_id);
                 continue;
             };
             let Some(chain) = state.chains.get_mut(&chain_id) else {
