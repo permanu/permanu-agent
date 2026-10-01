@@ -220,6 +220,18 @@ impl OpsStore {
     ) -> Result<bool, StoreError> {
         let mut conn = self.lock();
         let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+        if let Some(seconds) = super::parse_rfc(slot) {
+            let floor: Option<i64> = tx
+                .query_row(
+                    "SELECT CAST(value AS INTEGER) FROM meta WHERE key='scheduled_slot_floor'",
+                    [],
+                    |r| r.get(0),
+                )
+                .optional()?;
+            if floor.is_some_and(|floor| seconds < floor) {
+                return Ok(false);
+            }
+        }
         if tx.execute(
             "INSERT OR IGNORE INTO claimed_slots(kind, subject, slot) VALUES (?1, ?2, ?3)",
             params![kind.name(), subject, slot],
@@ -374,8 +386,8 @@ impl OpsStore {
     pub fn has_slot(&self, kind: RecordKind, subject: &str, slot: &str) -> bool {
         self.lock()
             .query_row(
-                "SELECT EXISTS(SELECT 1 FROM records WHERE kind=?1 AND subject=?2 AND slot=?3) OR EXISTS(SELECT 1 FROM claimed_slots WHERE kind=?1 AND subject=?2 AND slot=?3)",
-                params![kind.name(), subject, slot],
+                "SELECT EXISTS(SELECT 1 FROM records WHERE kind=?1 AND subject=?2 AND slot=?3) OR EXISTS(SELECT 1 FROM claimed_slots WHERE kind=?1 AND subject=?2 AND slot=?3) OR EXISTS(SELECT 1 FROM meta WHERE key='scheduled_slot_floor' AND ?4 < CAST(value AS INTEGER))",
+                params![kind.name(), subject, slot, super::parse_rfc(slot)],
                 |r| r.get::<_, i64>(0),
             )
             .map_or_else(
@@ -492,7 +504,17 @@ impl OpsStore {
     /// of each job or policy. Artifacts and alert events follow the same
     /// rule per policy and rule.
     pub fn prune(&self, now: i64) {
-        let _ = self.lock().execute(
+        if let Err(error) = self.checked(self.try_prune(now)) {
+            tracing::error!(error=%error, "scheduler retention transaction failed");
+        }
+    }
+    pub fn try_prune(&self, now: i64) -> Result<(), StoreError> {
+        let mut conn = self.lock();
+        let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+        let cutoff = now.saturating_sub(HISTORY_SECONDS);
+        tx.execute("INSERT INTO meta(key,value) VALUES ('scheduled_slot_floor',?1) ON CONFLICT(key) DO UPDATE SET value=MAX(CAST(meta.value AS INTEGER),CAST(excluded.value AS INTEGER))", params![cutoff])?;
+        tx.execute("DELETE FROM claimed_slots WHERE CAST(strftime('%s',slot) AS INTEGER) < (SELECT CAST(value AS INTEGER) FROM meta WHERE key='scheduled_slot_floor')", [])?;
+        tx.execute(
             "DELETE FROM records WHERE at < ?1 AND (
                (kind='cron_run' AND status IN (3,4,5,6,7,8)) OR
                (kind='backup_run' AND status IN (5,6,7,8)) OR
@@ -502,8 +524,10 @@ impl OpsStore {
                kind IN ('artifact','alert_event','staged_set')) AND seq NOT IN ( \
                SELECT r.seq FROM records r WHERE r.kind = records.kind \
                AND r.subject = records.subject ORDER BY r.seq DESC LIMIT ?2)",
-            params![now.saturating_sub(HISTORY_SECONDS), HISTORY_RECORDS],
-        );
+            params![cutoff, HISTORY_RECORDS],
+        )?;
+        tx.commit()?;
+        Ok(())
     }
 }
 
@@ -551,6 +575,46 @@ mod tests {
             status: status as i32,
             ..Default::default()
         }
+    }
+
+    #[test]
+    fn pruned_claims_cannot_replay_after_clock_rewind() {
+        let store = OpsStore::in_memory();
+        let slot = super::super::rfc(100);
+        assert!(store
+            .claim(
+                RecordKind::CronRun,
+                "r1",
+                "c1",
+                &slot,
+                3,
+                100,
+                &run("r1", "c1", CronRunStatus::Succeeded)
+            )
+            .unwrap());
+        store.prune(HISTORY_SECONDS + 200);
+        let count: i64 = store
+            .lock()
+            .query_row("SELECT COUNT(*) FROM claimed_slots", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(count, 0, "expired claims must be bounded");
+        store.prune(HISTORY_SECONDS + 50); // a backward clock must not lower the floor
+        assert!(store.has_slot(RecordKind::CronRun, "other-job", &slot));
+        assert!(!store
+            .claim(
+                RecordKind::CronRun,
+                "r2",
+                "c1",
+                &slot,
+                1,
+                100,
+                &run("r2", "c1", CronRunStatus::Pending)
+            )
+            .unwrap());
+        let generation = store.failure_generation();
+        store.query_only(true);
+        store.prune(HISTORY_SECONDS + 300);
+        assert!(store.failure_generation() > generation);
     }
 
     #[test]
