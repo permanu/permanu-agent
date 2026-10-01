@@ -292,6 +292,7 @@ impl PolicyDef {
 #[derive(Debug, Clone)]
 struct Pending {
     resource_id: String,
+    policy: PolicyDef,
     run: BackupRun,
     scheduled_for: i64,
     retry_at: Option<i64>,
@@ -809,14 +810,19 @@ impl BackupScheduler {
             trigger: backup_run::Trigger::Schedule as i32,
             ..Default::default()
         };
-        match self.deps.ops.claim(
+        let authority = ScheduleRef {
+            plan: policy.plan.clone(),
+            scheduled_for: slot.clone(),
+            attempt: 1,
+        };
+        match self.deps.ops.claim_scheduled(
             RecordKind::BackupRun,
             &run.id,
             &run.policy_id,
-            &slot,
             run.status,
             scheduled_for,
             &run,
+            &authority,
         ) {
             Ok(true) => {}
             _ => {
@@ -825,6 +831,7 @@ impl BackupScheduler {
             }
         }
         state.queue.push_back(Pending {
+            policy: policy.clone(),
             resource_id: policy.resource_id.clone(),
             run: run.clone(),
             scheduled_for,
@@ -854,7 +861,7 @@ impl BackupScheduler {
             .policies
             .get(&pending.resource_id)
             .cloned();
-        let Some(policy) = policy else {
+        let Some(_) = policy else {
             // Deleted while waiting.
             let mut run = pending.run;
             run.status = BackupRunStatus::Cancelled as i32;
@@ -868,6 +875,7 @@ impl BackupScheduler {
             }
             return self.next_backup();
         };
+        let policy = pending.policy.clone();
         let Some(attempt) = self.attempt_of(&pending) else {
             let mut state = self.state();
             state.server_busy = false;
@@ -1011,6 +1019,7 @@ impl BackupScheduler {
             state.server_busy = false;
             if retry {
                 state.retries.push(Pending {
+                    policy: policy.clone(),
                     resource_id: pending.resource_id.clone(),
                     run: BackupRun {
                         id: new_id(now),
@@ -1249,14 +1258,19 @@ impl BackupScheduler {
             trigger: backup_run::Trigger::Schedule as i32,
             ..Default::default()
         };
-        match self.deps.ops.claim(
+        let authority = ScheduleRef {
+            plan: policy.plan.clone(),
+            scheduled_for: slot.clone(),
+            attempt: 1,
+        };
+        match self.deps.ops.claim_scheduled(
             RecordKind::Verification,
             &verification.id,
             &verification.policy_id,
-            &slot,
             verification.status,
             scheduled_for,
             &verification,
+            &authority,
         ) {
             Ok(true) => {}
             _ => {

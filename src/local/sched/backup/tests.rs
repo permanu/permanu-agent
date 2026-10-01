@@ -995,6 +995,7 @@ async fn terminal_write_failure_keeps_backup_slot_busy_without_retry_or_prune() 
     s.state().server_busy = true;
     s.state().running = Some((run.clone(), policy.plan.plan_id.clone(), scheduled_for, 1));
     let pending = Pending {
+        policy: policy.clone(),
         resource_id: PG.into(),
         run: run.clone(),
         scheduled_for,
@@ -1125,4 +1126,22 @@ fn verification_write_failure_keeps_the_policy_busy() {
         Ok(json!({"run_outcome":"failed"})),
     );
     assert!(s.state().verifying.contains(PG));
+}
+
+#[tokio::test]
+async fn queued_backup_keeps_original_authority_after_policy_changes() {
+    let f = Fixture::new("backup-queued-authority", "2026-09-23T03:00:00Z");
+    let original = f.record(1, &[policy(PG, "0 3 * * *", Value::Null)], "succeeded");
+    let s = scheduler(&f);
+    let definition = s.definitions().policies[PG].clone();
+    s.state().server_busy = true;
+    s.start_backup(&definition, s.now());
+    f.record(101, &[policy(PG, "0 4 * * *", Value::Null)], "succeeded");
+    assert!(s.reload());
+    s.state().server_busy = false;
+    s.next_backup();
+    s.settle().await;
+    let requests = f.runner.ops("backup_run");
+    assert_eq!(requests.len(), 1);
+    assert_eq!(requests[0]["schedule"]["plan_id"], original);
 }

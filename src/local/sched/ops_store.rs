@@ -203,7 +203,31 @@ impl OpsStore {
         at: i64,
         message: &M,
     ) -> Result<bool, StoreError> {
-        self.checked(self.claim_inner(kind, id, subject, slot, status, at, message))
+        self.checked(self.claim_inner(kind, id, subject, slot, status, at, message, None))
+    }
+
+    /// The slot, initial record and original signed authority are one commit.
+    #[allow(clippy::too_many_arguments)]
+    pub fn claim_scheduled<M: Message>(
+        &self,
+        kind: RecordKind,
+        id: &str,
+        subject: &str,
+        status: i32,
+        at: i64,
+        message: &M,
+        schedule: &crate::local::runner::ScheduleRef,
+    ) -> Result<bool, StoreError> {
+        self.checked(self.claim_inner(
+            kind,
+            id,
+            subject,
+            &schedule.scheduled_for,
+            status,
+            at,
+            message,
+            Some(schedule),
+        ))
     }
 
     /// Claims a scheduled fire time and records its initial run atomically.
@@ -218,17 +242,12 @@ impl OpsStore {
         status: i32,
         at: i64,
         message: &M,
+        schedule: Option<&crate::local::runner::ScheduleRef>,
     ) -> Result<bool, StoreError> {
         let mut conn = self.lock();
         let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
         if let Some(seconds) = super::parse_rfc(slot) {
-            let floor: Option<i64> = tx
-                .query_row(
-                    "SELECT CAST(value AS INTEGER) FROM meta WHERE key='scheduled_slot_floor'",
-                    [],
-                    |r| r.get(0),
-                )
-                .optional()?;
+            let floor = slot_floor(&tx)?;
             if floor.is_some_and(|floor| seconds < floor) {
                 return Ok(false);
             }
@@ -239,6 +258,9 @@ impl OpsStore {
         )? == 0
         {
             return Ok(false);
+        }
+        if let Some(schedule) = schedule {
+            bind_schedule(&tx, kind, id, schedule)?;
         }
         tx.execute("INSERT INTO records(kind,id,subject,slot,status,at,body) VALUES (?1,?2,?3,?4,?5,?6,?7)", params![kind.name(),id,subject,slot,status,at,message.encode_to_vec()])?;
         tx.commit()?;
@@ -301,14 +323,20 @@ impl OpsStore {
         schedule: &crate::local::runner::ScheduleRef,
     ) -> Result<(), StoreError> {
         self.checked((|| {
-            let encoded = serde_json::to_string(schedule).map_err(|_| StoreError::Unsafe("invalid schedule intent".into()))?;
-            if encoded.len() > 4096 { return Err(StoreError::Unsafe("schedule intent too large".into())); }
             let mut connection = self.lock();
-            let transaction = connection.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
-            transaction.execute("INSERT INTO scheduled_intents(kind,id,binding) VALUES (?1,?2,?3) ON CONFLICT(kind,id) DO NOTHING", params![kind.name(), id, encoded])?;
-            let stored: String = transaction.query_row("SELECT binding FROM scheduled_intents WHERE kind=?1 AND id=?2", params![kind.name(), id], |row| row.get(0))?;
-            if stored != encoded { return Err(StoreError::Unsafe("scheduled authority changed".into())); }
-            Self::write_record(&transaction, kind, id, subject, &schedule.scheduled_for, status, at, message)?;
+            let transaction =
+                connection.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+            bind_schedule(&transaction, kind, id, schedule)?;
+            Self::write_record(
+                &transaction,
+                kind,
+                id,
+                subject,
+                &schedule.scheduled_for,
+                status,
+                at,
+                message,
+            )?;
             transaction.commit()?;
             Ok(())
         })())
@@ -469,20 +497,19 @@ impl OpsStore {
 
     /// Whether `subject` already has a record in `slot` (a fire time).
     pub fn has_slot(&self, kind: RecordKind, subject: &str, slot: &str) -> bool {
-        self.lock()
-            .query_row(
-                "SELECT EXISTS(SELECT 1 FROM records WHERE kind=?1 AND subject=?2 AND slot=?3) OR EXISTS(SELECT 1 FROM claimed_slots WHERE kind=?1 AND subject=?2 AND slot=?3) OR EXISTS(SELECT 1 FROM meta WHERE key='scheduled_slot_floor' AND ?4 < CAST(value AS INTEGER))",
-                params![kind.name(), subject, slot, super::parse_rfc(slot)],
-                |r| r.get::<_, i64>(0),
-            )
-            .map_or_else(
-                |err| {
-                    self.failure_generation.fetch_add(1, Ordering::SeqCst);
-                    tracing::error!(error=%err,"scheduler slot unreadable; refusing execution");
-                    true
-                },
-                |count| count > 0,
-            )
+        self.checked((|| -> Result<bool, StoreError> {
+            let connection = self.lock();
+            let floor = slot_floor(&connection)?;
+            if super::parse_rfc(slot).is_some_and(|seconds| floor.is_some_and(|floor| seconds < floor)) {
+                return Ok(true);
+            }
+            Ok(connection.query_row(
+                "SELECT EXISTS(SELECT 1 FROM records WHERE kind=?1 AND subject=?2 AND slot=?3) OR EXISTS(SELECT 1 FROM claimed_slots WHERE kind=?1 AND subject=?2 AND slot=?3)",
+                params![kind.name(), subject, slot], |row| row.get::<_, bool>(0))?)
+        })()).unwrap_or_else(|error| {
+            tracing::error!(error=%error,"scheduler slot unreadable; refusing execution");
+            true
+        })
     }
 
     /// Count the exact scheduled slot without a history-page limit. A read
@@ -612,8 +639,10 @@ impl OpsStore {
     pub fn try_prune(&self, now: i64) -> Result<(), StoreError> {
         let mut conn = self.lock();
         let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
-        let cutoff = now.saturating_sub(HISTORY_SECONDS);
-        tx.execute("INSERT INTO meta(key,value) VALUES ('scheduled_slot_floor',?1) ON CONFLICT(key) DO UPDATE SET value=MAX(CAST(meta.value AS INTEGER),CAST(excluded.value AS INTEGER))", params![cutoff])?;
+        let cutoff = now
+            .saturating_sub(HISTORY_SECONDS)
+            .max(slot_floor(&tx)?.unwrap_or(i64::MIN));
+        tx.execute("INSERT INTO meta(key,value) VALUES ('scheduled_slot_floor',?1) ON CONFLICT(key) DO UPDATE SET value=excluded.value", params![cutoff])?;
         tx.execute("DELETE FROM claimed_slots WHERE CAST(strftime('%s',slot) AS INTEGER) < (SELECT CAST(value AS INTEGER) FROM meta WHERE key='scheduled_slot_floor')", [])?;
         tx.execute(
             "DELETE FROM records WHERE at < ?1 AND (
@@ -631,6 +660,50 @@ impl OpsStore {
         tx.commit()?;
         Ok(())
     }
+}
+
+fn bind_schedule(
+    connection: &Connection,
+    kind: RecordKind,
+    id: &str,
+    schedule: &crate::local::runner::ScheduleRef,
+) -> Result<(), StoreError> {
+    let encoded = serde_json::to_string(schedule)
+        .map_err(|_| StoreError::Unsafe("invalid schedule intent".into()))?;
+    if encoded.len() > 4096 {
+        return Err(StoreError::Unsafe("schedule intent too large".into()));
+    }
+    connection.execute("INSERT INTO scheduled_intents(kind,id,binding) VALUES (?1,?2,?3) ON CONFLICT(kind,id) DO NOTHING", params![kind.name(), id, encoded])?;
+    let stored: String = connection.query_row(
+        "SELECT binding FROM scheduled_intents WHERE kind=?1 AND id=?2",
+        params![kind.name(), id],
+        |row| row.get(0),
+    )?;
+    if stored != encoded {
+        return Err(StoreError::Unsafe("scheduled authority changed".into()));
+    }
+    Ok(())
+}
+
+fn slot_floor(connection: &Connection) -> Result<Option<i64>, StoreError> {
+    let value: Option<String> = connection
+        .query_row(
+            "SELECT value FROM meta WHERE key='scheduled_slot_floor'",
+            [],
+            |row| row.get(0),
+        )
+        .optional()?;
+    value
+        .map(|value| {
+            let floor = value
+                .parse::<i64>()
+                .map_err(|_| StoreError::Unsafe("invalid scheduled slot floor".into()))?;
+            if floor.to_string() != value {
+                return Err(StoreError::Unsafe("invalid scheduled slot floor".into()));
+            }
+            Ok(floor)
+        })
+        .transpose()
 }
 
 fn validate_record(kind: RecordKind, row: &Row) -> Result<(), StoreError> {
@@ -669,6 +742,97 @@ fn row(r: &rusqlite::Row<'_>) -> rusqlite::Result<Row> {
 mod tests {
     use super::*;
     use crate::proto::agent::v2::{CronRun, CronRunStatus};
+
+    #[test]
+    fn corrupt_slot_floor_refuses_claims_and_retention() {
+        let store = OpsStore::in_memory();
+        store
+            .try_set_meta("scheduled_slot_floor", "unreadable")
+            .unwrap();
+        let slot = super::super::rfc(100);
+        assert!(store.has_slot(RecordKind::CronRun, "job", &slot));
+        assert!(store
+            .claim(
+                RecordKind::CronRun,
+                "run",
+                "job",
+                &slot,
+                1,
+                100,
+                &run("run", "job", CronRunStatus::Pending)
+            )
+            .is_err());
+        assert!(store.try_prune(100).is_err());
+        assert!(store.try_get(RecordKind::CronRun, "run").unwrap().is_none());
+        assert_eq!(
+            store.try_meta("scheduled_slot_floor").unwrap().as_deref(),
+            Some("unreadable")
+        );
+    }
+
+    #[test]
+    fn scheduled_claim_and_original_authority_commit_together() {
+        let store = OpsStore::in_memory();
+        let schedule = crate::local::runner::ScheduleRef {
+            plan: crate::local::runner::PlanRef {
+                plan_id: "01a0cdb5-3500-7000-8000-000000000001".into(),
+                plan_digest_hex: "a".repeat(64),
+                action_index: 0,
+            },
+            scheduled_for: super::super::rfc(100),
+            attempt: 1,
+        };
+        store.lock().execute_batch("CREATE TRIGGER fail_intent BEFORE INSERT ON scheduled_intents BEGIN SELECT RAISE(ABORT, 'injected'); END;").unwrap();
+        let message = run("run", "job", CronRunStatus::Pending);
+        assert!(store
+            .claim_scheduled(
+                RecordKind::CronRun,
+                "run",
+                "job",
+                1,
+                100,
+                &message,
+                &schedule
+            )
+            .is_err());
+        assert!(!store.has_slot(RecordKind::CronRun, "job", &schedule.scheduled_for));
+        assert!(store.try_get(RecordKind::CronRun, "run").unwrap().is_none());
+        store
+            .lock()
+            .execute_batch("DROP TRIGGER fail_intent")
+            .unwrap();
+        assert!(store
+            .claim_scheduled(
+                RecordKind::CronRun,
+                "run",
+                "job",
+                1,
+                100,
+                &message,
+                &schedule
+            )
+            .unwrap());
+        assert_eq!(
+            store
+                .scheduled_intent(RecordKind::CronRun, "run")
+                .unwrap()
+                .unwrap()
+                .plan
+                .plan_id,
+            schedule.plan.plan_id
+        );
+        assert!(!store
+            .claim_scheduled(
+                RecordKind::CronRun,
+                "second",
+                "job",
+                1,
+                100,
+                &run("second", "job", CronRunStatus::Pending),
+                &schedule
+            )
+            .unwrap());
+    }
 
     #[test]
     fn slot_attempt_count_is_not_truncated_by_newer_history_and_fails_closed() {
