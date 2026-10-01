@@ -244,6 +244,9 @@ impl OpsStore {
         message: &M,
         schedule: Option<&crate::local::runner::ScheduleRef>,
     ) -> Result<bool, StoreError> {
+        if message.encoded_len() > 256 * 1024 {
+            return Err(StoreError::Unsafe("scheduler record too large".into()));
+        }
         let mut conn = self.lock();
         let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
         if let Some(seconds) = super::parse_rfc(slot) {
@@ -451,6 +454,9 @@ impl OpsStore {
         at: i64,
         message: &M,
     ) -> Result<i64, StoreError> {
+        if message.encoded_len() > 256 * 1024 {
+            return Err(StoreError::Unsafe("scheduler record too large".into()));
+        }
         conn.execute(
             "INSERT INTO records (kind, id, subject, slot, status, at, body) \
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7) \
@@ -709,9 +715,23 @@ fn slot_floor(connection: &Connection) -> Result<Option<i64>, StoreError> {
 fn validate_record(kind: RecordKind, row: &Row) -> Result<(), StoreError> {
     let valid = row.body.len() <= 256 * 1024
         && match kind {
-            RecordKind::CronRun => CronRun::decode(row.body.as_slice()).is_ok(),
-            RecordKind::BackupRun => BackupRun::decode(row.body.as_slice()).is_ok(),
-            RecordKind::Verification => RestoreVerification::decode(row.body.as_slice()).is_ok(),
+            RecordKind::CronRun => CronRun::decode(row.body.as_slice()).is_ok_and(|message| {
+                message.id == row.id
+                    && message.cron_id == row.subject
+                    && message.status == row.status
+            }),
+            RecordKind::BackupRun => BackupRun::decode(row.body.as_slice()).is_ok_and(|message| {
+                message.id == row.id
+                    && message.policy_id == row.subject
+                    && message.status == row.status
+            }),
+            RecordKind::Verification => {
+                RestoreVerification::decode(row.body.as_slice()).is_ok_and(|message| {
+                    message.id == row.id
+                        && message.policy_id == row.subject
+                        && message.status == row.status
+                })
+            }
             RecordKind::Artifact => BackupArtifact::decode(row.body.as_slice()).is_ok(),
             RecordKind::AlertEvent => AlertEvent::decode(row.body.as_slice()).is_ok(),
             RecordKind::WebhookDelivery => WebhookDelivery::decode(row.body.as_slice()).is_ok(),
@@ -862,6 +882,55 @@ mod tests {
         assert!(store
             .try_slot_attempts(RecordKind::CronRun, "job", "original", "pending")
             .is_err());
+    }
+
+    #[test]
+    fn history_body_must_match_its_durable_identity_and_status() {
+        let store = OpsStore::in_memory();
+        store
+            .put(
+                RecordKind::CronRun,
+                "original",
+                "job",
+                "slot",
+                3,
+                100,
+                &run("original", "job", CronRunStatus::Succeeded),
+            )
+            .unwrap();
+        for body in [
+            run("foreign", "job", CronRunStatus::Succeeded),
+            run("original", "other-job", CronRunStatus::Succeeded),
+            run("original", "job", CronRunStatus::Running),
+        ] {
+            store
+                .lock()
+                .execute(
+                    "UPDATE records SET body=?1 WHERE id='original'",
+                    params![body.encode_to_vec()],
+                )
+                .unwrap();
+            assert!(store.try_get(RecordKind::CronRun, "original").is_err());
+        }
+    }
+
+    #[test]
+    fn oversized_records_never_commit_a_slot_or_history() {
+        let store = OpsStore::in_memory();
+        let mut message = run("large", "job", CronRunStatus::Pending);
+        message.error = "x".repeat(256 * 1024);
+        let slot = super::super::rfc(100);
+        assert!(store
+            .claim(RecordKind::CronRun, "large", "job", &slot, 1, 100, &message)
+            .is_err());
+        assert!(!store.has_slot(RecordKind::CronRun, "job", &slot));
+        assert!(store
+            .put(RecordKind::CronRun, "large", "job", &slot, 1, 100, &message)
+            .is_err());
+        assert!(store
+            .try_get(RecordKind::CronRun, "large")
+            .unwrap()
+            .is_none());
     }
 
     fn run(id: &str, cron: &str, status: CronRunStatus) -> CronRun {
@@ -1168,7 +1237,7 @@ mod tests {
                 "",
                 3,
                 now - 86_400,
-                &CronRun::default(),
+                &run("recent", "c2", CronRunStatus::Succeeded),
             )
             .unwrap();
         store
@@ -1179,7 +1248,7 @@ mod tests {
                 "",
                 3,
                 0,
-                &CronRun::default(),
+                &run("old", "c2", CronRunStatus::Succeeded),
             )
             .unwrap();
         store.prune(now);
