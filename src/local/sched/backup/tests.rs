@@ -1189,3 +1189,49 @@ async fn deleted_queued_policy_waits_for_durable_cancellation() {
     assert!(!s.state().busy.contains(PG));
     assert_eq!(backup_runs(&f)[0].status, BackupRunStatus::Cancelled as i32);
 }
+
+#[test]
+fn legacy_recovery_requires_unique_original_runner_binding() {
+    let f = Fixture::new("legacy-backup-authority", "2026-09-23T03:00:05Z");
+    let original = f.record(1, &[policy(PG, "0 3 * * *", Value::Null)], "succeeded");
+    let s = scheduler(&f);
+    let run_id = "01a0cdb5-3500-7000-8000-000000000077";
+    let run = BackupRun {
+        id: "legacy-backup".into(),
+        policy_id: PG.into(),
+        runner_run_id: run_id.into(),
+        status: BackupRunStatus::Dumping as i32,
+        ..Default::default()
+    };
+    assert!(s.record_run(&run, "2026-09-23T03:00:00Z"));
+    let proof = json!({"v":1,"seq":1,"at":"2026-09-23T03:00:01Z","event":"run","op":"backup_run","run_id":run_id,"plan_id":original,"plan_digest_hex":format!("{:064x}",1),"action_index":0,"scheduled_for":"2026-09-23T03:00:00Z","attempt":2});
+    f.append_consumed(&proof);
+    f.record(101, &[policy(PG, "0 4 * * *", Value::Null)], "succeeded");
+    let recovered = s
+        .recover_bound_policy(RecordKind::BackupRun, &run.id, PG, run_id)
+        .expect("exact legacy authority");
+    assert_eq!(recovered.0.plan.plan_id, original);
+    assert_eq!(recovered.1.attempt, 2);
+    assert!(s
+        .recover_bound_policy(RecordKind::BackupRun, &run.id, "another-resource", run_id)
+        .is_none());
+    let mut terminal = proof.clone();
+    terminal["seq"] = json!(2);
+    terminal["event"] = json!("run_result");
+    terminal["outcome"] = json!("cancelled");
+    f.append_consumed(&terminal);
+    let restarted = BackupScheduler::new(f.deps.clone(), f.sink.clone(), SERVER_RECIPIENT.into());
+    assert_eq!(backup_runs(&f)[0].status, BackupRunStatus::Cancelled as i32);
+    assert!(!restarted.state().busy.contains(PG));
+    assert!(
+        f.runner.ops("backup_run").is_empty(),
+        "legacy recovery must never redispatch"
+    );
+    let mut contradictory = proof;
+    contradictory["seq"] = json!(3);
+    contradictory["attempt"] = json!(3);
+    f.append_consumed(&contradictory);
+    assert!(s
+        .recover_bound_policy(RecordKind::BackupRun, &run.id, PG, run_id)
+        .is_none());
+}

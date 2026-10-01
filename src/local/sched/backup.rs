@@ -363,6 +363,69 @@ impl BackupScheduler {
         Some((policy, intent))
     }
 
+    // A legacy row may lack a durable intent. Only a unique runner start
+    // record can recover its original authority; current policy never supplies it.
+    fn recover_bound_policy(
+        &self,
+        kind: RecordKind,
+        id: &str,
+        resource_id: &str,
+        runner_id: &str,
+    ) -> Option<(PolicyDef, ScheduleRef)> {
+        if self.deps.ops.scheduled_intent(kind, id).ok()?.is_some() {
+            let original = self.recovery_policy(kind, id)?;
+            return (original.0.resource_id == resource_id).then_some(original);
+        }
+        if !crate::signed_plan::text::uuid7(runner_id) {
+            return None;
+        }
+        let op = match kind {
+            RecordKind::BackupRun => "backup_run",
+            RecordKind::Verification => "backup_verify",
+            _ => return None,
+        };
+        let consumed = self.deps.consumed_log.as_ref()?;
+        let mut binding = None;
+        for line in consumed
+            .run_lines(op)
+            .into_iter()
+            .filter(|line| line["run_id"] == runner_id)
+        {
+            let scheduled_for = line["scheduled_for"].as_str()?.to_owned();
+            parse_rfc(&scheduled_for)?;
+            let attempt = u32::try_from(line["attempt"].as_u64()?).ok()?;
+            if !(1..=3).contains(&attempt) {
+                return None;
+            }
+            let candidate = ScheduleRef {
+                plan: PlanRef {
+                    plan_id: line["plan_id"].as_str()?.into(),
+                    plan_digest_hex: line["plan_digest_hex"].as_str()?.into(),
+                    action_index: u32::try_from(line["action_index"].as_u64()?).ok()?,
+                },
+                scheduled_for,
+                attempt,
+            };
+            if binding.as_ref().is_some_and(|old| *old != candidate) {
+                return None;
+            }
+            binding = Some(candidate);
+        }
+        let intent = binding?;
+        let actions = self
+            .deps
+            .store
+            .admitted_actions(&["backup.policy.set"])
+            .ok()?;
+        let action = actions.into_iter().find(|action| {
+            action.plan_id == intent.plan.plan_id
+                && action.plan_digest_hex == intent.plan.plan_digest_hex
+                && u32::try_from(action.action_index).ok() == Some(intent.plan.action_index)
+        })?;
+        let policy = load(&[action]).policies.into_values().next()?;
+        (policy.resource_id == resource_id).then_some((policy, intent))
+    }
+
     fn recover(&self) {
         let now = self.now();
         let running = [
@@ -396,7 +459,12 @@ impl BackupScheduler {
                     continue;
                 }
             }
-            let original = self.recovery_policy(RecordKind::BackupRun, &run.id);
+            let original = self.recover_bound_policy(
+                RecordKind::BackupRun,
+                &run.id,
+                &run.policy_id,
+                &run.runner_run_id,
+            );
             let policy = original.as_ref().map(|(policy, _)| policy.clone());
             let result = self.deps.consumed_log.as_ref().and_then(|consumed| {
                 let id = if run.runner_run_id.is_empty() {
@@ -459,7 +527,12 @@ impl BackupScheduler {
             if self.state().verifies.contains_key(&verification.id) {
                 continue;
             }
-            let original = self.recovery_policy(RecordKind::Verification, &verification.id);
+            let original = self.recover_bound_policy(
+                RecordKind::Verification,
+                &verification.id,
+                &verification.policy_id,
+                &verification.runner_run_id,
+            );
             let result = self.deps.consumed_log.as_ref().and_then(|consumed| {
                 let id = if verification.runner_run_id.is_empty() {
                     super::find_runner_run_id(
@@ -477,7 +550,7 @@ impl BackupScheduler {
                     .rev()
                     .find(|line| line["run_id"] == id)
             });
-            if let Some(answer) = result {
+            if let (Some(answer), Some(_)) = (result, original) {
                 apply_verify_result(&mut verification, &Ok(answer));
                 verification.finished_at = Some(pts(now));
                 if self.save_verification(&verification, &row.slot) {
