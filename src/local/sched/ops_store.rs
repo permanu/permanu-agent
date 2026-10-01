@@ -192,6 +192,7 @@ impl OpsStore {
         self.conn.lock().unwrap_or_else(|p| p.into_inner())
     }
 
+    #[cfg(test)]
     #[allow(clippy::too_many_arguments)]
     pub fn claim<M: Message>(
         &self,

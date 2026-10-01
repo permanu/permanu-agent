@@ -181,6 +181,8 @@ async fn failed_attempts_retry_with_backoff_then_raise_the_heartbeat() {
         all[2].next_retry_at.is_none(),
         "the last attempt schedules nothing"
     );
+    assert_eq!(s.state().running, 0, "completed retries left a phantom running slot");
+    assert!(s.state().chains.is_empty(), "completed retries left a phantom chain");
     let events = f.sink.0.lock().unwrap().clone();
     assert_eq!(events.len(), 1);
     assert_eq!(events[0].kind, EventKindCond::CronFailed);
@@ -962,4 +964,83 @@ async fn deleted_queued_cron_keeps_its_chain_until_cancellation_commits() {
     assert!(!s.state().chains.contains_key(&run.id));
     assert_eq!(runs(&f)[0].status, CronRunStatus::Cancelled as i32);
     assert!(f.runner.ops("run_cron").is_empty());
+}
+
+#[tokio::test]
+async fn queued_cron_keeps_original_reviewed_authority_after_definition_update() {
+    let f = Fixture::new("cron-queued-original-authority", "2026-09-23T03:00:01Z");
+    let original = f.record(
+        1,
+        &[cron("cron.create", "0 3 * * *", "queue", 0)],
+        "succeeded",
+    );
+    let s = scheduler(&f);
+    let job = s.jobs().remove(CRON).unwrap();
+    let run = CronRun {
+        id: "queued-original-cron".into(),
+        cron_id: CRON.into(),
+        plan_id: original.clone(),
+        attempt: 1,
+        scheduled_for: Some(pts(at("2026-09-23T03:00:00Z"))),
+        status: CronRunStatus::Pending as i32,
+        ..Default::default()
+    };
+    assert!(s.record(Some(&job), &run));
+    {
+        let mut state = s.state();
+        state.chains.insert(
+            run.id.clone(),
+            Chain {
+                cron_id: CRON.into(),
+                run: run.clone(),
+                retry_at: None,
+                waiting: true,
+            },
+        );
+        state.slots.push_back(run.id.clone());
+    }
+    let replacement = f.record(
+        101,
+        &[cron("cron.update", "0 4 * * *", "queue", 0)],
+        "succeeded",
+    );
+    assert_eq!(s.jobs()[CRON].plan.plan_id, replacement);
+    f.runner
+        .answer("run_cron", json!({"outcome":"succeeded","exit_code":0}));
+    s.fill_slots();
+    s.settle().await;
+    let calls = f.runner.ops("run_cron");
+    assert_eq!(
+        calls.len(),
+        1,
+        "updated definition stranded a previously authorized queued run"
+    );
+    assert_eq!(calls[0]["schedule"]["plan_id"], original);
+    assert_eq!(s.jobs()[CRON].plan.plan_id, replacement);
+}
+
+#[tokio::test]
+async fn retry_keeps_original_authority_after_definition_update() {
+    let f = Fixture::new("cron-original-retry", "2026-09-23T10:00:00Z");
+    f.record(
+        1,
+        &[cron("cron.create", "0 * * * *", "skip", 2)],
+        "succeeded",
+    );
+    let s = scheduler(&f);
+    tick_at(&f, &s, "2026-09-23T10:59:55Z").await;
+    f.runner
+        .answer("run_cron", json!({"outcome": "failed", "exit_code": 3}));
+    tick_at(&f, &s, "2026-09-23T11:00:05Z").await;
+    let original = f.runner.ops("run_cron")[0]["schedule"]["plan"].clone();
+    f.record(
+        101,
+        &[cron("cron.update", "30 * * * *", "skip", 0)],
+        "succeeded",
+    );
+    tick_at(&f, &s, "2026-09-23T11:00:15Z").await;
+    let sent = f.runner.ops("run_cron");
+    assert_eq!(sent.len(), 2);
+    assert_eq!(sent[1]["schedule"]["plan"], original);
+    assert_eq!(sent[1]["schedule"]["attempt"], 2);
 }

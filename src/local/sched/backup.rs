@@ -470,7 +470,7 @@ impl BackupScheduler {
                 let id = if run.runner_run_id.is_empty() {
                     super::find_runner_run_id(
                         &consumed.run_lines("backup_run"),
-                        &original.as_ref()?.1.plan.plan_id,
+                        &original.as_ref()?.1.plan,
                         parse_rfc(&original.as_ref()?.1.scheduled_for),
                         original.as_ref()?.1.attempt,
                     )?
@@ -537,7 +537,7 @@ impl BackupScheduler {
                 let id = if verification.runner_run_id.is_empty() {
                     super::find_runner_run_id(
                         &consumed.run_lines("backup_verify"),
-                        &original.as_ref()?.1.plan.plan_id,
+                        &original.as_ref()?.1.plan,
                         parse_rfc(&original.as_ref()?.1.scheduled_for),
                         original.as_ref()?.1.attempt,
                     )?
@@ -766,7 +766,14 @@ impl BackupScheduler {
             return;
         };
         let lines = consumed.run_lines("backup_run");
-        let Some(id) = super::find_runner_run_id(&lines, &plan_id, Some(scheduled_for), attempt)
+        let Some((_, authority)) = self.recovery_policy(RecordKind::BackupRun, &run.id) else {
+            return;
+        };
+        if authority.plan.plan_id != plan_id {
+            return;
+        }
+        let Some(id) =
+            super::find_runner_run_id(&lines, &authority.plan, Some(scheduled_for), attempt)
         else {
             return;
         };
@@ -800,7 +807,16 @@ impl BackupScheduler {
         };
         let lines = consumed.run_lines("backup_verify");
         for (mut verification, plan_id, scheduled_for) in waiting {
-            let Some(id) = super::find_runner_run_id(&lines, &plan_id, Some(scheduled_for), 1)
+            let Some((_, authority)) =
+                self.recovery_policy(RecordKind::Verification, &verification.id)
+            else {
+                continue;
+            };
+            if authority.plan.plan_id != plan_id {
+                continue;
+            }
+            let Some(id) =
+                super::find_runner_run_id(&lines, &authority.plan, Some(scheduled_for), 1)
             else {
                 continue;
             };
@@ -1633,7 +1649,16 @@ impl BackupScheduler {
             .into_iter()
             .filter(|line| line["action_index"].as_u64() == u64::try_from(action.action_index).ok())
             .collect();
-        super::find_runner_run_id(&lines, &action.plan_id, None, 1)
+        super::find_runner_run_id(
+            &lines,
+            &PlanRef {
+                plan_id: action.plan_id.clone(),
+                plan_digest_hex: action.plan_digest_hex.clone(),
+                action_index: u32::try_from(action.action_index).ok()?,
+            },
+            None,
+            1,
+        )
     }
 
     /// v1.0.12 (D-062): a plan-bound `backup_verify` result sets the

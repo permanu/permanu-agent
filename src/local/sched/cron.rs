@@ -302,6 +302,45 @@ impl CronScheduler {
         self.deps.clock.now()
     }
 
+    fn run_authority(&self, run: &CronRun) -> Option<PlanRef> {
+        if let Some(intent) = self
+            .deps
+            .ops
+            .scheduled_intent(RecordKind::CronRun, &run.id)
+            .ok()?
+        {
+            return (intent.plan.plan_id == run.plan_id).then_some(intent.plan);
+        }
+        // Legacy and manual rows retain their original plan identity. Resolve
+        // one exact recorded action for this cron, never the current definition.
+        let actions = self
+            .deps
+            .store
+            .admitted_actions(&["cron.create", "cron.update", "cron.run"])
+            .ok()?;
+        let mut matching = actions.into_iter().filter(|action| {
+            action.plan_id == run.plan_id && action.params["cron_id"] == run.cron_id
+        });
+        let action = matching.next()?;
+        if matching.next().is_some() {
+            return None;
+        }
+        Some(plan_ref(&action))
+    }
+
+    fn original_job(&self, run: &CronRun) -> Option<JobDef> {
+        let authority = self.run_authority(run)?;
+        let actions = self
+            .deps
+            .store
+            .admitted_actions(&["cron.create", "cron.update"])
+            .ok()?;
+        let action = actions
+            .into_iter()
+            .find(|action| plan_ref(action) == authority)?;
+        load_jobs(&[action]).remove(&run.cron_id)
+    }
+
     /// Reconcile interrupted runs from trusted consumed-log terminal evidence.
     /// Unknown outcomes retain their slot and count against overlap limits.
     fn recover(&self) {
@@ -332,7 +371,7 @@ impl CronScheduler {
             let result = self.deps.consumed_log.as_ref().and_then(|consumed| {
                 let id = super::find_runner_run_id(
                     &consumed.run_lines("run_cron"),
-                    &run.plan_id,
+                    &self.run_authority(&run)?,
                     run.scheduled_for.map(|t| t.seconds),
                     run.attempt,
                 )?;
@@ -515,8 +554,11 @@ impl CronScheduler {
         let lines = consumed.run_lines("run_cron");
         for (chain_id, mut run) in missing {
             let scheduled_for = run.scheduled_for.map(|t| t.seconds);
+            let Some(authority) = self.run_authority(&run) else {
+                continue;
+            };
             let Some(id) =
-                super::find_runner_run_id(&lines, &run.plan_id, scheduled_for, run.attempt)
+                super::find_runner_run_id(&lines, &authority, scheduled_for, run.attempt)
             else {
                 continue;
             };
@@ -655,14 +697,18 @@ impl CronScheduler {
             plan_id: job.plan.plan_id.clone(),
             ..Default::default()
         };
-        match self.deps.ops.claim(
+        match self.deps.ops.claim_scheduled(
             RecordKind::CronRun,
             &run.id,
             &run.cron_id,
-            &rfc(scheduled_for),
             run.status,
             scheduled_for,
             &run,
+            &ScheduleRef {
+                plan: job.plan.clone(),
+                scheduled_for: rfc(scheduled_for),
+                attempt: run.attempt,
+            },
         ) {
             Ok(true) => self.start_chain(job, run, now),
             Ok(false) => {}
@@ -732,7 +778,7 @@ impl CronScheduler {
             let Some(cron_id) = state.chains.get(&chain_id).map(|c| c.cron_id.clone()) else {
                 continue;
             };
-            let Some(job) = state.jobs.get(&cron_id).cloned() else {
+            let Some(_) = state.jobs.get(&cron_id) else {
                 // Deleted while waiting: the chain ends without running.
                 let mut run = state
                     .chains
@@ -753,8 +799,27 @@ impl CronScheduler {
             let Some(chain) = state.chains.get_mut(&chain_id) else {
                 continue;
             };
-            chain.waiting = false;
+            if !chain.waiting {
+                continue;
+            }
             let run = chain.run.clone();
+            drop(state);
+            let Some(job) = self.original_job(&run) else {
+                self.state().slots.push_front(chain_id);
+                return;
+            };
+            let mut state = self.state();
+            if state.running >= MAX_RUNNING || !state.jobs.contains_key(&cron_id) {
+                state.slots.push_front(chain_id);
+                return;
+            }
+            let Some(chain) = state.chains.get_mut(&chain_id) else {
+                continue;
+            };
+            if !chain.waiting {
+                continue;
+            }
+            chain.waiting = false;
             state.running += 1;
             drop(state);
             self.launch(job, chain_id, run);
@@ -765,7 +830,25 @@ impl CronScheduler {
         let now = self.now();
         run.status = CronRunStatus::Running as i32;
         run.started_at = Some(pts(now));
-        if !self.record(Some(&job), &run) {
+        let schedule = ScheduleRef {
+            plan: job.plan.clone(),
+            scheduled_for: run
+                .scheduled_for
+                .as_ref()
+                .map(|t| rfc(t.seconds))
+                .unwrap_or_default(),
+            attempt: run.attempt,
+        };
+        let persisted = self.deps.ops.put_scheduled_record(
+            RecordKind::CronRun,
+            &run.id,
+            &run.cron_id,
+            run.status,
+            run.scheduled_for.as_ref().map_or(now, |t| t.seconds),
+            &run,
+            &schedule,
+        );
+        if persisted.is_err() {
             let mut state = self.state();
             state.running = state.running.saturating_sub(1);
             if let Some(chain) = state.chains.get_mut(&chain_id) {
@@ -774,6 +857,7 @@ impl CronScheduler {
             state.slots.push_front(chain_id);
             return;
         }
+        self.publish(Some(&job), &run);
         self.update_chain_run(&chain_id, &run);
         self.log(
             &job,
@@ -921,9 +1005,12 @@ impl CronScheduler {
         };
         for (chain_id, chain) in due {
             let job = self.state().jobs.get(&chain.cron_id).cloned();
-            let Some(job) = job.filter(|job| job.enabled) else {
+            let Some(_) = job.filter(|job| job.enabled) else {
                 // Deleted or paused: no retry follows (section 10.1).
                 self.state().chains.remove(&chain_id);
+                continue;
+            };
+            let Some(job) = self.original_job(&chain.run) else {
                 continue;
             };
             let run = CronRun {
@@ -936,6 +1023,9 @@ impl CronScheduler {
                 plan_id: job.plan.plan_id.clone(),
                 ..Default::default()
             };
+            if !self.record(Some(&job), &run) {
+                continue;
+            }
             {
                 let mut state = self.state();
                 if let Some(chain) = state.chains.get_mut(&chain_id) {
@@ -1065,8 +1155,11 @@ impl CronScheduler {
         let deadline = tokio::time::Instant::now() + LOST_RESULT_WAIT;
         loop {
             let lines = consumed.run_lines("run_cron");
+            let Some(authority) = self.run_authority(run) else {
+                return Err(failure);
+            };
             let Some(run_id) =
-                super::find_runner_run_id(&lines, &run.plan_id, scheduled_for, run.attempt)
+                super::find_runner_run_id(&lines, &authority, scheduled_for, run.attempt)
             else {
                 return Err(failure);
             };

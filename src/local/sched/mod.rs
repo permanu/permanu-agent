@@ -36,7 +36,7 @@ use prost_types::Timestamp;
 
 use super::events::EventBus;
 use super::execution::Clock;
-use super::runner::Runner;
+use super::runner::{PlanRef, Runner};
 use super::telemetry::records::{encode, TAG_LOG};
 use super::telemetry::redaction::redact;
 use super::telemetry::store::{valid_id, Kind, Producer};
@@ -126,22 +126,28 @@ pub fn runner_run_id_of(line: &serde_json::Value) -> Option<String> {
 /// plan-bound run) and `attempt`, from the runner's `run` lines.
 pub fn find_runner_run_id(
     lines: &[serde_json::Value],
-    plan_id: &str,
+    plan: &PlanRef,
     scheduled_for: Option<i64>,
     attempt: u32,
 ) -> Option<String> {
-    lines
-        .iter()
-        .rev()
-        .find(|line| {
-            line["plan_id"] == plan_id
-                && line["attempt"].as_u64() == Some(u64::from(attempt))
-                && match &line["scheduled_for"] {
-                    serde_json::Value::Null => scheduled_for.is_none(),
-                    value => value.as_str().and_then(parse_rfc) == scheduled_for,
-                }
-        })
-        .and_then(runner_run_id_of)
+    let mut found = None;
+    for line in lines.iter().filter(|line| {
+        line["plan_id"] == plan.plan_id
+            && line["plan_digest_hex"] == plan.plan_digest_hex
+            && line["action_index"].as_u64() == Some(u64::from(plan.action_index))
+            && line["attempt"].as_u64() == Some(u64::from(attempt))
+            && match &line["scheduled_for"] {
+                serde_json::Value::Null => scheduled_for.is_none(),
+                value => value.as_str().and_then(parse_rfc) == scheduled_for,
+            }
+    }) {
+        let id = runner_run_id_of(line)?;
+        if found.as_ref().is_some_and(|old| *old != id) {
+            return None;
+        }
+        found = Some(id);
+    }
+    found
 }
 
 /// RFC 3339 of Unix seconds.
@@ -384,5 +390,52 @@ impl crate::local::telemetry::ingest::CronRuns for CronRunIndex {
         }
         cache.insert(key, found.clone());
         Some(found)
+    }
+}
+
+#[cfg(test)]
+mod run_authority_tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn runner_identity_matches_exact_action_authority() {
+        let plan_id = "01a0cdb5-3500-7000-8000-000000000001";
+        let original = "01a0cdb5-3500-7000-8000-000000000002";
+        let another = "01a0cdb5-3500-7000-8000-000000000003";
+        let lines = vec![
+            json!({"plan_id":plan_id,"plan_digest_hex":"11".repeat(32),"action_index":0,"scheduled_for":"2026-09-23T03:00:00Z","attempt":1,"run_id":original}),
+            json!({"plan_id":plan_id,"plan_digest_hex":"11".repeat(32),"action_index":1,"scheduled_for":"2026-09-23T03:00:00Z","attempt":1,"run_id":another}),
+        ];
+        assert_eq!(
+            find_runner_run_id(
+                &lines,
+                &PlanRef {
+                    plan_id: plan_id.into(),
+                    plan_digest_hex: "11".repeat(32),
+                    action_index: 0
+                },
+                parse_rfc("2026-09-23T03:00:00Z"),
+                1
+            )
+            .as_deref(),
+            Some(original),
+            "another action in the same signed plan supplied this run's identity"
+        );
+    }
+    #[test]
+    fn contradictory_or_wrong_digest_runner_identity_stays_unknown() {
+        let plan = PlanRef {
+            plan_id: "01a0cdb5-3500-7000-8000-000000000001".into(),
+            plan_digest_hex: "11".repeat(32),
+            action_index: 0,
+        };
+        let at = parse_rfc("2026-09-23T03:00:00Z");
+        let mut first = json!({"plan_id":plan.plan_id,"plan_digest_hex":"22".repeat(32),"action_index":0,"scheduled_for":"2026-09-23T03:00:00Z","attempt":1,"run_id":"01a0cdb5-3500-7000-8000-000000000002"});
+        assert!(find_runner_run_id(&[first.clone()], &plan, at, 1).is_none());
+        first["plan_digest_hex"] = json!(plan.plan_digest_hex);
+        let mut contradictory = first.clone();
+        contradictory["run_id"] = json!("01a0cdb5-3500-7000-8000-000000000003");
+        assert!(find_runner_run_id(&[first, contradictory], &plan, at, 1).is_none());
     }
 }
