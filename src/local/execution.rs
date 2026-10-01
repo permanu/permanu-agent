@@ -162,7 +162,10 @@ fn exec_of(kind: &str, params: &Value) -> Exec {
         "server.add" | "rule.create" | "service.elevate" | "telemetry.retention.set" => Exec::Agent,
         "deploy" => Exec::Deploy,
         "rollback" => Exec::Ops(&["rollback_release"]),
-        "restart" => Exec::Ops(&["restart_release"]),
+        "restart" | "scale" => Exec::Ops(&["restart_release"]),
+        "service.delete" | "environment.delete" | "project.delete" => {
+            Exec::Ops(&["delete_runtime"])
+        }
         // v1.0.11 (D-061): every cancel stops running work first.
         "operation.cancel" => Exec::Ops(&["cancel_running", "cancel_execution"]),
         // v1.0.11 (D-061): the Dwaar webhook route.
@@ -2402,9 +2405,8 @@ mod tests {
             assert_eq!(exec_of(kind, &none), Exec::Agent, "{kind}");
         }
         assert_eq!(exec_of("telemetry.retention.set", &none), Exec::Agent);
-        for kind in ["scale", "db.upgrade"] {
-            assert_eq!(exec_of(kind, &none), Exec::NotImplemented, "{kind}");
-        }
+        assert_eq!(exec_of("scale", &none), Exec::Ops(&["restart_release"]));
+        assert_eq!(exec_of("db.upgrade", &none), Exec::NotImplemented);
     }
 
     #[test]

@@ -2,7 +2,7 @@
 //! `artifact-cases.json` and `StageArtifact` over the socket.
 
 use std::collections::BTreeMap;
-use std::os::unix::fs::PermissionsExt;
+use std::os::unix::fs::{MetadataExt, PermissionsExt};
 
 use serde_json::Value;
 use sha2::{Digest, Sha256};
@@ -519,4 +519,105 @@ fn a_test_release_keys_build_trusts_the_test_keys() {
 #[test]
 fn a_release_build_never_trusts_the_test_keys() {
     assert!(!ReleaseMode::production().trust_test_keys);
+}
+
+#[tokio::test]
+async fn failed_staging_record_delete_preserves_artifact_files() {
+    let h = Harness::with(
+        "staged-delete-fault",
+        Options {
+            artifacts: true,
+            ..Default::default()
+        },
+    )
+    .await;
+    let artifacts = h.artifacts.as_ref().unwrap();
+    let digest = "a".repeat(64);
+    let path = artifacts.deps.root.join(&digest);
+    std::fs::create_dir_all(&path).unwrap();
+    std::fs::write(path.join("fixture"), b"owned fixture").unwrap();
+    let set = StagedArtifactSet {
+        stage_id: "stage".into(),
+        bundle_manifest_digest_hex: digest.clone(),
+        expires_at: Some(pts(1)),
+        ..Default::default()
+    };
+    artifacts
+        .deps
+        .ops
+        .put(RecordKind::StagedSet, "stage", &digest, "", 1, 0, &set)
+        .unwrap();
+    artifacts.deps.ops.query_only(true);
+    artifacts.consumed(&digest);
+    assert!(
+        path.is_dir(),
+        "failed record deletion removed its artifact files"
+    );
+    artifacts.prune();
+    assert!(
+        path.is_dir(),
+        "failed retention deletion removed its artifact files"
+    );
+    h.stop().await;
+}
+
+#[tokio::test]
+async fn failed_restage_persistence_preserves_the_committed_set() {
+    let (case, binary) = vector_set();
+    let h = harness("restage-write-fault", &case).await;
+    let manifest = case["manifest"].as_str().unwrap().as_bytes().to_vec();
+    let signature = case["manifest_sig"].as_str().unwrap().as_bytes().to_vec();
+    let mut client = ArtifactServiceClient::new(h.channel.clone());
+    let files = [
+        ("manifest.json", manifest.as_slice()),
+        ("manifest.sig.json", signature.as_slice()),
+        ("arm64/permanu-agent", binary.as_slice()),
+    ];
+    let first = client
+        .stage_artifact(futures::stream::iter(frames(
+            &case,
+            "01a0cdb5-3500-7a01-8000-000000000071",
+            &files,
+            true,
+        )))
+        .await
+        .unwrap()
+        .into_inner()
+        .set
+        .unwrap();
+    let artifacts = h.artifacts.as_ref().unwrap();
+    let target = h
+        .dir
+        .join("staging")
+        .join(&first.bundle_manifest_digest_hex)
+        .join("arm64/permanu-agent");
+    let original_inode = std::fs::metadata(&target).unwrap().ino();
+    artifacts.deps.ops.query_only(true);
+    let error = client
+        .stage_artifact(futures::stream::iter(frames(
+            &case,
+            "01a0cdb5-3500-7a01-8000-000000000072",
+            &files,
+            true,
+        )))
+        .await
+        .unwrap_err();
+    assert_eq!(error.code(), Code::Internal);
+    assert_eq!(std::fs::metadata(&target).unwrap().ino(), original_inode);
+    assert_eq!(
+        std::fs::read(
+            h.dir
+                .join("staging")
+                .join(&first.bundle_manifest_digest_hex)
+                .join("arm64/permanu-agent")
+        )
+        .unwrap(),
+        binary
+    );
+    assert!(artifacts
+        .deps
+        .ops
+        .try_get(RecordKind::StagedSet, &first.stage_id)
+        .unwrap()
+        .is_some());
 }

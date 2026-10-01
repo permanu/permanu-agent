@@ -1023,3 +1023,106 @@ async fn corrupt_checkpoint_is_preserved_and_defers_execution() {
         Some("invalid")
     );
 }
+
+#[test]
+fn backup_recovery_uses_the_durable_original_policy_and_attempt() {
+    let f = Fixture::new("backup-origin", "2026-09-23T03:00:00Z");
+    let old = f.record(1, &[policy(PG, "0 3 * * *", Value::Null)], "succeeded");
+    let original = load(&f.deps.store.admitted_actions(BACKUP_KINDS).unwrap()).policies[PG].clone();
+    let run = BackupRun {
+        id: "original-backup-intent".into(),
+        policy_id: PG.into(),
+        status: BackupRunStatus::Dumping as i32,
+        ..Default::default()
+    };
+    let intent = ScheduleRef {
+        plan: original.plan,
+        scheduled_for: "2026-09-23T03:00:00Z".into(),
+        attempt: 2,
+    };
+    f.deps
+        .ops
+        .put_scheduled_record(
+            RecordKind::BackupRun,
+            &run.id,
+            PG,
+            run.status,
+            100,
+            &run,
+            &intent,
+        )
+        .unwrap();
+    f.record(101, &[policy(PG, "0 4 * * *", Value::Null)], "succeeded");
+    let s = BackupScheduler::new(f.deps.clone(), f.sink.clone(), SERVER_RECIPIENT.into());
+    let (policy, restored) = s.recovery_policy(RecordKind::BackupRun, &run.id).unwrap();
+    assert_eq!(policy.plan.plan_id, old);
+    assert_eq!(restored.attempt, 2);
+    assert_eq!(restored.scheduled_for, intent.scheduled_for);
+}
+
+#[test]
+fn failed_scheduled_intent_write_keeps_both_record_and_binding_absent() {
+    let f = Fixture::new("backup-intent-write", "2026-09-23T03:00:00Z");
+    f.record(1, &[policy(PG, "0 3 * * *", Value::Null)], "succeeded");
+    let original = load(&f.deps.store.admitted_actions(BACKUP_KINDS).unwrap()).policies[PG].clone();
+    let run = BackupRun {
+        id: "faulted-intent".into(),
+        policy_id: PG.into(),
+        ..Default::default()
+    };
+    let intent = ScheduleRef {
+        plan: original.plan,
+        scheduled_for: "2026-09-23T03:00:00Z".into(),
+        attempt: 1,
+    };
+    f.deps.ops.query_only(true);
+    assert!(f
+        .deps
+        .ops
+        .put_scheduled_record(
+            RecordKind::BackupRun,
+            &run.id,
+            PG,
+            run.status,
+            100,
+            &run,
+            &intent
+        )
+        .is_err());
+    assert!(f
+        .deps
+        .ops
+        .try_get(RecordKind::BackupRun, &run.id)
+        .unwrap()
+        .is_none());
+    assert!(f
+        .deps
+        .ops
+        .scheduled_intent(RecordKind::BackupRun, &run.id)
+        .unwrap()
+        .is_none());
+}
+
+#[test]
+fn verification_write_failure_keeps_the_policy_busy() {
+    let f = Fixture::new("verify-terminal-fault", "2026-09-23T03:00:00Z");
+    f.record(1, &[policy(PG, "0 3 * * *", Value::Null)], "succeeded");
+    let s = BackupScheduler::new(f.deps.clone(), f.sink.clone(), SERVER_RECIPIENT.into());
+    let policy = s.state().defs.policies[PG].clone();
+    let verification = RestoreVerification {
+        id: "verify-write-fault".into(),
+        policy_id: PG.into(),
+        status: RestoreVerificationStatus::Running as i32,
+        ..Default::default()
+    };
+    s.record_verification(&verification, "2026-09-23T03:00:00Z");
+    s.state().verifying.insert(PG.into());
+    f.deps.ops.query_only(true);
+    s.finish_verify(
+        &policy,
+        verification,
+        "2026-09-23T03:00:00Z",
+        Ok(json!({"run_outcome":"failed"})),
+    );
+    assert!(s.state().verifying.contains(PG));
+}

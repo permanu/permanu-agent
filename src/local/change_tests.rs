@@ -151,7 +151,15 @@ async fn bootstrap_admits_server_add_writes_trust_and_dedupes() {
     wait_for_state(&h, &reference.operation_id, OperationState::Succeeded).await;
     // The runner wrote the trust file (D-030); server.add itself is applied
     // by the agent and never bound.
-    let requests = h.runner.requests.lock().unwrap().clone();
+    let requests: Vec<_> = h
+        .runner
+        .requests
+        .lock()
+        .unwrap()
+        .iter()
+        .filter(|request| request["op"] != "runtime_capabilities")
+        .cloned()
+        .collect();
     assert_eq!(requests.len(), 1);
     assert_eq!(requests[0]["op"], "bootstrap_trust");
     assert_eq!(

@@ -346,6 +346,22 @@ impl BackupScheduler {
         self.deps.clock.now()
     }
 
+    fn recovery_policy(&self, kind: RecordKind, id: &str) -> Option<(PolicyDef, ScheduleRef)> {
+        let intent = self.deps.ops.scheduled_intent(kind, id).ok()??;
+        let actions = self
+            .deps
+            .store
+            .admitted_actions(&["backup.policy.set"])
+            .ok()?;
+        let action = actions.into_iter().find(|action| {
+            action.plan_id == intent.plan.plan_id
+                && action.plan_digest_hex == intent.plan.plan_digest_hex
+                && u32::try_from(action.action_index).ok() == Some(intent.plan.action_index)
+        })?;
+        let policy = load(&[action]).policies.into_values().next()?;
+        Some((policy, intent))
+    }
+
     fn recover(&self) {
         let now = self.now();
         let running = [
@@ -379,14 +395,15 @@ impl BackupScheduler {
                     continue;
                 }
             }
-            let policy = self.state().defs.policies.get(&run.policy_id).cloned();
+            let original = self.recovery_policy(RecordKind::BackupRun, &run.id);
+            let policy = original.as_ref().map(|(policy, _)| policy.clone());
             let result = self.deps.consumed_log.as_ref().and_then(|consumed| {
                 let id = if run.runner_run_id.is_empty() {
                     super::find_runner_run_id(
                         &consumed.run_lines("backup_run"),
-                        &policy.as_ref()?.plan.plan_id,
-                        parse_rfc(&row.slot),
-                        1,
+                        &original.as_ref()?.1.plan.plan_id,
+                        parse_rfc(&original.as_ref()?.1.scheduled_for),
+                        original.as_ref()?.1.attempt,
                     )?
                 } else {
                     run.runner_run_id.clone()
@@ -441,19 +458,14 @@ impl BackupScheduler {
             if self.state().verifies.contains_key(&verification.id) {
                 continue;
             }
-            let policy = self
-                .state()
-                .defs
-                .policies
-                .get(&verification.policy_id)
-                .cloned();
+            let original = self.recovery_policy(RecordKind::Verification, &verification.id);
             let result = self.deps.consumed_log.as_ref().and_then(|consumed| {
                 let id = if verification.runner_run_id.is_empty() {
                     super::find_runner_run_id(
                         &consumed.run_lines("backup_verify"),
-                        &policy.as_ref()?.plan.plan_id,
-                        parse_rfc(&row.slot),
-                        1,
+                        &original.as_ref()?.1.plan.plan_id,
+                        parse_rfc(&original.as_ref()?.1.scheduled_for),
+                        original.as_ref()?.1.attempt,
                     )?
                 } else {
                     verification.runner_run_id.clone()
@@ -856,12 +868,37 @@ impl BackupScheduler {
             }
             return self.next_backup();
         };
-        let attempt = self.attempt_of(&pending);
+        let Some(attempt) = self.attempt_of(&pending) else {
+            let mut state = self.state();
+            state.server_busy = false;
+            state.queue.push_front(pending);
+            return;
+        };
         let mut run = pending.run.clone();
         run.status = BackupRunStatus::Dumping as i32;
         run.started_at = Some(pts(self.now()));
         let slot = rfc(pending.scheduled_for);
-        if !self.record_run(&run, &slot) {
+        let schedule = ScheduleRef {
+            plan: policy.plan.clone(),
+            scheduled_for: slot.clone(),
+            attempt,
+        };
+        if self
+            .deps
+            .ops
+            .put_scheduled_record(
+                RecordKind::BackupRun,
+                &run.id,
+                &run.policy_id,
+                run.status,
+                run.started_at
+                    .map_or(pending.scheduled_for, |at| at.seconds),
+                &run,
+                &schedule,
+            )
+            .is_err()
+            || !self.record_run(&run, &slot)
+        {
             let mut state = self.state();
             state.server_busy = false;
             state.queue.push_front(pending);
@@ -903,23 +940,19 @@ impl BackupScheduler {
     }
 
     /// Attempts of one fire time are counted from its records.
-    fn attempt_of(&self, pending: &Pending) -> u32 {
+    fn attempt_of(&self, pending: &Pending) -> Option<u32> {
         let slot = rfc(pending.scheduled_for);
         let earlier = self
             .deps
             .ops
-            .list(
+            .try_slot_attempts(
                 RecordKind::BackupRun,
-                &Listing {
-                    subject: Some(&pending.resource_id),
-                    limit: 20,
-                    ..Default::default()
-                },
+                &pending.resource_id,
+                &slot,
+                &pending.run.id,
             )
-            .into_iter()
-            .filter(|row| row.slot == slot && row.id != pending.run.id)
-            .count();
-        u32::try_from(earlier).unwrap_or(u32::MAX).saturating_add(1)
+            .ok()?;
+        earlier.checked_add(1).filter(|attempt| *attempt <= 3)
     }
 
     async fn finish_backup(
@@ -1231,7 +1264,26 @@ impl BackupScheduler {
                 return;
             }
         }
-        if !self.record_verification(&verification, &slot) {
+        let schedule = ScheduleRef {
+            plan: policy.plan.clone(),
+            scheduled_for: slot.clone(),
+            attempt: 1,
+        };
+        if self
+            .deps
+            .ops
+            .put_scheduled_record(
+                RecordKind::Verification,
+                &verification.id,
+                &verification.policy_id,
+                verification.status,
+                scheduled_for,
+                &verification,
+                &schedule,
+            )
+            .is_err()
+            || !self.record_verification(&verification, &slot)
+        {
             self.state().verifying.remove(&policy.resource_id);
             return;
         }
@@ -1289,7 +1341,9 @@ impl BackupScheduler {
         }
         apply_verify_result(&mut verification, &result);
         verification.finished_at = Some(pts(now));
-        self.record_verification(&verification, slot);
+        if !self.record_verification(&verification, slot) {
+            return;
+        }
         self.state().verifying.remove(&policy.resource_id);
         if cancelled {
             // D-064 #8: a cancelled verification is not a failure and

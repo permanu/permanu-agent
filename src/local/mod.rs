@@ -152,6 +152,7 @@ pub fn status_with_reason(code: Code, message: &str, reason: ErrorReason) -> Sta
 }
 
 pub struct InfoSvc {
+    runner: Arc<dyn runner::Runner>,
     probe: Arc<dyn HostProbe>,
     identity: AgentIdentity,
     trust: TrustPaths,
@@ -302,6 +303,34 @@ impl InfoService for InfoSvc {
             self.sources.fill(&mut status, unix_seconds(now));
             status
         });
+        let mut advertised = capabilities(
+            &self.age_recipient,
+            self.telemetry.is_some(),
+            self.schedulers,
+            self.sources.hooks.is_some(),
+            self.artifacts.is_some(),
+        );
+        if let Ok(response) = self
+            .runner
+            .exchange(
+                serde_json::json!({"op":"runtime_capabilities","payload":{}}),
+                std::time::Duration::from_secs(2),
+            )
+            .await
+        {
+            if response["ok"] == true {
+                if let Some(caps) = response["capabilities"]
+                    .as_array()
+                    .filter(|caps| caps.len() <= 16)
+                {
+                    for cap in ["actions.scale.v1", "actions.delete.v1"] {
+                        if caps.contains(&serde_json::json!(cap)) {
+                            advertised.push(cap.to_owned());
+                        }
+                    }
+                }
+            }
+        }
         Ok(Response::new(HelloResponse {
             protocol_version: negotiated.to_string(),
             agent: Some(AgentInfo {
@@ -322,13 +351,7 @@ impl InfoService for InfoSvc {
                 recovery_recipient_fingerprint: String::new(),
                 bundle_manifest_digest_hex: String::new(),
             }),
-            capabilities: capabilities(
-                &self.age_recipient,
-                self.telemetry.is_some(),
-                self.schedulers,
-                self.sources.hooks.is_some(),
-                self.artifacts.is_some(),
-            ),
+            capabilities: advertised,
             server: Some(self.probe.server_facts().await),
             trusted_keys: Some(trusted_keys),
             clock: Some(ClockInfo {
@@ -563,6 +586,7 @@ impl LocalServer {
     ) -> Result<(), tonic::transport::Error> {
         let sources = self.sources();
         let info_svc = InfoServiceServer::new(InfoSvc {
+            runner: self.core.runner.clone(),
             probe: self.probe.clone(),
             identity: self.identity,
             trust: self.trust,
@@ -1296,6 +1320,31 @@ mod tests {
             "backups.v1".to_owned(),
             "alerts.v1".to_owned()
         ]));
+    }
+
+    #[tokio::test]
+    async fn hello_advertises_scale_only_when_the_runner_supports_it() {
+        let h = Harness::with("runtime-caps", test_harness::Options::default()).await;
+        let mut client = InfoServiceClient::new(h.channel.clone());
+        let old = client
+            .hello(hello_request(&["2.1"]))
+            .await
+            .unwrap()
+            .into_inner();
+        assert!(!old.capabilities.contains(&"actions.scale.v1".to_owned()));
+        h.runner.op_extra.lock().unwrap().insert(
+            "runtime_capabilities".into(),
+            serde_json::json!({"ok":true,"capabilities":["actions.scale.v1"]}),
+        );
+        let current = client
+            .hello(hello_request(&["2.1"]))
+            .await
+            .unwrap()
+            .into_inner();
+        assert!(current
+            .capabilities
+            .contains(&"actions.scale.v1".to_owned()));
+        h.stop().await;
     }
 
     #[tokio::test]

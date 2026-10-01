@@ -55,7 +55,8 @@ pub const READ_TIMEOUT: Duration = Duration::from_secs(30);
 pub const TIMED_OUT: &str = "runner timed out";
 
 /// The admitted action a bound op names (signed-plan.md 14.3).
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct PlanRef {
     pub plan_id: String,
     pub plan_digest_hex: String,
@@ -209,7 +210,8 @@ pub async fn run_op(
 
 /// A schedule binding (section 14.9): the admitted definition action a
 /// scheduled run executes under, its fire time and attempt.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ScheduleRef {
     pub plan: PlanRef,
     pub scheduled_for: String,

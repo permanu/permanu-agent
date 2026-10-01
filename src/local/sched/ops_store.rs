@@ -23,6 +23,7 @@ use crate::proto::agent::v2::{
 };
 
 const SCHEMA: &str = "
+CREATE TABLE IF NOT EXISTS scheduled_intents (kind TEXT NOT NULL, id TEXT NOT NULL, binding TEXT NOT NULL, PRIMARY KEY(kind,id));
 CREATE TABLE IF NOT EXISTS meta (
   key   TEXT PRIMARY KEY,
   value TEXT NOT NULL
@@ -287,6 +288,90 @@ impl OpsStore {
         Self::write_record(&self.lock(), kind, id, subject, slot, status, at, message)
     }
 
+    /// Persists exact authority with the initial runnable record before dispatch.
+    #[allow(clippy::too_many_arguments)]
+    pub fn put_scheduled_record<M: Message>(
+        &self,
+        kind: RecordKind,
+        id: &str,
+        subject: &str,
+        status: i32,
+        at: i64,
+        message: &M,
+        schedule: &crate::local::runner::ScheduleRef,
+    ) -> Result<(), StoreError> {
+        self.checked((|| {
+            let encoded = serde_json::to_string(schedule).map_err(|_| StoreError::Unsafe("invalid schedule intent".into()))?;
+            if encoded.len() > 4096 { return Err(StoreError::Unsafe("schedule intent too large".into())); }
+            let mut connection = self.lock();
+            let transaction = connection.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+            transaction.execute("INSERT INTO scheduled_intents(kind,id,binding) VALUES (?1,?2,?3) ON CONFLICT(kind,id) DO NOTHING", params![kind.name(), id, encoded])?;
+            let stored: String = transaction.query_row("SELECT binding FROM scheduled_intents WHERE kind=?1 AND id=?2", params![kind.name(), id], |row| row.get(0))?;
+            if stored != encoded { return Err(StoreError::Unsafe("scheduled authority changed".into())); }
+            Self::write_record(&transaction, kind, id, subject, &schedule.scheduled_for, status, at, message)?;
+            transaction.commit()?;
+            Ok(())
+        })())
+    }
+    pub fn scheduled_intent(
+        &self,
+        kind: RecordKind,
+        id: &str,
+    ) -> Result<Option<crate::local::runner::ScheduleRef>, StoreError> {
+        self.checked((|| {
+            let encoded: Option<String> = self
+                .lock()
+                .query_row(
+                    "SELECT binding FROM scheduled_intents WHERE kind=?1 AND id=?2",
+                    params![kind.name(), id],
+                    |row| row.get(0),
+                )
+                .optional()?;
+            encoded
+                .map(|text| {
+                    if text.len() > 4096 {
+                        return Err(StoreError::Unsafe("schedule intent too large".into()));
+                    }
+                    let binding: crate::local::runner::ScheduleRef = serde_json::from_str(&text)
+                        .map_err(|_| StoreError::Unsafe("invalid schedule intent".into()))?;
+                    if !crate::signed_plan::text::uuid7(&binding.plan.plan_id)
+                        || !crate::signed_plan::text::hex64(&binding.plan.plan_digest_hex)
+                        || super::parse_rfc(&binding.scheduled_for).is_none()
+                        || !(1..=3).contains(&binding.attempt)
+                    {
+                        return Err(StoreError::Unsafe("invalid schedule intent".into()));
+                    }
+                    Ok(binding)
+                })
+                .transpose()
+        })())
+    }
+
+    /// Replaces the metadata for one immutable content-addressed artifact set.
+    pub fn replace_staged_set(&self, set: &StagedArtifactSet, at: i64) -> Result<(), StoreError> {
+        self.checked((|| {
+            let mut connection = self.lock();
+            let transaction =
+                connection.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+            transaction.execute(
+                "DELETE FROM records WHERE kind = ?1 AND subject = ?2",
+                params![RecordKind::StagedSet.name(), set.bundle_manifest_digest_hex],
+            )?;
+            Self::write_record(
+                &transaction,
+                RecordKind::StagedSet,
+                &set.stage_id,
+                &set.bundle_manifest_digest_hex,
+                "",
+                1,
+                at,
+                set,
+            )?;
+            transaction.commit()?;
+            Ok(())
+        })())
+    }
+
     /// Commits a terminal backup run and its artifact as one durable fact.
     pub fn put_backup_completion(
         &self,
@@ -398,6 +483,22 @@ impl OpsStore {
                 },
                 |count| count > 0,
             )
+    }
+
+    /// Count the exact scheduled slot without a history-page limit. A read
+    /// failure must never reset a signed retry to attempt one.
+    pub fn try_slot_attempts(
+        &self,
+        kind: RecordKind,
+        subject: &str,
+        slot: &str,
+        excluding: &str,
+    ) -> Result<u32, StoreError> {
+        self.checked(self.lock().query_row(
+            "SELECT COUNT(*) FROM records WHERE kind=?1 AND subject=?2 AND slot=?3 AND id<>?4",
+            params![kind.name(), subject, slot, excluding],
+            |row| row.get::<_, u32>(0),
+        ).map_err(Into::into))
     }
 
     pub fn list(&self, kind: RecordKind, listing: &Listing<'_>) -> Vec<Row> {
@@ -526,6 +627,7 @@ impl OpsStore {
                AND r.subject = records.subject ORDER BY r.seq DESC LIMIT ?2)",
             params![cutoff, HISTORY_RECORDS],
         )?;
+        tx.execute("DELETE FROM scheduled_intents WHERE NOT EXISTS (SELECT 1 FROM records WHERE records.kind=scheduled_intents.kind AND records.id=scheduled_intents.id)", [])?;
         tx.commit()?;
         Ok(())
     }
@@ -567,6 +669,36 @@ fn row(r: &rusqlite::Row<'_>) -> rusqlite::Result<Row> {
 mod tests {
     use super::*;
     use crate::proto::agent::v2::{CronRun, CronRunStatus};
+
+    #[test]
+    fn slot_attempt_count_is_not_truncated_by_newer_history_and_fails_closed() {
+        let store = OpsStore::in_memory();
+        for index in 0..30 {
+            let id = format!("run-{index}");
+            let slot = if index < 2 { "original" } else { "newer" };
+            store
+                .put(
+                    RecordKind::CronRun,
+                    &id,
+                    "job",
+                    slot,
+                    3,
+                    index,
+                    &run(&id, "job", CronRunStatus::Succeeded),
+                )
+                .unwrap();
+        }
+        assert_eq!(
+            store
+                .try_slot_attempts(RecordKind::CronRun, "job", "original", "pending")
+                .unwrap(),
+            2
+        );
+        store.lock().execute_batch("DROP TABLE records").unwrap();
+        assert!(store
+            .try_slot_attempts(RecordKind::CronRun, "job", "original", "pending")
+            .is_err());
+    }
 
     fn run(id: &str, cron: &str, status: CronRunStatus) -> CronRun {
         CronRun {

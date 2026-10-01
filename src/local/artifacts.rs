@@ -507,18 +507,27 @@ impl Artifacts {
         if !text::hex64(bundle_manifest_digest_hex) {
             return;
         }
-        for row in self.deps.ops.list(
+        let Ok(rows) = self.deps.ops.try_list(
             RecordKind::StagedSet,
             &Listing {
                 limit: 1_000,
                 ..Default::default()
             },
-        ) {
+        ) else {
+            return;
+        };
+        for row in rows {
             let same = row
                 .decode::<StagedArtifactSet>()
                 .is_some_and(|set| set.bundle_manifest_digest_hex == bundle_manifest_digest_hex);
-            if same {
-                self.deps.ops.remove(RecordKind::StagedSet, &row.id);
+            if same
+                && self
+                    .deps
+                    .ops
+                    .try_remove(RecordKind::StagedSet, &row.id)
+                    .is_err()
+            {
+                return;
             }
         }
         let _ = fs::remove_dir_all(self.deps.root.join(bundle_manifest_digest_hex));
@@ -527,13 +536,15 @@ impl Artifacts {
     /// Drops expired sets and all but the newest two.
     fn prune(&self) {
         let now = self.now();
-        let rows = self.deps.ops.list(
+        let Ok(rows) = self.deps.ops.try_list(
             RecordKind::StagedSet,
             &Listing {
                 limit: 1_000,
                 ..Default::default()
             },
-        );
+        ) else {
+            return;
+        };
         let mut kept = 0;
         for row in rows {
             let Some(set) = row.decode::<StagedArtifactSet>() else {
@@ -545,12 +556,27 @@ impl Artifacts {
                 kept += 1;
                 continue;
             }
-            self.deps.ops.remove(RecordKind::StagedSet, &row.id);
+            if self
+                .deps
+                .ops
+                .try_remove(RecordKind::StagedSet, &row.id)
+                .is_err()
+            {
+                return;
+            }
             if text::hex64(&set.bundle_manifest_digest_hex) {
-                let still_used = self
-                    .sets()
+                let Ok(remaining) = self.deps.ops.try_list(
+                    RecordKind::StagedSet,
+                    &Listing {
+                        limit: 1_000,
+                        ..Default::default()
+                    },
+                ) else {
+                    return;
+                };
+                let still_used = remaining
                     .iter()
-                    .any(|s| s.bundle_manifest_digest_hex == set.bundle_manifest_digest_hex);
+                    .any(|r| r.subject == set.bundle_manifest_digest_hex);
                 if !still_used {
                     let _ =
                         fs::remove_dir_all(self.deps.root.join(&set.bundle_manifest_digest_hex));
@@ -663,7 +689,8 @@ impl Artifacts {
         if self
             .deps
             .ops
-            .get(RecordKind::StagedSet, &header.stage_id)
+            .try_get(RecordKind::StagedSet, &header.stage_id)
+            .map_err(|_| Status::internal("staging history unavailable"))?
             .is_some()
         {
             return Err(Status::already_exists("stage_id was already committed"));
@@ -754,12 +781,21 @@ impl Artifacts {
                 rejection.reason,
             )
         })?;
-        // A commit replaces an earlier set of the same digest.
+        // A digest names immutable verified bytes. Never replace an existing set
+        // before committing metadata: a failed database write must preserve it.
         let target = self.deps.root.join(&header.bundle_manifest_digest_hex);
-        let _ = fs::remove_dir_all(&target);
-        fs::rename(&dir.path, &target).map_err(|_| Status::internal("set not committed"))?;
+        let created = match fs::symlink_metadata(&target) {
+            Ok(metadata) if metadata.is_dir() && !metadata.file_type().is_symlink() => false,
+            Ok(_) => return Err(Status::internal("invalid committed set directory")),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                fs::rename(&dir.path, &target)
+                    .map_err(|_| Status::internal("set not committed"))?;
+                true
+            }
+            Err(_) => return Err(Status::internal("committed set unavailable")),
+        };
         let mut dir = dir;
-        dir.keep = true;
+        dir.keep = created;
         let now = self.now();
         let set = StagedArtifactSet {
             stage_id: header.stage_id.clone(),
@@ -772,24 +808,12 @@ impl Artifacts {
             release_key_id: verified.release_key_id,
             components: verified.components,
         };
-        // Older records of the same digest now name the replaced set.
-        for old in self.sets() {
-            if old.bundle_manifest_digest_hex == set.bundle_manifest_digest_hex {
-                self.deps.ops.remove(RecordKind::StagedSet, &old.stage_id);
+        if self.deps.ops.replace_staged_set(&set, now).is_err() {
+            if created {
+                let _ = fs::remove_dir_all(&target);
             }
+            return Err(Status::internal("set not recorded"));
         }
-        self.deps
-            .ops
-            .put(
-                RecordKind::StagedSet,
-                &set.stage_id,
-                &set.bundle_manifest_digest_hex,
-                "",
-                1,
-                now,
-                &set,
-            )
-            .map_err(|_| Status::internal("set not recorded"))?;
         self.prune();
         tracing::info!(
             digest = %set.bundle_manifest_digest_hex,

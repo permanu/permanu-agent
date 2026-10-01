@@ -214,16 +214,17 @@ fn request_shape_ok(request: &Value) -> bool {
     };
     let unbound = matches!(
         request["op"].as_str(),
-        Some(
-            "bootstrap_trust"
-                | "list_containers"
-                | "inspect_container"
-                | "container_logs"
-                | "container_logs_follow"
-                | "webhook_verify"
-                | "build_image"
-                | "diagnose"
-        )
+        Some("runtime_capabilities")
+            | Some(
+                "bootstrap_trust"
+                    | "list_containers"
+                    | "inspect_container"
+                    | "container_logs"
+                    | "container_logs_follow"
+                    | "webhook_verify"
+                    | "build_image"
+                    | "diagnose"
+            )
     );
     map.keys()
         .all(|key| matches!(key.as_str(), "op" | "plan" | "payload"))
@@ -420,6 +421,13 @@ impl FakeRunner {
             return refuse("E_PARSE", "request is not {op, plan?, payload}");
         }
         match request["op"].as_str().unwrap_or_default() {
+            "runtime_capabilities" => self
+                .op_extra
+                .lock()
+                .unwrap()
+                .get("runtime_capabilities")
+                .cloned()
+                .unwrap_or_else(|| json!({"ok":true,"capabilities":[]})),
             "bind_plan" => self.bind(&request),
             "bootstrap_trust" => self.bootstrap(&request),
             "list_containers" => self.list(&request["payload"]),
