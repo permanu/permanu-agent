@@ -1044,3 +1044,74 @@ async fn retry_keeps_original_authority_after_definition_update() {
     assert_eq!(sent[1]["schedule"]["plan"], original);
     assert_eq!(sent[1]["schedule"]["attempt"], 2);
 }
+
+#[tokio::test]
+async fn old_unfinished_manual_history_reconciles_after_restart_without_recreating_old_runs() {
+    let f = Fixture::new("cron-old-manual", "2026-09-23T10:00:00Z");
+    f.record(
+        1,
+        &[cron("cron.create", "0 0 1 1 *", "skip", 0)],
+        "succeeded",
+    );
+    let s = scheduler(&f);
+    let plan = f.record(2, &[id_only("cron.run")], "");
+    let original = s.record_manual(CRON, &plan, "original-operation");
+    // An old admission without retained history must not be recreated.
+    f.record(3, &[id_only("cron.run")], "succeeded");
+    f.clock.set("2026-09-23T15:00:00Z");
+    f.finish(&plan, "failed");
+    drop(s);
+    let restarted = scheduler(&f);
+    tick_at(&f, &restarted, "2026-09-23T15:00:05Z").await;
+    let history = runs(&f);
+    assert_eq!(history.len(), 1, "old absent history was recreated");
+    assert_eq!(history[0].id, original.id);
+    assert_eq!(history[0].operation_id, "original-operation");
+    assert_eq!(history[0].status, CronRunStatus::Failed as i32);
+    assert!(history[0].finished_at.is_some());
+    assert!(restarted.manual_allowed(CRON).is_ok());
+    tick_at(&f, &restarted, "2026-09-23T15:00:15Z").await;
+    assert_eq!(
+        runs(&f),
+        history,
+        "terminal history changed on next reconciliation"
+    );
+    assert!(
+        f.runner.ops("run_cron").is_empty(),
+        "manual history reran execution"
+    );
+}
+
+#[tokio::test]
+async fn old_manual_runs_of_two_jobs_in_one_plan_keep_separate_history() {
+    let f = Fixture::new("cron-two-manual", "2026-09-23T10:00:00Z");
+    let other = "01a0cdb5-3500-70d2-8000-000000000002";
+    let first_job = cron("cron.create", "0 0 1 1 *", "skip", 0);
+    let mut second_job = first_job.clone();
+    second_job["params"]["cron_id"] = json!(other);
+    f.record(1, &[first_job, second_job], "succeeded");
+    let mut second_action = id_only("cron.run");
+    second_action["params"]["cron_id"] = json!(other);
+    let plan = f.record(2, &[id_only("cron.run"), second_action], "");
+    let s = scheduler(&f);
+    let first = s.record_manual(CRON, &plan, "first-operation");
+    let second = s.record_manual(other, &plan, "second-operation");
+    f.clock.set("2026-09-23T15:00:00Z");
+    f.finish(&plan, "failed");
+    drop(s);
+    let restarted = scheduler(&f);
+    tick_at(&f, &restarted, "2026-09-23T15:00:05Z").await;
+    let history = runs(&f);
+    assert_eq!(history.len(), 2);
+    for original in [first, second] {
+        let settled = history.iter().find(|run| run.id == original.id).unwrap();
+        assert_eq!(settled.cron_id, original.cron_id);
+        assert_eq!(settled.operation_id, original.operation_id);
+        assert_eq!(settled.status, CronRunStatus::Failed as i32);
+        assert!(settled.finished_at.is_some());
+    }
+    assert!(restarted.manual_allowed(CRON).is_ok());
+    assert!(restarted.manual_allowed(other).is_ok());
+    tick_at(&f, &restarted, "2026-09-23T15:00:15Z").await;
+    assert_eq!(runs(&f), history);
+}

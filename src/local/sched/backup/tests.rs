@@ -1235,3 +1235,100 @@ fn legacy_recovery_requires_unique_original_runner_binding() {
         .recover_bound_policy(RecordKind::BackupRun, &run.id, PG, run_id)
         .is_none());
 }
+
+#[tokio::test]
+async fn manual_history_settles_after_an_outage_longer_than_two_hours() {
+    let f = Fixture::new("backup-manual-long-outage", "2026-09-23T10:00:00Z");
+    let s = scheduler(&f);
+    let backup = f.record(
+        2,
+        &[json!({"kind": "backup.run", "params": {"resource_id": PG}})],
+        "",
+    );
+    let verify = f.record(
+        3,
+        &[json!({"kind": "backup.verify", "params": {"resource_id": PG, "backup_id": BACKUP_A}})],
+        "",
+    );
+    tick_at(&f, &s, "2026-09-23T10:00:05Z").await;
+    let original = backup_runs(&f)[0].id.clone();
+    assert_eq!(backup_runs(&f)[0].status, BackupRunStatus::Dumping as i32);
+    assert_eq!(
+        verifications(&f)[0].status,
+        RestoreVerificationStatus::Running as i32
+    );
+    drop(s);
+    f.clock.set("2026-09-23T13:00:00Z");
+    f.finish(&backup, "failed");
+    f.finish(&verify, "cancelled");
+    let restarted =
+        BackupScheduler::new(f.deps.clone(), f.sink.clone(), SERVER_RECIPIENT.to_owned());
+    tick_at(&f, &restarted, "2026-09-23T13:00:05Z").await;
+    assert_eq!(backup_runs(&f)[0].id, original);
+    assert_eq!(backup_runs(&f)[0].status, BackupRunStatus::Failed as i32);
+    assert!(backup_runs(&f)[0].finished_at.is_some());
+    assert_eq!(
+        verifications(&f)[0].status,
+        RestoreVerificationStatus::Cancelled as i32
+    );
+    assert!(verifications(&f)[0].finished_at.is_some());
+    f.deps.ops.remove(RecordKind::BackupRun, &original);
+    tick_at(&f, &restarted, "2026-09-23T13:00:25Z").await;
+    assert!(
+        backup_runs(&f).is_empty(),
+        "do not recreate deleted old history"
+    );
+    assert_eq!(verifications(&f).len(), 1);
+}
+
+#[tokio::test]
+async fn old_unfinished_manual_history_is_found_beyond_the_latest_hundred_rows() {
+    let f = Fixture::new("backup-manual-old-page", "2026-09-23T10:00:00Z");
+    let s = scheduler(&f);
+    let plan = f.record(
+        2,
+        &[json!({"kind": "backup.run", "params": {"resource_id": PG}})],
+        "",
+    );
+    tick_at(&f, &s, "2026-09-23T10:00:05Z").await;
+    let original = backup_runs(&f)[0].id.clone();
+    for index in 0..101 {
+        assert!(s.save_run(
+            &BackupRun {
+                id: format!("newer-history-{index}"),
+                policy_id: PG.to_owned(),
+                status: BackupRunStatus::Succeeded as i32,
+                finished_at: Some(pts(s.now())),
+                ..Default::default()
+            },
+            &format!("scheduled-{index}"),
+        ));
+    }
+    drop(s);
+    f.clock.set("2026-09-23T13:00:00Z");
+    f.finish(&plan, "failed");
+    let restarted =
+        BackupScheduler::new(f.deps.clone(), f.sink.clone(), SERVER_RECIPIENT.to_owned());
+    tick_at(&f, &restarted, "2026-09-23T13:00:05Z").await;
+    let stored: BackupRun = f
+        .deps
+        .ops
+        .get(RecordKind::BackupRun, &original)
+        .unwrap()
+        .decode()
+        .unwrap();
+    assert_eq!(stored.status, BackupRunStatus::Failed as i32);
+    assert_eq!(f.deps.ops.count(RecordKind::BackupRun, &[], None), 102);
+    tick_at(&f, &restarted, "2026-09-23T13:00:25Z").await;
+    let unchanged: BackupRun = f
+        .deps
+        .ops
+        .get(RecordKind::BackupRun, &original)
+        .unwrap()
+        .decode()
+        .unwrap();
+    assert_eq!(
+        stored, unchanged,
+        "terminal history is immutable on later ticks"
+    );
+}

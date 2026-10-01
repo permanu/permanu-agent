@@ -2113,7 +2113,12 @@ impl ChangeCore {
         let core = self.clone();
         tokio::spawn(async move {
             core.reconcile_once().await;
-            for record in core.store.open_admissions().unwrap_or_default() {
+            let mut pending = core.store.open_admissions().unwrap_or_default();
+            // Durable cancellations must run before their queued targets.
+            // Replay their original admissions through the same bounded
+            // runner path; ordinary work otherwise retains admission order.
+            pending.sort_by_key(|record| record.action_kinds != ["operation.cancel"]);
+            for record in pending {
                 core.execute(&record.plan_id).await;
             }
             let mut ticks: u64 = 0;
@@ -2285,6 +2290,139 @@ fn consumed_set(plan: &Value, index: usize) -> Option<&str> {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[tokio::test]
+    async fn restart_cancels_persisted_manual_work_before_dispatch() {
+        use crate::local::test_harness::{Harness, OpBehavior};
+        use crate::signed_plan::test_support::{vector, TestSigner, SERVER_A};
+        use crate::signed_plan::verify::{next_head, GENESIS_HEAD};
+        let owner = TestSigner::load("owner").expect("public test signing fixture");
+        let trusted =
+            serde_json::to_string(&vector("policy-cases")["context"]["trusted_keys"]).unwrap();
+        for (kind, op, params) in [
+            (
+                "cron.run",
+                "run_cron",
+                json!({"cron_id":"01a0cdb5-3500-70d2-8000-000000000001"}),
+            ),
+            (
+                "backup.run",
+                "backup_run",
+                json!({"resource_id":"01a0cdb5-3500-70d1-8000-000000000001"}),
+            ),
+        ] {
+            let h = Harness::start(&format!("restart-cancel-{op}"), Some(&trusted)).await;
+            h.runner.behave(op, OpBehavior::Hang);
+            let definition = crate::admissions::definitions::tests::record(
+                &h.core.store,
+                1,
+                (
+                    "01a0cdb5-3500-70b1-8000-000000000001",
+                    "production",
+                    "01a0cdb5-3500-70b2-8000-000000000001",
+                ),
+                &[
+                    json!({"kind":"deploy","params":{"service_id":"01a0cdb5-3500-70d1-8000-000000000001"}}),
+                    json!({"kind":"cron.create","params":{"cron_id":"01a0cdb5-3500-70d2-8000-000000000001"}}),
+                ],
+                "succeeded",
+            );
+            rusqlite::Connection::open(h.dir.join("agent/admissions.db")).unwrap().execute(
+                "INSERT INTO specs (spec_digest_hex, service_id, spec_jcs, admitted_plan_id, admitted_at) VALUES (?1, ?2, '{}', ?3, '2026-09-23T10:00:00Z')",
+                rusqlite::params!["07".repeat(32), "01a0cdb5-3500-70d1-8000-000000000001", definition],
+            ).unwrap();
+            let TrustState::Valid(trust) = h.core.trust.load() else {
+                panic!("test trust unavailable")
+            };
+            let target = json!({"version":1,"id":"01a0cdb5-3500-7001-8000-0000000000e1",
+                "project_id":"01a0cdb5-3500-70b1-8000-000000000001","environment":"production","environment_id":"01a0cdb5-3500-70b2-8000-000000000001","service_ids":[],"targets":[SERVER_A],
+                "actions":[{"kind":kind,"params":params}],"base":{"force":false,"heads":{SERVER_A:GENESIS_HEAD}},
+                "created_at":"2026-09-23T10:04:00Z","expires_at":"2026-09-23T10:14:00Z",
+                "nonce":"EEEEEEEEEEEEEEEEEEEEEA","author":{"kind":"user","agent_session_id":null},"invocation":null});
+            let target_wire = owner.envelope(&target);
+            let admitted = h
+                .core
+                .store
+                .admit(
+                    &trust,
+                    &AdmitInput {
+                        envelope: target_wire.as_bytes(),
+                        specs: &[],
+                        sealed_secrets: &[],
+                        submitter: Submitter::Client,
+                        now: h.core.now(),
+                    },
+                )
+                .unwrap();
+            let mut cancel = target.clone();
+            cancel["id"] = json!("01a0cdb5-3500-7001-8000-0000000000e2");
+            cancel["nonce"] = json!("FFFFFFFFFFFFFFFFFFFFFA");
+            cancel["base"]["heads"][SERVER_A] =
+                json!(next_head(GENESIS_HEAD, &admitted.plan_digest_hex));
+            cancel["actions"] = json!([{"kind":"operation.cancel","params":{"plan_id":admitted.plan_id,"plan_digest_hex":admitted.plan_digest_hex}}]);
+            let cancel_wire = owner.envelope(&cancel);
+            let canceller = h
+                .core
+                .store
+                .admit(
+                    &trust,
+                    &AdmitInput {
+                        envelope: cancel_wire.as_bytes(),
+                        specs: &[],
+                        sealed_secrets: &[],
+                        submitter: Submitter::Client,
+                        now: h.core.now(),
+                    },
+                )
+                .unwrap();
+            let (store, _) = AdmissionStore::open(
+                &crate::admissions::StoreConfig {
+                    path: h.dir.join("agent/admissions.db"),
+                    owner: None,
+                },
+                false,
+                h.core.now(),
+            )
+            .unwrap();
+            let restarted = ChangeCore::new(ChangeCoreParts {
+                store: Arc::new(store),
+                trust: h.core.trust.clone(),
+                probe: h.core.probe.clone(),
+                runner: h.core.runner.clone(),
+                events: EventBus::new(),
+                clock: h.core.clock.clone(),
+                consumed_log: h.core.consumed_log.clone(),
+                consumed_log_owner: h.core.consumed_log_owner,
+                age_recipient: h.core.age_recipient.clone(),
+                timing: Timing::default(),
+            });
+            let task = restarted.spawn_background();
+            let deadline = tokio::time::Instant::now() + Duration::from_secs(2);
+            while tokio::time::Instant::now() < deadline
+                && restarted
+                    .store
+                    .admission(&canceller.plan_id)
+                    .unwrap()
+                    .unwrap()
+                    .finished_at
+                    .is_none()
+            {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+            task.abort();
+            assert!(
+                h.runner.ops_for(&admitted.plan_id).is_empty(),
+                "{kind} physically dispatched before its durable cancellation"
+            );
+            let target_record = restarted
+                .store
+                .admission(&admitted.plan_id)
+                .unwrap()
+                .unwrap();
+            assert_eq!(target_record.outcome, "cancelled");
+            h.stop().await;
+        }
+    }
 
     /// QA M2 run 2: one `servers.update_components` plan holds a
     /// `component.update` and an `agent.update` of the same staged set; the

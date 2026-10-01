@@ -1047,26 +1047,49 @@ impl CronScheduler {
             return;
         };
         let jobs = self.state().jobs.clone();
-        // Plans execute within 60 min of admission; older ones are settled.
-        let recent = actions
+        // A persisted unfinished manual run survives any downtime. The age
+        // window only bounds creating history for admissions without a row.
+        let statuses = [CronRunStatus::Running as i32, CronRunStatus::Pending as i32];
+        let mut unfinished: HashMap<_, _> = self
+            .deps
+            .ops
+            .list(
+                RecordKind::CronRun,
+                &Listing {
+                    statuses: &statuses,
+                    limit: 10_000,
+                    ..Default::default()
+                },
+            )
             .into_iter()
-            .filter(|a| parse_rfc(&a.admitted_at).is_some_and(|at| at >= now - 7_200));
-        for action in recent {
+            .filter(|row| {
+                row.decode::<CronRun>()
+                    .is_some_and(|run| run.trigger == CronTrigger::Manual as i32)
+            })
+            .map(|row| ((row.subject.clone(), row.slot.clone()), row))
+            .collect();
+        for action in actions {
             let cron_id = action.params["cron_id"].as_str().unwrap_or_default();
             let slot = format!("manual:{}", action.plan_id);
-            let existing = self
-                .deps
-                .ops
-                .list(
-                    RecordKind::CronRun,
-                    &Listing {
-                        subject: Some(cron_id),
-                        limit: 50,
-                        ..Default::default()
-                    },
-                )
-                .into_iter()
-                .find(|row| row.slot == slot);
+            let recorded = unfinished.remove(&(cron_id.to_owned(), slot.clone()));
+            let recent = parse_rfc(&action.admitted_at).is_some_and(|at| at >= now - 7_200);
+            if recorded.is_none() && !recent {
+                continue;
+            }
+            let existing = recorded.or_else(|| {
+                self.deps
+                    .ops
+                    .list(
+                        RecordKind::CronRun,
+                        &Listing {
+                            subject: Some(cron_id),
+                            limit: 50,
+                            ..Default::default()
+                        },
+                    )
+                    .into_iter()
+                    .find(|row| row.slot == slot)
+            });
             let mut run = match existing {
                 Some(row) => match row.decode::<CronRun>() {
                     Some(run) if !is_final(run.status) => run,

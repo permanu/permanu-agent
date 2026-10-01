@@ -1521,19 +1521,59 @@ impl BackupScheduler {
         let Ok(actions) = self.deps.store.admitted_actions(MANUAL_KINDS) else {
             return;
         };
-        let recent = actions
-            .into_iter()
-            .filter(|a| parse_rfc(&a.admitted_at).is_some_and(|at| at >= now - 7_200));
-        for action in recent {
+        // Admission age limits creating history, not settling a persisted run.
+        // Keep recovery bounded and include unfinished rows beyond the latest
+        // 100 records used for ordinary history lookup.
+        let mut unfinished = HashMap::new();
+        let backup_statuses = [
+            BackupRunStatus::Pending as i32,
+            BackupRunStatus::Dumping as i32,
+            BackupRunStatus::Encrypting as i32,
+            BackupRunStatus::Uploading as i32,
+        ];
+        let verification_statuses = [RestoreVerificationStatus::Running as i32];
+        for (kind, statuses) in [
+            (RecordKind::BackupRun, backup_statuses.as_slice()),
+            (RecordKind::Verification, verification_statuses.as_slice()),
+        ] {
+            for row in self.deps.ops.list(
+                kind,
+                &Listing {
+                    statuses,
+                    limit: 10_000,
+                    ..Default::default()
+                },
+            ) {
+                if row.slot.starts_with("manual:") {
+                    unfinished.insert(
+                        (
+                            kind == RecordKind::BackupRun,
+                            row.subject.clone(),
+                            row.slot.clone(),
+                        ),
+                        row,
+                    );
+                }
+            }
+        }
+        for action in actions {
             let resource = action.params["resource_id"]
                 .as_str()
                 .unwrap_or_default()
                 .to_owned();
             let slot = format!("manual:{}:{}", action.plan_id, action.action_index);
+            let existing = unfinished
+                .get(&(action.kind == "backup.run", resource.clone(), slot.clone()))
+                .cloned();
+            let recent = parse_rfc(&action.admitted_at).is_some_and(|at| at >= now - 7_200);
+            if !recent && existing.is_none() {
+                continue;
+            }
             let started = parse_rfc(&action.admitted_at).map(pts);
             let finished = action.finished_at.as_deref().and_then(parse_rfc).map(pts);
             if action.kind == "backup.run" {
-                let existing = self.manual_row(RecordKind::BackupRun, &resource, &slot);
+                let existing =
+                    existing.or_else(|| self.manual_row(RecordKind::BackupRun, &resource, &slot));
                 let mut run = match existing.and_then(|row| row.decode::<BackupRun>()) {
                     Some(run) if run.finished_at.is_some() => continue,
                     Some(run) => run,
@@ -1597,7 +1637,8 @@ impl BackupScheduler {
                     _ => {}
                 }
             } else {
-                let existing = self.manual_row(RecordKind::Verification, &resource, &slot);
+                let existing = existing
+                    .or_else(|| self.manual_row(RecordKind::Verification, &resource, &slot));
                 let mut verification =
                     match existing.and_then(|row| row.decode::<RestoreVerification>()) {
                         Some(v) if v.finished_at.is_some() => continue,
