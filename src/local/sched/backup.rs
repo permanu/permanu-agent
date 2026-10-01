@@ -863,11 +863,16 @@ impl BackupScheduler {
             .cloned();
         let Some(_) = policy else {
             // Deleted while waiting.
-            let mut run = pending.run;
+            let mut run = pending.run.clone();
             run.status = BackupRunStatus::Cancelled as i32;
             run.error = "the policy was deleted before the run started".to_owned();
             run.finished_at = Some(pts(self.now()));
-            self.record_run(&run, &rfc(pending.scheduled_for));
+            if !self.record_run(&run, &rfc(pending.scheduled_for)) {
+                let mut state = self.state();
+                state.server_busy = false;
+                state.queue.push_front(pending);
+                return;
+            }
             {
                 let mut state = self.state();
                 state.server_busy = false;

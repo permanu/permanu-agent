@@ -1145,3 +1145,47 @@ async fn queued_backup_keeps_original_authority_after_policy_changes() {
     assert_eq!(requests.len(), 1);
     assert_eq!(requests[0]["schedule"]["plan_id"], original);
 }
+
+#[tokio::test]
+async fn deleted_queued_policy_waits_for_durable_cancellation() {
+    let f = Fixture::new("backup-deleted-policy-write", "2026-09-23T03:00:01Z");
+    f.record(1, &[policy(PG, "0 3 * * *", Value::Null)], "succeeded");
+    let s = scheduler(&f);
+    let original = s.state().defs.policies[PG].clone();
+    let run = BackupRun {
+        id: "queued-deleted-backup".into(),
+        policy_id: PG.into(),
+        status: BackupRunStatus::Pending as i32,
+        ..Default::default()
+    };
+    let scheduled_for = super::super::test_support::at("2026-09-23T03:00:00Z");
+    assert!(s.record_run(&run, &rfc(scheduled_for)));
+    {
+        let mut state = s.state();
+        state.busy.insert(PG.into());
+        state.queue.push_back(Pending {
+            policy: original,
+            resource_id: PG.into(),
+            run,
+            scheduled_for,
+            retry_at: None,
+        });
+        state.defs.policies.remove(PG);
+    }
+    f.deps.ops.query_only(true);
+    s.next_backup();
+    assert!(
+        s.state().busy.contains(PG),
+        "slot released before cancellation committed"
+    );
+    assert_eq!(
+        s.state().queue.len(),
+        1,
+        "uncommitted cancellation lost its retry intent"
+    );
+    assert!(f.runner.ops("backup_run").is_empty());
+    f.deps.ops.query_only(false);
+    s.next_backup();
+    assert!(!s.state().busy.contains(PG));
+    assert_eq!(backup_runs(&f)[0].status, BackupRunStatus::Cancelled as i32);
+}
