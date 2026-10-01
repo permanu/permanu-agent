@@ -621,3 +621,49 @@ async fn failed_restage_persistence_preserves_the_committed_set() {
         .unwrap()
         .is_some());
 }
+
+#[tokio::test]
+async fn restaging_does_not_certify_corrupted_existing_bytes() {
+    let (case, binary) = vector_set();
+    let h = harness("restage-corruption", &case).await;
+    let manifest = case["manifest"].as_str().unwrap().as_bytes().to_vec();
+    let signature = case["manifest_sig"].as_str().unwrap().as_bytes().to_vec();
+    let files = [
+        ("manifest.json", manifest.as_slice()),
+        ("manifest.sig.json", signature.as_slice()),
+        ("arm64/permanu-agent", binary.as_slice()),
+    ];
+    let mut client = ArtifactServiceClient::new(h.channel.clone());
+    let first = client
+        .stage_artifact(futures::stream::iter(frames(
+            &case,
+            "01a0cdb5-3500-7a01-8000-000000000081",
+            &files,
+            true,
+        )))
+        .await
+        .unwrap()
+        .into_inner()
+        .set
+        .unwrap();
+    let target = h
+        .dir
+        .join("staging")
+        .join(&first.bundle_manifest_digest_hex)
+        .join("arm64/permanu-agent");
+    std::fs::write(&target, b"corrupt existing binary").unwrap();
+    let result = client
+        .stage_artifact(futures::stream::iter(frames(
+            &case,
+            "01a0cdb5-3500-7a01-8000-000000000082",
+            &files,
+            true,
+        )))
+        .await;
+    assert!(
+        result.is_err(),
+        "fresh upload certified different existing bytes"
+    );
+    assert_eq!(std::fs::read(&target).unwrap(), b"corrupt existing binary");
+    h.stop().await;
+}

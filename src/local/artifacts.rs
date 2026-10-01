@@ -393,6 +393,63 @@ fn file_name_ok(name: &str, arch: &str) -> bool {
 }
 
 /// Removes the upload directory unless the commit moved it.
+fn verify_existing_files(root: &Path, target: &Path, files: &[StageFile]) -> Result<(), Status> {
+    let error = || {
+        Status::failed_precondition(
+            "existing staged bytes are unavailable or differ from the verified upload",
+        )
+    };
+    let owner = fs::symlink_metadata(root).map_err(|_| error())?;
+    if !owner.is_dir() || owner.file_type().is_symlink() || owner.mode() & 0o022 != 0 {
+        return Err(error());
+    }
+    for entry in files {
+        let path = target.join(&entry.name);
+        for directory in [Some(target), path.parent()].into_iter().flatten() {
+            let metadata = fs::symlink_metadata(directory).map_err(|_| error())?;
+            if !metadata.is_dir()
+                || metadata.file_type().is_symlink()
+                || metadata.uid() != owner.uid()
+                || metadata.mode() & 0o022 != 0
+            {
+                return Err(error());
+            }
+        }
+        let mut file = OpenOptions::new()
+            .read(true)
+            .custom_flags(libc::O_NOFOLLOW)
+            .open(path)
+            .map_err(|_| error())?;
+        let metadata = file.metadata().map_err(|_| error())?;
+        if !metadata.is_file()
+            || metadata.uid() != owner.uid()
+            || metadata.mode() & 0o022 != 0
+            || metadata.len() != entry.size_bytes
+            || entry.size_bytes > MAX_FILE_BYTES
+        {
+            return Err(error());
+        }
+        let mut hasher = Sha256::new();
+        let mut total = 0_u64;
+        let mut buffer = [0_u8; 64 * 1024];
+        loop {
+            let count = file.read(&mut buffer).map_err(|_| error())?;
+            if count == 0 {
+                break;
+            }
+            total = total.saturating_add(count as u64);
+            if total > entry.size_bytes {
+                return Err(error());
+            }
+            hasher.update(&buffer[..count]);
+        }
+        if total != entry.size_bytes || hex::encode(hasher.finalize()) != entry.digest_hex {
+            return Err(error());
+        }
+    }
+    Ok(())
+}
+
 struct UploadDir {
     path: PathBuf,
     keep: bool,
@@ -785,7 +842,10 @@ impl Artifacts {
         // before committing metadata: a failed database write must preserve it.
         let target = self.deps.root.join(&header.bundle_manifest_digest_hex);
         let created = match fs::symlink_metadata(&target) {
-            Ok(metadata) if metadata.is_dir() && !metadata.file_type().is_symlink() => false,
+            Ok(metadata) if metadata.is_dir() && !metadata.file_type().is_symlink() => {
+                verify_existing_files(&self.deps.root, &target, &files)?;
+                false
+            }
             Ok(_) => return Err(Status::internal("invalid committed set directory")),
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
                 fs::rename(&dir.path, &target)
