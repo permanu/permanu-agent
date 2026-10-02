@@ -95,6 +95,7 @@ const UUID7: Shape = Shape::Pattern(text::uuid7);
 /// `OPTIONAL_PARAMS`).
 pub(super) fn optional_params_for(kind: &str) -> &'static [(&'static str, Shape)] {
     match kind {
+        "db.upgrade" => &[("spec_digest_hex", HEX64)],
         "restore" => &[
             ("source_resource_id", UUID7),
             ("destination_ref", REF),

@@ -272,13 +272,19 @@ fn bind_specs(plan: &Value, spec_texts: &[String]) -> Option<BTreeMap<String, (V
     let mut wanted = BTreeSet::new();
     for action in actions {
         let kind = action["kind"].as_str()?;
-        if !SPEC_KINDS.contains(&kind) {
+        let params = &action["params"];
+        let upgrade_spec = kind == "db.upgrade" && params.get("spec_digest_hex").is_some();
+        if !SPEC_KINDS.contains(&kind) && !upgrade_spec {
             continue;
         }
-        let params = &action["params"];
         let digest = params["spec_digest_hex"].as_str()?;
         let (spec, _) = specs.get(digest)?;
-        if spec["service_id"] != params["service_id"]
+        let service = if upgrade_spec {
+            &params["resource_id"]
+        } else {
+            &params["service_id"]
+        };
+        if spec["service_id"] != *service
             || (kind == "scale" && spec["replicas"] != params["replicas"])
             || (kind != "service.elevate" && spec_elevated(spec) && !elevations.contains(digest))
         {
@@ -922,4 +928,63 @@ pub fn verify_bootstrap(
         server_id: server_id.to_owned(),
         owner_key: owner.clone(),
     })
+}
+
+#[cfg(test)]
+mod upgrade_spec_binding_tests {
+    use super::*;
+    use crate::signed_plan::test_support::{plan_vector, TestSigner};
+    use serde_json::json;
+
+    fn fixture() -> (Value, String, String) {
+        let vector = plan_vector("user-deploy");
+        let spec = vector["specs"][0]["jcs"].as_str().unwrap().to_owned();
+        let (parsed, digest) = parse_spec(&spec).unwrap();
+        let mut plan = vector["plan"].clone();
+        plan["service_ids"] = json!([]);
+        plan["actions"] = json!([{"kind":"db.upgrade","params":{"resource_id":parsed["service_id"],"engine":"postgres","from_version":"16","to_version":"17","spec_digest_hex":digest}}]);
+        (plan, spec, digest)
+    }
+    #[test]
+    fn upgrade_destination_digest_is_optional_but_schema_checked() {
+        let (mut plan, _, _) = fixture();
+        let owner = TestSigner::load("owner").expect("checked-in test owner key");
+        assert!(parse_envelope(owner.envelope(&plan).as_bytes()).is_ok());
+        plan["actions"][0]["params"]["spec_digest_hex"] = json!("bad");
+        assert!(parse_envelope(owner.envelope(&plan).as_bytes()).is_err());
+        plan["actions"][0]["params"]
+            .as_object_mut()
+            .unwrap()
+            .remove("spec_digest_hex");
+        assert!(parse_envelope(owner.envelope(&plan).as_bytes()).is_ok());
+        assert!(bind_specs(&plan, &[]).is_some());
+    }
+    #[test]
+    fn upgrade_destination_spec_requires_matching_digest_resource_and_no_extra_specs() {
+        let (mut plan, spec, digest) = fixture();
+        assert!(bind_specs(&plan, std::slice::from_ref(&spec)).is_some());
+        assert!(bind_specs(&plan, &[]).is_none());
+        plan["actions"][0]["params"]["spec_digest_hex"] = json!("aa".repeat(32));
+        assert!(bind_specs(&plan, std::slice::from_ref(&spec)).is_none());
+        plan["actions"][0]["params"]["spec_digest_hex"] = json!(digest);
+        plan["actions"][0]["params"]["resource_id"] = json!("01a0cdb5-3500-70d1-8000-000000000099");
+        assert!(bind_specs(&plan, std::slice::from_ref(&spec)).is_none());
+        plan["actions"][0]["params"]
+            .as_object_mut()
+            .unwrap()
+            .remove("spec_digest_hex");
+        assert!(bind_specs(&plan, &[spec]).is_none());
+    }
+    #[test]
+    fn upgrade_destination_elevation_needs_matching_elevate_action() {
+        let (mut plan, spec, _) = fixture();
+        let mut elevated: Value = serde_json::from_str(&spec).unwrap();
+        elevated["privileged"] = json!(true);
+        let text = canonicalize(&elevated).unwrap();
+        let (_, digest) = parse_spec(&text).unwrap();
+        plan["actions"][0]["params"]["spec_digest_hex"] = json!(digest);
+        assert!(bind_specs(&plan, std::slice::from_ref(&text)).is_none());
+        plan["actions"].as_array_mut().unwrap().push(json!({"kind":"service.elevate","params":{"service_id":elevated["service_id"],"spec_digest_hex":digest}}));
+        assert!(bind_specs(&plan, &[text]).is_some());
+    }
 }

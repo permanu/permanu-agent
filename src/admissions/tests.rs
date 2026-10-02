@@ -1428,3 +1428,69 @@ fn an_alert_rule_naming_a_missing_channel_is_refused() {
         .unwrap();
     fs::remove_dir_all(dir).unwrap();
 }
+
+#[test]
+fn db_upgrade_caches_exact_destination_spec_and_legacy_keeps_it() {
+    use crate::signed_plan::crypto::{hex, prefixed_digest, SPEC_PREFIX};
+    use crate::signed_plan::jcs::canonicalize;
+    use serde_json::json;
+    let owner = TestSigner::load("owner").expect("checked-in test owner key");
+    let dir = temp_dir("store-upgrade-destination");
+    let (store, _) = AdmissionStore::open(&config(&dir), false, now()).unwrap();
+    seed_head(&store, USER_DEPLOY_HEAD_BEFORE);
+    let (original, specs) = user_deploy();
+    store
+        .admit(&test_trust(), &input(&original, &specs, now()))
+        .unwrap();
+    let mut destination: Value = serde_json::from_str(&specs[0]).unwrap();
+    destination["replicas"] = json!(destination["replicas"].as_u64().unwrap() + 1);
+    let destination = canonicalize(&destination).unwrap();
+    let digest = hex(&prefixed_digest(SPEC_PREFIX, &destination));
+    let mut plan = plan_vector("user-deploy")["plan"].clone();
+    plan["id"] = json!("01a0cdb5-3500-7001-8000-000000000091");
+    plan["nonce"] = json!("AAAAAAAAAAAAAAAAAAAAAA");
+    plan["base"]["heads"][SERVER_A] =
+        json!(store.head(PROJECT, "production").unwrap().head_digest_hex);
+    plan["service_ids"] = json!([]);
+    plan["actions"] = json!([{"kind":"db.upgrade","params":{"resource_id":WEB,"engine":"postgres","from_version":"16","to_version":"17","spec_digest_hex":digest}}]);
+    let envelope = owner.envelope(&plan);
+    let admitted = store
+        .admit(
+            &test_trust(),
+            &input(&envelope, std::slice::from_ref(&destination), now()),
+        )
+        .unwrap();
+    let cached:(String,String,String)=store.lock().query_row(
+  "SELECT s.spec_jcs,c.spec_digest_hex,c.plan_id FROM service_specs c JOIN specs s ON s.spec_digest_hex=c.spec_digest_hex WHERE c.service_id=?1",params![WEB],|row|Ok((row.get(0)?,row.get(1)?,row.get(2)?))).unwrap();
+    assert_eq!(
+        cached,
+        (
+            destination.clone(),
+            digest.clone(),
+            admitted.plan_id.clone()
+        )
+    );
+    plan["id"] = json!("01a0cdb5-3500-7001-8000-000000000092");
+    plan["nonce"] = json!("BBBBBBBBBBBBBBBBBBBBBA");
+    plan["base"]["heads"][SERVER_A] =
+        json!(store.head(PROJECT, "production").unwrap().head_digest_hex);
+    plan["actions"][0]["params"]
+        .as_object_mut()
+        .unwrap()
+        .remove("spec_digest_hex");
+    let legacy = owner.envelope(&plan);
+    store
+        .admit(&test_trust(), &input(&legacy, &[], now()))
+        .unwrap();
+    let cached: (String, String) = store
+        .lock()
+        .query_row(
+            "SELECT spec_digest_hex,plan_id FROM service_specs WHERE service_id=?1",
+            params![WEB],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .unwrap();
+    assert_eq!(cached, (digest, admitted.plan_id));
+    assert_eq!(store.count("specs"), 2);
+    fs::remove_dir_all(dir).unwrap();
+}

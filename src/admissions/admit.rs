@@ -824,14 +824,19 @@ fn write_admission(
     for action in plan["actions"].as_array().map_or(&[][..], Vec::as_slice) {
         let kind = action["kind"].as_str().unwrap_or_default();
         let params_value = &action["params"];
-        if LAST_SPEC_KINDS.contains(&kind) {
+        let upgrade_spec = kind == "db.upgrade" && params_value.get("spec_digest_hex").is_some();
+        if LAST_SPEC_KINDS.contains(&kind) || upgrade_spec {
             tx.execute(
                 "INSERT INTO service_specs (service_id, spec_digest_hex, plan_id, admitted_at) \
                  VALUES (?1, ?2, ?3, ?4) ON CONFLICT (service_id) DO UPDATE SET \
                  spec_digest_hex = excluded.spec_digest_hex, plan_id = excluded.plan_id, \
                  admitted_at = excluded.admitted_at",
                 params![
-                    params_value["service_id"].as_str(),
+                    if upgrade_spec {
+                        params_value["resource_id"].as_str()
+                    } else {
+                        params_value["service_id"].as_str()
+                    },
                     params_value["spec_digest_hex"].as_str(),
                     plan_id,
                     admitted_at

@@ -323,7 +323,11 @@ impl InfoService for InfoSvc {
                     .as_array()
                     .filter(|caps| caps.len() <= 16)
                 {
-                    for cap in ["actions.scale.v1", "actions.delete.v1"] {
+                    for cap in [
+                        "actions.scale.v1",
+                        "actions.delete.v1",
+                        "actions.db_upgrade.v1",
+                    ] {
                         if caps.contains(&serde_json::json!(cap)) {
                             advertised.push(cap.to_owned());
                         }
@@ -1337,7 +1341,7 @@ mod tests {
         assert!(!old.capabilities.contains(&"actions.scale.v1".to_owned()));
         h.runner.op_extra.lock().unwrap().insert(
             "runtime_capabilities".into(),
-            serde_json::json!({"ok":true,"capabilities":["actions.scale.v1"]}),
+            serde_json::json!({"ok":true,"capabilities":["actions.scale.v1","actions.db_upgrade.v1","untrusted.capability"]}),
         );
         let current = client
             .hello(hello_request(&["2.1"]))
@@ -1347,6 +1351,12 @@ mod tests {
         assert!(current
             .capabilities
             .contains(&"actions.scale.v1".to_owned()));
+        assert!(current
+            .capabilities
+            .contains(&"actions.db_upgrade.v1".to_owned()));
+        assert!(!current
+            .capabilities
+            .contains(&"untrusted.capability".to_owned()));
         h.stop().await;
     }
 

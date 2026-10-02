@@ -195,6 +195,7 @@ fn exec_of(kind: &str, params: &Value) -> Exec {
         "backup.verify" => Exec::Ops(&["backup_verify"]),
         "backup.delete" => Exec::Ops(&["backup_delete"]),
         "restore" => Exec::Ops(&["restore_backup"]),
+        "db.upgrade" if params.get("spec_digest_hex").is_some() => Exec::Ops(&["upgrade_database"]),
         "shell.open" => Exec::Shell,
         kind if kind.starts_with("alert.") => Exec::Agent,
         kind if DEFINITION_KINDS.contains(&kind) => Exec::Definition,
@@ -1117,10 +1118,16 @@ impl ChangeCore {
                 continue;
             }
             let params = &plan["actions"][action.action_index as usize]["params"];
-            let done = done_ops
-                .get(&action.action_index)
-                .cloned()
-                .unwrap_or_default();
+            // Upgrade op progress is not a terminal receipt. Re-enter only the
+            // runner's journaled recovery path until consumed-result evidence ends it.
+            let done = if action.kind == "db.upgrade" && params.get("spec_digest_hex").is_some() {
+                Vec::new()
+            } else {
+                done_ops
+                    .get(&action.action_index)
+                    .cloned()
+                    .unwrap_or_default()
+            };
             if action.kind != "operation.cancel" && done.iter().any(|d| d == "cancel_execution") {
                 // v1.0.6 (D-048): a cancel closed this action; it has no next
                 // op and its one `cancelled` result line ends it.
@@ -1161,6 +1168,24 @@ impl ChangeCore {
                 }),
             };
             if let Some(outcome) = outcome {
+                if action.kind == "db.upgrade"
+                    && params.get("spec_digest_hex").is_some()
+                    && outcome.outcome != "succeeded"
+                {
+                    self.reconcile_once().await;
+                    let terminal = self.store.actions(plan_id).ok().and_then(|actions| {
+                        actions
+                            .into_iter()
+                            .find(|fresh| fresh.action_index == action.action_index)
+                    });
+                    match terminal {
+                        Some(fresh) if fresh.finished_at.is_some() => {
+                            failed |= fresh.outcome != "succeeded";
+                            continue;
+                        }
+                        _ => return,
+                    }
+                }
                 if self.is_cancelled(plan_id) && !outcome.activated {
                     break;
                 }
@@ -1421,7 +1446,9 @@ impl ChangeCore {
             if op_ignores_sigterm(op) {
                 warn!(op, "runner op must not ignore SIGTERM");
             }
-            let timeout = if *op == "restart_release" {
+            let timeout = if *op == "upgrade_database" {
+                Duration::from_secs(30 * 60)
+            } else if *op == "restart_release" {
                 self.timing.start_timeout
             } else {
                 self.timing.op_timeout
@@ -2307,6 +2334,169 @@ fn consumed_set(plan: &Value, index: usize) -> Option<&str> {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    struct LostUpgradeReply {
+        inner: Arc<dyn Runner>,
+    }
+    #[tonic::async_trait]
+    impl Runner for LostUpgradeReply {
+        async fn exchange(
+            &self,
+            request: Value,
+            timeout: Duration,
+        ) -> Result<Value, RunnerFailure> {
+            let upgrade = request["op"] == "upgrade_database";
+            let reply = self.inner.exchange(request, timeout).await;
+            if upgrade {
+                Err(RunnerFailure::transport("upgrade reply was lost"))
+            } else {
+                reply
+            }
+        }
+        async fn open(&self, request: Value) -> Result<runner::EventLines, RunnerFailure> {
+            self.inner.open(request).await
+        }
+    }
+
+    #[tokio::test]
+    async fn upgrade_errors_keep_admission_unfinished_until_terminal_receipt() {
+        use crate::local::test_harness::{Harness, OpBehavior};
+        use crate::signed_plan::crypto::{hex, prefixed_digest, SPEC_PREFIX};
+        use crate::signed_plan::test_support::{plan_vector, vector, TestSigner, SERVER_A};
+        use crate::signed_plan::verify::GENESIS_HEAD;
+        let owner = TestSigner::load("owner").expect("public test signing fixture");
+        let trusted =
+            serde_json::to_string(&vector("policy-cases")["context"]["trusted_keys"]).unwrap();
+        for missing_reply in [true, false] {
+            let h = Harness::start(
+                if missing_reply {
+                    "upgrade-lost"
+                } else {
+                    "upgrade-reconcile"
+                },
+                Some(&trusted),
+            )
+            .await;
+            let mut plan = plan_vector("user-deploy")["plan"].clone();
+            let spec = plan_vector("user-deploy")["specs"][0]["jcs"]
+                .as_str()
+                .unwrap()
+                .to_owned();
+            let parsed: Value = serde_json::from_str(&spec).unwrap();
+            let digest = hex(&prefixed_digest(SPEC_PREFIX, &spec));
+            plan["base"]["heads"][SERVER_A] = json!(GENESIS_HEAD);
+            plan["service_ids"] = json!([]);
+            plan["actions"] = json!([{"kind":"db.upgrade","params":{"resource_id":parsed["service_id"],"engine":"postgres","from_version":"16","to_version":"17","spec_digest_hex":digest}}]);
+            plan["actions"]
+                .as_array_mut()
+                .unwrap()
+                .push(json!({"kind":"service.elevate","params":{"service_id":parsed["service_id"],"spec_digest_hex":digest}}));
+            plan["service_ids"] = json!([parsed["service_id"]]);
+            let wire = owner.envelope(&plan);
+            let TrustState::Valid(trust) = h.core.trust.load() else {
+                panic!("test trust")
+            };
+            let admitted = h
+                .core
+                .store
+                .admit(
+                    &trust,
+                    &AdmitInput {
+                        envelope: wire.as_bytes(),
+                        specs: &[spec],
+                        sealed_secrets: &[],
+                        submitter: Submitter::Client,
+                        now: h.core.now(),
+                    },
+                )
+                .unwrap();
+            let core = if missing_reply {
+                ChangeCore::new(ChangeCoreParts {
+                    store: h.core.store.clone(),
+                    trust: h.core.trust.clone(),
+                    probe: h.core.probe.clone(),
+                    runner: Arc::new(LostUpgradeReply {
+                        inner: h.core.runner.clone(),
+                    }),
+                    events: EventBus::new(),
+                    clock: h.core.clock.clone(),
+                    consumed_log: h.core.consumed_log.clone(),
+                    consumed_log_owner: h.core.consumed_log_owner,
+                    age_recipient: h.core.age_recipient.clone(),
+                    timing: Timing::default(),
+                })
+            } else {
+                h.runner.behave(
+                    "upgrade_database",
+                    OpBehavior::Fail("E_RECONCILIATION_REQUIRED"),
+                );
+                h.core.clone()
+            };
+            core.execute(&admitted.plan_id).await;
+            let action = core.store.actions(&admitted.plan_id).unwrap().remove(0);
+            assert!(action.consumed_at.is_some());
+            assert!(
+                action.finished_at.is_none(),
+                "uncertain upgrade became terminal"
+            );
+            assert!(core
+                .store
+                .admission(&admitted.plan_id)
+                .unwrap()
+                .unwrap()
+                .finished_at
+                .is_none());
+            let steps = core.recorded_steps(&admitted.operation_id);
+            assert!(
+                steps
+                    .iter()
+                    .any(|s| s.name == "upgrade_database" && !s.error.is_empty()),
+                "durable error step missing"
+            );
+            core.execute(&admitted.plan_id).await;
+            assert_eq!(
+                h.runner
+                    .ops_for(&admitted.plan_id)
+                    .iter()
+                    .filter(|(op, _)| op == "upgrade_database")
+                    .count(),
+                2,
+                "op progress incorrectly treated as terminal receipt"
+            );
+            assert!(
+                core.store.actions(&admitted.plan_id).unwrap()[1]
+                    .finished_at
+                    .is_none(),
+                "downstream action consumed during uncertain cutover"
+            );
+            assert!(!h
+                .runner
+                .ops_for(&admitted.plan_id)
+                .iter()
+                .any(|(op, _)| op == "backup_run"));
+            h.runner
+                .result(&admitted.plan_id, &admitted.plan_digest_hex, 0, "succeeded");
+            core.reconcile_once().await;
+            assert_eq!(
+                core.store.actions(&admitted.plan_id).unwrap()[0].outcome,
+                "succeeded"
+            );
+            core.execute(&admitted.plan_id).await;
+            let completed = core.store.admission(&admitted.plan_id).unwrap().unwrap();
+            assert_eq!(completed.outcome, "succeeded");
+            assert!(completed.finished_at.is_some());
+            h.stop().await;
+        }
+    }
+
+    #[test]
+    fn upgrade_dispatch_requires_destination_digest() {
+        assert_eq!(exec_of("db.upgrade", &json!({})), Exec::NotImplemented);
+        assert_eq!(
+            exec_of("db.upgrade", &json!({"spec_digest_hex":"aa".repeat(32)})),
+            Exec::Ops(&["upgrade_database"])
+        );
+    }
 
     #[tokio::test]
     async fn restart_cancels_persisted_manual_work_before_dispatch() {
