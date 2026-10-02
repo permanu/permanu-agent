@@ -181,8 +181,15 @@ async fn failed_attempts_retry_with_backoff_then_raise_the_heartbeat() {
         all[2].next_retry_at.is_none(),
         "the last attempt schedules nothing"
     );
-    assert_eq!(s.state().running, 0, "completed retries left a phantom running slot");
-    assert!(s.state().chains.is_empty(), "completed retries left a phantom chain");
+    assert_eq!(
+        s.state().running,
+        0,
+        "completed retries left a phantom running slot"
+    );
+    assert!(
+        s.state().chains.is_empty(),
+        "completed retries left a phantom chain"
+    );
     let events = f.sink.0.lock().unwrap().clone();
     assert_eq!(events.len(), 1);
     assert_eq!(events[0].kind, EventKindCond::CronFailed);
@@ -414,7 +421,7 @@ async fn manual_runs_follow_their_admission_and_count_for_overlap() {
     tick_at(&f, &s, "2026-09-23T10:00:05Z").await;
     assert!(s.manual_allowed(CRON).is_ok());
     let plan = f.record(2, &[id_only("cron.run")], "");
-    let run = s.record_manual(CRON, &plan, "op-1");
+    let run = s.record_manual(CRON, &plan, "op-1").unwrap();
     assert_eq!(run.trigger, CronTrigger::Manual as i32);
     assert_eq!(
         s.manual_allowed(CRON),
@@ -458,12 +465,12 @@ async fn a_manual_run_keeps_the_runners_exit_code_and_outcome() {
         line
     };
     let failed = f.record(2, &[id_only("cron.run")], "");
-    s.record_manual(CRON, &failed, "op-2");
+    s.record_manual(CRON, &failed, "op-2").unwrap();
     f.append_consumed(&result(2, &failed, "failed", json!({"exit_code": 3})));
     f.finish(&failed, "failed");
     tick_at(&f, &s, "2026-09-23T10:00:15Z").await;
     let timed_out = f.record(3, &[id_only("cron.run")], "");
-    s.record_manual(CRON, &timed_out, "op-3");
+    s.record_manual(CRON, &timed_out, "op-3").unwrap();
     f.append_consumed(&result(3, &timed_out, "timeout", json!({})));
     f.finish(&timed_out, "failed");
     tick_at(&f, &s, "2026-09-23T10:00:25Z").await;
@@ -492,7 +499,7 @@ async fn a_failed_manual_run_is_never_retried() {
     let s = scheduler(&f);
     tick_at(&f, &s, "2026-09-23T10:00:05Z").await;
     let manual = f.record(2, &[id_only("cron.run")], "");
-    s.record_manual(CRON, &manual, "op-2");
+    s.record_manual(CRON, &manual, "op-2").unwrap();
     f.append_consumed(&json!({"v": 1, "seq": 2, "at": "2026-09-23T10:00:07Z",
         "event": "run_result", "plan_id": manual, "plan_digest_hex": format!("{:064x}", 2),
         "action_index": 0, "op": "run_cron", "scheduled_for": null, "attempt": 1,
@@ -1055,7 +1062,7 @@ async fn old_unfinished_manual_history_reconciles_after_restart_without_recreati
     );
     let s = scheduler(&f);
     let plan = f.record(2, &[id_only("cron.run")], "");
-    let original = s.record_manual(CRON, &plan, "original-operation");
+    let original = s.record_manual(CRON, &plan, "original-operation").unwrap();
     // An old admission without retained history must not be recreated.
     f.record(3, &[id_only("cron.run")], "succeeded");
     f.clock.set("2026-09-23T15:00:00Z");
@@ -1094,8 +1101,8 @@ async fn old_manual_runs_of_two_jobs_in_one_plan_keep_separate_history() {
     second_action["params"]["cron_id"] = json!(other);
     let plan = f.record(2, &[id_only("cron.run"), second_action], "");
     let s = scheduler(&f);
-    let first = s.record_manual(CRON, &plan, "first-operation");
-    let second = s.record_manual(other, &plan, "second-operation");
+    let first = s.record_manual(CRON, &plan, "first-operation").unwrap();
+    let second = s.record_manual(other, &plan, "second-operation").unwrap();
     f.clock.set("2026-09-23T15:00:00Z");
     f.finish(&plan, "failed");
     drop(s);
@@ -1114,4 +1121,355 @@ async fn old_manual_runs_of_two_jobs_in_one_plan_keep_separate_history() {
     assert!(restarted.manual_allowed(other).is_ok());
     tick_at(&f, &restarted, "2026-09-23T15:00:15Z").await;
     assert_eq!(runs(&f), history);
+}
+
+#[tokio::test]
+async fn manual_runs_count_against_the_server_container_limit() {
+    let f = Fixture::new("manual-server-capacity", "2026-09-23T10:00:00Z");
+    let jobs: Vec<_> = (0..9)
+        .map(|n| {
+            let mut job = cron("cron.create", "0 0 1 1 *", "skip", 0);
+            job["params"]["cron_id"] = json!(format!("01a0cdb5-3500-70d2-8000-{n:012}"));
+            job
+        })
+        .collect();
+    f.record(1, &jobs, "succeeded");
+    let s = scheduler(&f);
+    for (n, job) in jobs.iter().take(8).enumerate() {
+        let id = job["params"]["cron_id"].as_str().unwrap();
+        let plan = f.record(
+            n as i64 + 2,
+            &[json!({"kind":"cron.run","params":{"cron_id":id}})],
+            "",
+        );
+        s.record_manual(id, &plan, &format!("op-{n}")).unwrap();
+    }
+    assert_eq!(
+        s.manual_allowed(jobs[8]["params"]["cron_id"].as_str().unwrap()),
+        Err("all cron container slots are occupied")
+    );
+}
+
+#[tokio::test]
+async fn manual_history_storage_failure_cannot_publish_a_phantom_chain() {
+    let f = Fixture::new("manual-storage-reject", "2026-09-23T10:00:00Z");
+    f.record(
+        1,
+        &[cron("cron.create", "0 0 1 1 *", "skip", 0)],
+        "succeeded",
+    );
+    let s = scheduler(&f);
+    let plan = f.record(2, &[id_only("cron.run")], "");
+    f.deps.ops.query_only(true);
+    assert!(s.record_manual(CRON, &plan, "op-1").is_err());
+    assert!(
+        s.state().chains.is_empty(),
+        "failed manual history published active chain"
+    );
+}
+
+#[tokio::test]
+async fn pending_manual_reservations_consume_overlap_and_all_server_slots() {
+    let f = Fixture::new("manual-reserved-capacity", "2026-09-23T10:00:00Z");
+    let jobs: Vec<_> = (0..9)
+        .map(|n| {
+            let mut job = cron("cron.create", "0 0 1 1 *", "skip", 0);
+            job["params"]["cron_id"] = json!(format!("01a0cdb5-3500-70d2-8000-{n:012}"));
+            job
+        })
+        .collect();
+    f.record(1, &jobs, "succeeded");
+    let s = scheduler(&f);
+    for (n, job) in jobs.iter().take(8).enumerate() {
+        let id = job["params"]["cron_id"].as_str().unwrap();
+        s.reserve_manual(
+            id,
+            &format!("plan-{n}"),
+            &format!("{n:064x}"),
+            s.now() + 300,
+        )
+        .unwrap();
+        assert_eq!(
+            s.reserve_manual(id, &format!("other-{n}"), "different", s.now() + 300),
+            Err("overlap: a run of this job is still active")
+        );
+    }
+    let ninth = jobs[8]["params"]["cron_id"].as_str().unwrap();
+    assert_eq!(
+        s.reserve_manual(ninth, "ninth", "digest", s.now() + 300),
+        Err("all cron container slots are occupied")
+    );
+    assert_eq!(s.state().manual_reservations.len(), 8);
+    assert!(runs(&f).is_empty(), "reservation fabricated run history");
+    assert!(f.runner.ops("run_cron").is_empty());
+    s.release_unadmitted_manual("plan-0");
+    assert!(s
+        .reserve_manual(ninth, "ninth", "digest", s.now() + 300)
+        .is_ok());
+}
+
+#[tokio::test]
+async fn admitted_manual_reservation_recovers_original_run_and_operation_on_restart() {
+    let f = Fixture::new("manual-reservation-restart", "2026-09-23T10:00:00Z");
+    f.record(
+        1,
+        &[cron("cron.create", "0 0 1 1 *", "skip", 0)],
+        "succeeded",
+    );
+    let s = scheduler(&f);
+    let plan_id = "01a0cdb5-3500-7001-8000-000000000002";
+    s.reserve_manual(CRON, plan_id, &format!("{:064x}", 2), s.now() + 300)
+        .unwrap();
+    let reserved = f.deps.ops.manual_reservations().unwrap().remove(0);
+    assert_eq!(f.record(2, &[id_only("cron.run")], ""), plan_id);
+    drop(s);
+    let restarted = scheduler(&f);
+    let history = runs(&f);
+    assert_eq!(history.len(), 1);
+    assert_eq!(history[0].id, reserved.run_id);
+    assert_eq!(history[0].plan_id, plan_id);
+    assert_eq!(history[0].operation_id, plan_id);
+    assert!(f.deps.ops.manual_reservations().unwrap().is_empty());
+    assert_eq!(restarted.state().running, 1);
+    assert_eq!(
+        restarted.record_manual(CRON, plan_id, plan_id).unwrap(),
+        history[0]
+    );
+    assert_eq!(
+        restarted.state().running,
+        1,
+        "duplicate completion consumed another slot"
+    );
+}
+
+#[tokio::test]
+async fn startup_removes_expired_unadmitted_manual_reservation_without_history() {
+    let f = Fixture::new("manual-reservation-expired", "2026-09-23T10:00:00Z");
+    f.record(
+        1,
+        &[cron("cron.create", "0 0 1 1 *", "skip", 0)],
+        "succeeded",
+    );
+    let s = scheduler(&f);
+    s.reserve_manual(CRON, "never-admitted", "digest", s.now() + 10)
+        .unwrap();
+    f.clock.set("2026-09-23T10:01:00Z");
+    drop(s);
+    let restarted = scheduler(&f);
+    assert!(f.deps.ops.manual_reservations().unwrap().is_empty());
+    assert!(restarted.state().manual_reservations.is_empty());
+    assert!(restarted.manual_allowed(CRON).is_ok());
+    assert!(runs(&f).is_empty());
+}
+
+#[tokio::test]
+async fn manual_reservation_write_failure_never_installs_phantom_capacity() {
+    let f = Fixture::new("manual-reservation-write-failure", "2026-09-23T10:00:00Z");
+    f.record(
+        1,
+        &[cron("cron.create", "0 0 1 1 *", "skip", 0)],
+        "succeeded",
+    );
+    let s = scheduler(&f);
+    f.deps.ops.query_only(true);
+    assert_eq!(
+        s.reserve_manual(CRON, "failed", "digest", s.now() + 300),
+        Err("manual capacity could not be persisted")
+    );
+    assert!(s.state().manual_reservations.is_empty());
+    assert!(s.state().manual_submitting.is_empty());
+    assert_eq!(s.state().running, 0);
+    f.deps.ops.query_only(false);
+    assert!(f.deps.ops.manual_reservations().unwrap().is_empty());
+    assert!(s
+        .reserve_manual(CRON, "retried", "digest", s.now() + 300)
+        .is_ok());
+    f.deps.ops.query_only(true);
+    assert!(s.record_manual(CRON, "retried", "original-op").is_err());
+    assert_eq!(
+        s.state().manual_reservations.len(),
+        1,
+        "failed history commit released capacity"
+    );
+    assert!(s.state().chains.is_empty());
+    assert_eq!(s.state().running, 0);
+    f.deps.ops.query_only(false);
+    assert_eq!(f.deps.ops.manual_reservations().unwrap().len(), 1);
+    assert!(runs(&f).is_empty());
+    let committed = s.record_manual(CRON, "retried", "original-op").unwrap();
+    assert_eq!(committed.operation_id, "original-op");
+    assert!(f.deps.ops.manual_reservations().unwrap().is_empty());
+    assert_eq!(s.state().running, 1);
+}
+
+#[tokio::test]
+async fn central_manual_gate_rejects_scheduled_overlap_and_other_jobs_server_capacity() {
+    for full_server in [false, true] {
+        let f = Fixture::new(
+            if full_server {
+                "central-manual-full"
+            } else {
+                "central-manual-overlap"
+            },
+            "2026-09-23T10:00:00Z",
+        );
+        f.record(
+            1,
+            &[cron("cron.create", "0 0 1 1 *", "skip", 0)],
+            "succeeded",
+        );
+        for n in 0..if full_server { 8 } else { 1 } {
+            let run = CronRun {
+                id: format!("existing-{n}"),
+                cron_id: if full_server {
+                    format!("other-{n}")
+                } else {
+                    CRON.into()
+                },
+                plan_id: "scheduled-authority".into(),
+                trigger: CronTrigger::Schedule as i32,
+                status: CronRunStatus::Running as i32,
+                attempt: 1,
+                started_at: Some(pts(at("2026-09-23T10:00:00Z"))),
+                ..Default::default()
+            };
+            f.deps
+                .ops
+                .put(
+                    RecordKind::CronRun,
+                    &run.id,
+                    &run.cron_id,
+                    &format!("scheduled-{n}"),
+                    run.status,
+                    at("2026-09-23T10:00:00Z"),
+                    &run,
+                )
+                .unwrap();
+        }
+        let s = scheduler(&f);
+        let plan = f.record(2, &[id_only("cron.run")], "");
+        let admission = f.deps.store.admission(&plan).unwrap().unwrap();
+        assert_eq!(
+            s.begin_admitted_manual(CRON, &admission),
+            Err(if full_server {
+                "all cron container slots are occupied"
+            } else {
+                "overlap: a run of this job is still active"
+            })
+        );
+        assert!(runs(&f)
+            .iter()
+            .all(|run| run.trigger == CronTrigger::Schedule as i32));
+        assert_eq!(s.state().running, if full_server { 8 } else { 1 });
+    }
+}
+
+#[tokio::test]
+async fn central_manual_gate_commits_history_and_capacity_once() {
+    let f = Fixture::new("central-manual-accepted", "2026-09-23T10:00:00Z");
+    f.record(
+        1,
+        &[cron("cron.create", "0 0 1 1 *", "skip", 0)],
+        "succeeded",
+    );
+    let s = scheduler(&f);
+    let plan = f.record(2, &[id_only("cron.run")], "");
+    let admission = f.deps.store.admission(&plan).unwrap().unwrap();
+    f.deps.ops.query_only(true);
+    assert_eq!(
+        s.begin_admitted_manual(CRON, &admission),
+        Err("manual cron history could not be committed")
+    );
+    assert_eq!(s.state().running, 0);
+    assert!(s.state().chains.is_empty());
+    f.deps.ops.query_only(false);
+    s.begin_admitted_manual(CRON, &admission).unwrap();
+    let history = runs(&f);
+    assert_eq!(history.len(), 1);
+    assert_eq!(history[0].operation_id, admission.operation_id);
+    assert_eq!(s.state().running, 1);
+    s.begin_admitted_manual(CRON, &admission).unwrap();
+    assert_eq!(runs(&f), history);
+    assert_eq!(s.state().running, 1);
+    assert_eq!(
+        s.manual_allowed(CRON),
+        Err("overlap: a run of this job is still active")
+    );
+}
+
+#[tokio::test]
+async fn restarted_unfinished_manual_blocks_the_first_scheduled_tick() {
+    let f = Fixture::new("manual-first-tick", "2026-09-23T10:00:00Z");
+    f.record(
+        1,
+        &[cron("cron.create", "*/15 * * * *", "skip", 0)],
+        "succeeded",
+    );
+    let s = scheduler(&f);
+    let plan = f.record(2, &[id_only("cron.run")], "");
+    let original = s.record_manual(CRON, &plan, "original-op").unwrap();
+    f.deps
+        .ops
+        .try_set_meta(CHECKPOINT_KEY, &at("2026-09-23T10:14:55Z").to_string())
+        .unwrap();
+    f.clock.set("2026-09-23T10:15:05Z");
+    drop(s);
+    let restarted = scheduler(&f);
+    restarted.tick();
+    restarted.settle().await;
+    assert!(
+        f.runner.ops("run_cron").is_empty(),
+        "first scheduled tick bypassed manual history"
+    );
+    let history = runs(&f);
+    assert!(history
+        .iter()
+        .any(|run| run.id == original.id && run.status == CronRunStatus::Running as i32));
+    assert!(history
+        .iter()
+        .any(|run| run.trigger == CronTrigger::Schedule as i32
+            && run.status == CronRunStatus::SkippedOverlap as i32));
+    assert_eq!(restarted.state().running, 1);
+}
+
+#[tokio::test]
+async fn startup_orphan_manual_reservation_is_cleaned_when_it_later_expires() {
+    let f = Fixture::new("manual-orphan-later-expiry", "2026-09-23T10:00:00Z");
+    f.record(
+        1,
+        &[cron("cron.create", "0 0 1 1 *", "skip", 0)],
+        "succeeded",
+    );
+    let s = scheduler(&f);
+    s.reserve_manual(CRON, "orphan", "digest", s.now() + 60)
+        .unwrap();
+    drop(s);
+    let restarted = scheduler(&f);
+    assert_eq!(restarted.state().manual_reservations.len(), 1);
+    tick_at(&f, &restarted, "2026-09-23T10:02:00Z").await;
+    assert!(restarted.state().manual_reservations.is_empty());
+    assert!(f.deps.ops.manual_reservations().unwrap().is_empty());
+    assert!(runs(&f).is_empty());
+    assert!(restarted.manual_allowed(CRON).is_ok());
+}
+
+#[tokio::test]
+async fn generic_multi_job_admission_does_not_reserve_unexecuted_actions() {
+    let f = Fixture::new("cron-generic-many", "2026-09-23T10:00:00Z");
+    let mut definitions = Vec::new();
+    let mut actions = Vec::new();
+    for n in 1..=9 {
+        let id = format!("01a0cdb5-3500-70e1-8000-{n:012x}");
+        let mut definition = cron("cron.create", "0 0 1 1 *", "skip", 0);
+        definition["params"]["cron_id"] = json!(id);
+        definitions.push(definition);
+        actions.push(json!({"kind":"cron.run","params":{"cron_id":id}}));
+    }
+    f.record(1, &definitions, "succeeded");
+    let s = scheduler(&f);
+    let plan = f.record(2, &actions, "");
+    let admission = f.deps.store.admission(&plan).unwrap().unwrap();
+    let id = actions[0]["params"]["cron_id"].as_str().unwrap();
+    assert!(s.begin_admitted_manual(id, &admission).is_ok());
+    assert_eq!(s.state().running, 1);
 }

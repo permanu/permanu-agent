@@ -122,6 +122,42 @@ impl ChangeSvc {
         Ok((record, operation))
     }
 
+    /// A recorded ID selects verification, never authentication. Only a
+    /// fully verified matching digest can return its original operation.
+    pub(crate) async fn verified_existing(
+        &self,
+        plan: &SignedPlan,
+    ) -> Result<Option<OperationRef>, Status> {
+        let (candidate, _) =
+            crate::signed_plan::verify::parse_envelope(&plan.envelope_json).map_err(plan_status)?;
+        let candidate_id = candidate["id"].as_str().unwrap_or_default().to_owned();
+        let store = self.core.store.clone();
+        let existing = tokio::task::spawn_blocking(move || store.admission(&candidate_id))
+            .await
+            .map_err(|_| internal())?
+            .map_err(|_| internal())?;
+        let Some(existing) = existing else {
+            return Ok(None);
+        };
+        let (verified, digest, _) = self
+            .core
+            .verify(submission(Some(plan.clone()))?)
+            .await
+            .map_err(plan_status)?;
+        if verified["id"].as_str() != Some(existing.plan_id.as_str())
+            || digest != existing.plan_digest_hex
+        {
+            return Err(plan_status(PlanCode::Replay));
+        }
+        Ok(Some(OperationRef {
+            operation_id: existing.operation_id,
+            plan_digest_hex: existing.plan_digest_hex,
+            accepted_at: ts(&existing.admitted_at),
+            deduplicated: true,
+            plan_id: existing.plan_id,
+        }))
+    }
+
     pub(crate) async fn submit(&self, plan: Option<SignedPlan>) -> Result<OperationRef, Status> {
         // agent-protocol.md 4: `shell.open` is admitted by
         // `ShellService.Shell` only (signed, direct), never here.
@@ -130,6 +166,11 @@ impl ChangeSvc {
             .is_some_and(|plan| holds_kind(&plan.envelope_json, "shell.open"))
         {
             return Err(plan_status(PlanCode::ExecPrecondition));
+        }
+        if let Some(plan) = plan.as_ref() {
+            if let Some(operation) = self.verified_existing(plan).await? {
+                return Ok(operation);
+            }
         }
         self.admit(plan).await
     }

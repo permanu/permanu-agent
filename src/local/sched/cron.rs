@@ -36,12 +36,13 @@ use tokio::task::JoinHandle;
 use tracing::warn;
 
 use super::cron_expr::{timezone, CronExpr};
-use super::ops_store::{Listing, RecordKind};
+use super::ops_store::{Listing, ManualCronReservation, RecordKind};
 use super::{
     new_id, parse_rfc, pts, rfc, scope_of, AlertSink, BuiltinEvent, Deps, LogIdentity,
     DOWNTIME_SECONDS,
 };
 use crate::admissions::definitions::AdmittedAction;
+use crate::admissions::StoreError;
 use crate::local::runner::{self, PlanRef, RunnerFailure, ScheduleRef};
 use crate::proto::agent::v2::{
     event, event_condition, CronJob, CronRun, CronRunStatus, CronTrigger, EventKind, LogLevel,
@@ -266,6 +267,8 @@ struct State {
     jobs: BTreeMap<String, JobDef>,
     chains: HashMap<String, Chain>,
     running: usize,
+    manual_reservations: HashMap<String, ManualCronReservation>,
+    manual_submitting: HashSet<String>,
     recovering: HashSet<String>,
     /// Chains waiting for a container slot, in start order.
     slots: VecDeque<String>,
@@ -344,6 +347,7 @@ impl CronScheduler {
     /// Reconcile interrupted runs from trusted consumed-log terminal evidence.
     /// Unknown outcomes retain their slot and count against overlap limits.
     fn recover(&self) {
+        let _ = self.refresh_manual_reservations();
         let statuses = [CronRunStatus::Running as i32, CronRunStatus::Pending as i32];
         let rows = self.deps.ops.list(
             RecordKind::CronRun,
@@ -513,6 +517,10 @@ impl CronScheduler {
         };
         let from = checkpoint.min(now);
         let downtime = now - checkpoint > DOWNTIME_SECONDS;
+        self.reconcile_manual(now);
+        if writes_before != self.deps.ops.failure_generation() {
+            return;
+        }
         let jobs: Vec<JobDef> = self.state().jobs.values().cloned().collect();
         for job in &jobs {
             if job.enabled {
@@ -677,6 +685,11 @@ impl CronScheduler {
             .iter()
             .filter(|(id, chain)| chain.cron_id == cron_id && Some(*id) != queued)
             .count()
+            + state
+                .manual_reservations
+                .values()
+                .filter(|r| r.cron_id == cron_id)
+                .count()
     }
 
     fn start_scheduled(self: &Arc<Self>, job: &JobDef, scheduled_for: i64, now: i64) {
@@ -769,7 +782,7 @@ impl CronScheduler {
     fn fill_slots(self: &Arc<Self>) {
         loop {
             let mut state = self.state();
-            if state.running >= MAX_RUNNING {
+            if state.running + state.manual_reservations.len() >= MAX_RUNNING {
                 return;
             }
             let Some(chain_id) = state.slots.pop_front() else {
@@ -809,7 +822,9 @@ impl CronScheduler {
                 return;
             };
             let mut state = self.state();
-            if state.running >= MAX_RUNNING || !state.jobs.contains_key(&cron_id) {
+            if state.running + state.manual_reservations.len() >= MAX_RUNNING
+                || !state.jobs.contains_key(&cron_id)
+            {
                 state.slots.push_front(chain_id);
                 return;
             }
@@ -1095,7 +1110,9 @@ impl CronScheduler {
                     Some(run) if !is_final(run.status) => run,
                     _ => continue,
                 },
-                // Submitted through SubmitSignedPlan, or before a restart.
+                // Unexecuted actions of a generic multi-job plan reserve no
+                // physical capacity. The central dispatch persists each run.
+                None if action.outcome.is_empty() && !self.manual_started(&action) => continue,
                 None => manual_run(&action, now),
             };
             let job = jobs.get(cron_id);
@@ -1108,12 +1125,19 @@ impl CronScheduler {
                     }
                     self.publish(job, &run);
                 }
-                self.state().chains.entry(run.id.clone()).or_insert(Chain {
-                    cron_id: cron_id.to_owned(),
-                    run: run.clone(),
-                    retry_at: None,
-                    waiting: false,
-                });
+                let mut state = self.state();
+                if !state.chains.contains_key(&run.id) {
+                    state.running += 1;
+                    state.chains.insert(
+                        run.id.clone(),
+                        Chain {
+                            cron_id: cron_id.to_owned(),
+                            run: run.clone(),
+                            retry_at: None,
+                            waiting: false,
+                        },
+                    );
+                }
                 continue;
             }
             run.status = match action.outcome.as_str() {
@@ -1138,12 +1162,28 @@ impl CronScheduler {
                 continue;
             }
             self.publish(job, &run);
-            self.state().chains.remove(&run.id);
+            {
+                let mut state = self.state();
+                if state.chains.remove(&run.id).is_some() {
+                    state.running = state.running.saturating_sub(1);
+                }
+            }
             if let Some(job) = job {
                 self.end_chain(job, &run.id.clone(), &run);
             }
         }
         self.fill_slots();
+    }
+
+    fn manual_started(&self, action: &AdmittedAction) -> bool {
+        self.deps.consumed_log.as_ref().is_some_and(|log| {
+            log.run_lines("run_cron").iter().any(|line| {
+                line["plan_id"] == action.plan_id.as_str()
+                    && line["plan_digest_hex"] == action.plan_digest_hex.as_str()
+                    && line["action_index"].as_u64() == u64::try_from(action.action_index).ok()
+                    && line["scheduled_for"].is_null()
+            })
+        })
     }
 
     /// The runner's `run_result` line of a plan-bound `run_cron` action,
@@ -1204,9 +1244,15 @@ impl CronScheduler {
     /// `RunCronJobNow` (section 10.1): the overlap policy applies to manual
     /// chains too. A manual chain cannot wait (the plan executes at
     /// admission), so `queue` behaves like `skip` while a chain is active.
+    #[cfg(test)]
     pub fn manual_allowed(&self, cron_id: &str) -> Result<(), &'static str> {
-        self.reload();
+        if !self.reload() {
+            return Err("cron definitions are unavailable");
+        }
         let state = self.state();
+        if state.running + state.manual_reservations.len() >= MAX_RUNNING {
+            return Err("all cron container slots are occupied");
+        }
         let Some(job) = state.jobs.get(cron_id) else {
             return Err("unknown cron job");
         };
@@ -1223,28 +1269,36 @@ impl CronScheduler {
 
     /// Records the manual run of an admitted `cron.run` plan and counts it
     /// as an active chain until its action ends.
-    pub fn record_manual(&self, cron_id: &str, plan_id: &str, operation_id: &str) -> CronRun {
+    pub fn record_manual(
+        &self,
+        cron_id: &str,
+        plan_id: &str,
+        operation_id: &str,
+    ) -> Result<CronRun, StoreError> {
+        let mut state = self.state();
+        let recorded = self.record_manual_locked(&mut state, cron_id, plan_id, operation_id)?;
+        let job = state.jobs.get(cron_id).cloned();
+        drop(state);
+        self.publish(job.as_ref(), &recorded);
+        Ok(recorded)
+    }
+
+    fn record_manual_locked(
+        &self,
+        state: &mut State,
+        cron_id: &str,
+        plan_id: &str,
+        operation_id: &str,
+    ) -> Result<CronRun, StoreError> {
         let now = self.now();
-        let slot = format!("manual:{plan_id}");
-        if let Some(run) = self
-            .deps
-            .ops
-            .list(
-                RecordKind::CronRun,
-                &Listing {
-                    subject: Some(cron_id),
-                    limit: 50,
-                    ..Default::default()
-                },
-            )
-            .into_iter()
-            .find(|row| row.slot == slot)
-            .and_then(|row| row.decode::<CronRun>())
-        {
-            return run;
+        let reservation = state.manual_reservations.get(plan_id);
+        if reservation.is_some_and(|r| r.cron_id != cron_id) {
+            return Err(StoreError::Unsafe(
+                "manual run reservation scope changed".into(),
+            ));
         }
         let run = CronRun {
-            id: new_id(now),
+            id: reservation.map_or_else(|| new_id(now), |r| r.run_id.clone()),
             cron_id: cron_id.to_owned(),
             attempt: 1,
             trigger: CronTrigger::Manual as i32,
@@ -1254,19 +1308,189 @@ impl CronScheduler {
             plan_id: plan_id.to_owned(),
             ..Default::default()
         };
-        self.save(&run, &slot);
-        let job = self.state().jobs.get(cron_id).cloned();
-        self.publish(job.as_ref(), &run);
-        self.state().chains.insert(
-            run.id.clone(),
-            Chain {
-                cron_id: cron_id.to_owned(),
-                run: run.clone(),
-                retry_at: None,
-                waiting: false,
-            },
-        );
-        run
+        let recorded = self.deps.ops.commit_manual_run(&run)?;
+        state.manual_reservations.remove(plan_id);
+        state.manual_submitting.remove(plan_id);
+        if !is_final(recorded.status) && !state.chains.contains_key(&recorded.id) {
+            state.running += 1;
+            state.chains.insert(
+                recorded.id.clone(),
+                Chain {
+                    cron_id: cron_id.to_owned(),
+                    run: recorded.clone(),
+                    retry_at: None,
+                    waiting: false,
+                },
+            );
+        }
+        Ok(recorded)
+    }
+
+    /// Every plan-bound runner dispatch shares the scheduled-run capacity gate,
+    /// including submissions through the generic ChangeService route.
+    pub fn begin_admitted_manual(
+        self: &Arc<Self>,
+        cron_id: &str,
+        admission: &crate::admissions::AdmissionRecord,
+    ) -> Result<(), &'static str> {
+        if !self.reload() {
+            return Err("cron definitions are unavailable");
+        }
+        self.refresh_manual_reservations()
+            .map_err(|_| "manual capacity is unavailable")?;
+        self.reconcile_manual(self.now());
+        {
+            let mut state = self.state();
+            let Some(job) = state.jobs.get(cron_id) else {
+                return Err("unknown cron job");
+            };
+            let own = state
+                .chains
+                .values()
+                .filter(|c| c.cron_id == cron_id && c.run.plan_id == admission.plan_id)
+                .count();
+            let reserved = usize::from(
+                state
+                    .manual_reservations
+                    .get(&admission.plan_id)
+                    .is_some_and(|r| r.cron_id == cron_id),
+            );
+            let limit = match job.overlap {
+                Overlap::Allow => MAX_ALLOWED_CHAINS,
+                _ => 1,
+            };
+            if Self::active_chains(&state, cron_id).saturating_sub(own + reserved) >= limit {
+                return Err("overlap: a run of this job is still active");
+            }
+            if (state.running + state.manual_reservations.len()).saturating_sub(own + reserved)
+                >= MAX_RUNNING
+            {
+                return Err("all cron container slots are occupied");
+            }
+            self.record_manual_locked(
+                &mut state,
+                cron_id,
+                &admission.plan_id,
+                &admission.operation_id,
+            )
+            .map(|_| ())
+            .map_err(|_| "manual cron history could not be committed")
+        }
+    }
+
+    pub fn finish_admitted_manual(self: &Arc<Self>) {
+        self.reconcile_manual(self.now());
+    }
+
+    /// Reserved capacity is durable before admission starts. The RPC owns a
+    /// detached completion task, so losing its caller cannot release early.
+    pub fn reserve_manual(
+        &self,
+        cron_id: &str,
+        plan_id: &str,
+        digest_hex: &str,
+        expires_at: i64,
+    ) -> Result<(), &'static str> {
+        if !self.reload() {
+            return Err("cron definitions are unavailable");
+        }
+        self.refresh_manual_reservations()
+            .map_err(|_| "manual capacity is unavailable")?;
+        let mut state = self.state();
+        if state.manual_submitting.contains(plan_id) {
+            return Err("this cron plan is already being admitted");
+        }
+        if let Some(existing) = state.manual_reservations.get(plan_id) {
+            if existing.cron_id != cron_id
+                || existing.digest_hex != digest_hex
+                || existing.expires_at != expires_at
+            {
+                return Err("manual reservation authority changed");
+            }
+            state.manual_submitting.insert(plan_id.to_owned());
+            return Ok(());
+        }
+        let Some(job) = state.jobs.get(cron_id) else {
+            return Err("unknown cron job");
+        };
+        let limit = match job.overlap {
+            Overlap::Allow => MAX_ALLOWED_CHAINS,
+            Overlap::Skip | Overlap::Queue => 1,
+        };
+        if Self::active_chains(&state, cron_id) >= limit {
+            return Err("overlap: a run of this job is still active");
+        }
+        if state.running + state.manual_reservations.len() >= MAX_RUNNING {
+            return Err("all cron container slots are occupied");
+        }
+        let reservation = ManualCronReservation {
+            plan_id: plan_id.to_owned(),
+            cron_id: cron_id.to_owned(),
+            digest_hex: digest_hex.to_owned(),
+            expires_at,
+            run_id: new_id(self.now()),
+        };
+        self.deps
+            .ops
+            .reserve_manual(&reservation)
+            .map_err(|_| "manual capacity could not be persisted")?;
+        state
+            .manual_reservations
+            .insert(plan_id.to_owned(), reservation);
+        state.manual_submitting.insert(plan_id.to_owned());
+        Ok(())
+    }
+
+    pub fn release_unadmitted_manual(&self, plan_id: &str) {
+        let mut state = self.state();
+        state.manual_submitting.remove(plan_id);
+        // Called only after the owned submission future returned. A committed
+        // admission or an unreadable store keeps capacity for reconciliation.
+        if matches!(self.deps.store.admission(plan_id), Ok(None))
+            && self.deps.ops.remove_manual_reservation(plan_id).is_ok()
+        {
+            state.manual_reservations.remove(plan_id);
+        }
+    }
+
+    fn refresh_manual_reservations(&self) -> Result<(), StoreError> {
+        let reservations = self.deps.ops.manual_reservations()?;
+        for reservation in reservations {
+            self.state()
+                .manual_reservations
+                .entry(reservation.plan_id.clone())
+                .or_insert(reservation.clone());
+            match self.deps.store.admission(&reservation.plan_id) {
+                Ok(Some(admission)) if admission.plan_digest_hex == reservation.digest_hex => {
+                    self.record_manual(
+                        &reservation.cron_id,
+                        &reservation.plan_id,
+                        &admission.operation_id,
+                    )?;
+                }
+                Ok(None)
+                    if reservation.expires_at < self.now()
+                        && !self
+                            .state()
+                            .manual_submitting
+                            .contains(&reservation.plan_id) =>
+                {
+                    if self
+                        .deps
+                        .ops
+                        .remove_manual_reservation(&reservation.plan_id)
+                        .is_ok()
+                    {
+                        self.state()
+                            .manual_reservations
+                            .remove(&reservation.plan_id);
+                    }
+                }
+                Err(err) => return Err(StoreError::Unsafe(err.to_string())),
+                _ => {}
+            }
+        }
+        Ok(())
     }
 
     /// A skipped manual request is recorded too.

@@ -1,5 +1,7 @@
+use crate::proto::agent::v2::SignedPlan;
 use futures::StreamExt;
 use serde_json::json;
+use std::time::Duration;
 
 use super::super::backup::BackupScheduler;
 use super::super::test_support::{Fixture, PG};
@@ -259,4 +261,171 @@ async fn database_read_failure_is_internal_instead_of_not_found() {
         .await
         .unwrap_err();
     assert_eq!(error.code(), Code::Internal);
+}
+
+// Exercise the real signed admission path, rather than only envelope shape.
+async fn manual_rpc_fixture(
+    name: &str,
+) -> (
+    crate::local::test_harness::Harness,
+    Arc<ScheduleSvc>,
+    SignedPlan,
+) {
+    use super::super::test_support::{production, CRON};
+    use crate::signed_plan::test_support::{plan_vector, vector, TestSigner, SERVER_A};
+    let owner = TestSigner::load("owner").expect("checked-in test signing key");
+    let trust = serde_json::to_string(&vector("policy-cases")["context"]["trusted_keys"]).unwrap();
+    let h = crate::local::test_harness::Harness::start(name, Some(&trust)).await;
+    let create = plan_vector("deployer-cron-create")["plan"]["actions"][0].clone();
+    crate::admissions::definitions::tests::record_at(
+        &h.core.store,
+        1,
+        production(),
+        &[create],
+        "succeeded",
+        "2026-09-23T10:00:00Z",
+    );
+    let ops = Arc::new(OpsStore::in_memory());
+    let deps = super::super::Deps {
+        store: h.core.store.clone(),
+        ops: ops.clone(),
+        runner: h.core.runner.clone(),
+        events: h.core.events.clone(),
+        clock: h.core.clock.clone(),
+        logs: Default::default(),
+        server_id: super::super::ServerId::Fixed(SERVER_A.to_owned()),
+        consumed_log: None,
+    };
+    let cron = CronScheduler::new(deps, Arc::new(super::super::test_support::Sink::default()));
+    assert!(h.core.cron.set(cron.clone()).is_ok());
+    let svc = Arc::new(ScheduleSvc {
+        cron,
+        ops,
+        change: ChangeSvc {
+            core: h.core.clone(),
+        },
+        telemetry: None,
+    });
+    let mut plan = plan_vector("deployer-cron-create")["plan"].clone();
+    plan["id"] = json!("01a0cdb5-3500-7001-8000-000000000099");
+    plan["base"]["heads"][SERVER_A] = json!(crate::signed_plan::verify::GENESIS_HEAD);
+    plan["service_ids"] = json!([]);
+    plan["actions"] = json!([{"kind":"cron.run", "params":{"cron_id":CRON}}]);
+    let signed = SignedPlan {
+        envelope_json: owner.envelope(&plan).into_bytes(),
+        ..Default::default()
+    };
+    (h, svc, signed)
+}
+
+fn manual_request(plan: SignedPlan) -> Request<RunCronJobNowRequest> {
+    Request::new(RunCronJobNowRequest {
+        cron_id: super::super::test_support::CRON.to_owned(),
+        plan: Some(plan),
+    })
+}
+
+#[tokio::test]
+async fn run_now_fresh_signed_plan_succeeds_and_retry_keeps_original_operation_and_run() {
+    let (h, svc, plan) = manual_rpc_fixture("rpc-manual-fresh").await;
+    let first = svc
+        .run_cron_job_now(manual_request(plan.clone()))
+        .await
+        .unwrap()
+        .into_inner();
+    let operation = first.operation.as_ref().unwrap();
+    assert!(!operation.deduplicated);
+    assert_eq!(operation.plan_id, "01a0cdb5-3500-7001-8000-000000000099");
+    for _ in 0..200 {
+        h.core.reconcile_once().await;
+        let admission = h.core.store.admission(&operation.plan_id).unwrap().unwrap();
+        if h.core.operation(&admission).state
+            == crate::proto::agent::v2::OperationState::Succeeded as i32
+        {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    let admission = h.core.store.admission(&operation.plan_id).unwrap().unwrap();
+    assert_eq!(
+        h.core.operation(&admission).state,
+        crate::proto::agent::v2::OperationState::Succeeded as i32
+    );
+    let retry = svc
+        .run_cron_job_now(manual_request(plan))
+        .await
+        .unwrap()
+        .into_inner();
+    assert_eq!(retry.run_id, first.run_id);
+    let retried = retry.operation.unwrap();
+    assert!(retried.deduplicated);
+    assert_eq!(retried.operation_id, operation.operation_id);
+    assert_eq!(retried.plan_id, operation.plan_id);
+    assert_eq!(
+        h.runner
+            .ops_for(&operation.plan_id)
+            .iter()
+            .filter(|(op, _)| op == "run_cron")
+            .count(),
+        1
+    );
+    svc.cron.tick();
+    let run: CronRun = svc
+        .ops
+        .try_get(RecordKind::CronRun, &first.run_id)
+        .unwrap()
+        .unwrap()
+        .decode()
+        .unwrap();
+    assert_eq!(run.operation_id, operation.operation_id);
+    assert_eq!(
+        run.status,
+        crate::proto::agent::v2::CronRunStatus::Succeeded as i32
+    );
+    h.stop().await;
+}
+
+#[tokio::test]
+async fn run_now_caller_cancellation_retains_owned_admission_and_retry_identity() {
+    let (h, svc, plan) = manual_rpc_fixture("rpc-manual-cancel").await;
+    // Hold the durable admission write while the outer RPC is cancelled.
+    let blocker = rusqlite::Connection::open(h.dir.join("agent/admissions.db")).unwrap();
+    blocker.execute_batch("BEGIN IMMEDIATE").unwrap();
+    let task_svc = svc.clone();
+    let task_plan = plan.clone();
+    let caller =
+        tokio::spawn(async move { task_svc.run_cron_job_now(manual_request(task_plan)).await });
+    for _ in 0..200 {
+        if !svc.ops.manual_reservations().unwrap().is_empty() {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    assert_eq!(svc.ops.manual_reservations().unwrap().len(), 1);
+    assert!(!caller.is_finished());
+    caller.abort();
+    assert!(caller.await.unwrap_err().is_cancelled());
+    blocker.execute_batch("COMMIT").unwrap();
+    let id = "01a0cdb5-3500-7001-8000-000000000099";
+    for _ in 0..200 {
+        if h.core.store.admission(id).unwrap().is_some() {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    let original = h
+        .core
+        .store
+        .admission(id)
+        .unwrap()
+        .expect("owned task still admits after caller disappears");
+    let retry = svc
+        .run_cron_job_now(manual_request(plan))
+        .await
+        .unwrap()
+        .into_inner();
+    assert!(retry.operation.as_ref().unwrap().deduplicated);
+    assert_eq!(retry.operation.unwrap().operation_id, original.operation_id);
+    assert!(!retry.run_id.is_empty());
+    h.stop().await;
 }

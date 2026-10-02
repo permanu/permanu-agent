@@ -23,6 +23,10 @@ use crate::proto::agent::v2::{
 };
 
 const SCHEMA: &str = "
+CREATE TABLE IF NOT EXISTS manual_cron_reservations (
+ plan_id TEXT PRIMARY KEY, cron_id TEXT NOT NULL, digest_hex TEXT NOT NULL,
+ expires_at INTEGER NOT NULL, run_id TEXT NOT NULL
+);
 CREATE TABLE IF NOT EXISTS scheduled_intents (kind TEXT NOT NULL, id TEXT NOT NULL, binding TEXT NOT NULL, PRIMARY KEY(kind,id));
 CREATE TABLE IF NOT EXISTS meta (
   key   TEXT PRIMARY KEY,
@@ -52,6 +56,15 @@ INSERT OR IGNORE INTO claimed_slots SELECT DISTINCT kind, subject, slot FROM rec
 /// Run history retention (agent-protocol.md 10).
 pub const HISTORY_SECONDS: i64 = 90 * 86_400;
 pub const HISTORY_RECORDS: i64 = 1_000;
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ManualCronReservation {
+    pub plan_id: String,
+    pub cron_id: String,
+    pub digest_hex: String,
+    pub expires_at: i64,
+    pub run_id: String,
+}
 
 /// The record families.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -402,6 +415,49 @@ impl OpsStore {
             transaction.commit()?;
             Ok(())
         })())
+    }
+
+    pub fn manual_reservations(&self) -> Result<Vec<ManualCronReservation>, StoreError> {
+        self.checked((||{
+      let conn=self.lock();
+      let mut query=conn.prepare("SELECT plan_id,cron_id,digest_hex,expires_at,run_id FROM manual_cron_reservations ORDER BY plan_id LIMIT 256")?;
+      let rows=query.query_map([],|r|Ok(ManualCronReservation{plan_id:r.get(0)?,cron_id:r.get(1)?,digest_hex:r.get(2)?,expires_at:r.get(3)?,run_id:r.get(4)?}))?;
+      Ok(rows.collect::<Result<Vec<_>,_>>()?)
+     })())
+    }
+    pub fn reserve_manual(&self, reservation: &ManualCronReservation) -> Result<(), StoreError> {
+        self.checked((||{
+      let mut conn=self.lock();let tx=conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+      tx.execute("INSERT OR IGNORE INTO manual_cron_reservations(plan_id,cron_id,digest_hex,expires_at,run_id) VALUES (?1,?2,?3,?4,?5)",params![reservation.plan_id,reservation.cron_id,reservation.digest_hex,reservation.expires_at,reservation.run_id])?;
+      let existing:ManualCronReservation=tx.query_row("SELECT plan_id,cron_id,digest_hex,expires_at,run_id FROM manual_cron_reservations WHERE plan_id=?1",[&reservation.plan_id],|r|Ok(ManualCronReservation{plan_id:r.get(0)?,cron_id:r.get(1)?,digest_hex:r.get(2)?,expires_at:r.get(3)?,run_id:r.get(4)?}))?;
+      if existing!=*reservation {return Err(StoreError::Unsafe("manual reservation authority changed".into()))}
+      tx.commit()?;Ok(())
+     })())
+    }
+    pub fn remove_manual_reservation(&self, plan_id: &str) -> Result<(), StoreError> {
+        self.checked((|| {
+            self.lock().execute(
+                "DELETE FROM manual_cron_reservations WHERE plan_id=?1",
+                [plan_id],
+            )?;
+            Ok(())
+        })())
+    }
+    /// History publication and capacity release are one durable fact. Retrying
+    /// completion never overwrites the original identity or terminal outcome.
+    pub fn commit_manual_run(&self, run: &CronRun) -> Result<CronRun, StoreError> {
+        use crate::proto::agent::v2::CronRunStatus;
+        self.checked((||{
+      let mut conn=self.lock();let tx=conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+      let slot=format!("manual:{}",run.plan_id);
+      let existing:Option<Vec<u8>>=tx.query_row("SELECT body FROM records WHERE kind='cron_run' AND subject=?1 AND slot=?2 ORDER BY seq LIMIT 1",params![run.cron_id,slot],|r|r.get(0)).optional()?;
+      let mut recorded=if let Some(body)=existing {CronRun::decode(body.as_slice()).map_err(|_|StoreError::Unsafe("invalid manual run history".into()))?}else{run.clone()};
+      if recorded.operation_id.is_empty(){recorded.operation_id=run.operation_id.clone();}
+      if recorded.status==CronRunStatus::Pending as i32 {recorded.status=run.status;recorded.started_at=run.started_at;}
+      Self::write_record(&tx,RecordKind::CronRun,&recorded.id,&recorded.cron_id,&slot,recorded.status,recorded.started_at.map_or(0,|t|t.seconds),&recorded)?;
+      tx.execute("DELETE FROM manual_cron_reservations WHERE plan_id=?1",[&run.plan_id])?;
+      tx.commit()?;Ok(recorded)
+     })())
     }
 
     /// Commits a terminal backup run and its artifact as one durable fact.

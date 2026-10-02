@@ -872,7 +872,6 @@ pub async fn run(
     if let Some(telemetry) = &telemetry {
         let _ = core.telemetry.set(telemetry.clone());
     }
-    let background = core.spawn_background();
     let schedulers = start_schedulers(
         ops.clone(),
         &core,
@@ -880,6 +879,10 @@ pub async fn run(
         &age_recipient,
         &trust,
     );
+    if let Some(schedulers) = &schedulers {
+        let _ = core.cron.set(schedulers.cron.clone());
+    }
+    let background = core.spawn_background();
     let mut scheduler_tasks = schedulers
         .as_ref()
         .map(sched::Schedulers::spawn)

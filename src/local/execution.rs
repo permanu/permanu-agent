@@ -397,6 +397,7 @@ pub struct ChangeCore {
     /// admitted when their set is staged instead of refused (D-046).
     pub staging: std::sync::OnceLock<Arc<super::artifacts::Artifacts>>,
     pub telemetry: std::sync::OnceLock<Arc<super::telemetry::Telemetry>>,
+    pub cron: std::sync::OnceLock<Arc<super::sched::cron::CronScheduler>>,
 }
 
 /// (failure_code, error, error_code) of an action.
@@ -496,6 +497,7 @@ impl ChangeCore {
             reconciling: tokio::sync::Mutex::new(()),
             staging: std::sync::OnceLock::new(),
             telemetry: std::sync::OnceLock::new(),
+            cron: std::sync::OnceLock::new(),
         })
     }
 
@@ -1144,6 +1146,16 @@ impl ChangeCore {
                     Err(outcome) => outcome,
                 }),
                 Exec::Ops(ops) => Some(match self.bind(&record, &action).await {
+                    Ok(()) if action.kind == "cron.run" => match self.cron.get() {
+                        Some(cron) => match cron.begin_admitted_manual(
+                            params["cron_id"].as_str().unwrap_or_default(),
+                            &record,
+                        ) {
+                            Ok(()) => self.run_ops(&record, &plan, &action, ops, &done).await,
+                            Err(reason) => Outcome::with("failed", "", reason),
+                        },
+                        None => Outcome::with("failed", "", "cron scheduler is unavailable"),
+                    },
                     Ok(()) => self.run_ops(&record, &plan, &action, ops, &done).await,
                     Err(outcome) => outcome,
                 }),
@@ -1154,6 +1166,11 @@ impl ChangeCore {
                 }
                 failed |= outcome.outcome != "succeeded";
                 self.complete(&record, &plan, &action, outcome).await;
+                if action.kind == "cron.run" {
+                    if let Some(cron) = self.cron.get() {
+                        cron.finish_admitted_manual();
+                    }
+                }
             }
         }
         // Input actions take the composed action's outcome (D-028) when the

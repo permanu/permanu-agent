@@ -240,6 +240,9 @@ pub fn definition_preconditions(conn: &Connection, plan: &Value) -> Result<(), P
     } else {
         BTreeSet::new()
     };
+    // Manual history identifies a job once per plan. Repeated dispatch of
+    // that same job would reuse terminal history and bypass capacity.
+    let mut manual_jobs = BTreeSet::new();
     let has_spec = |id: &Value| -> Result<bool, PlanCode> {
         Ok(service_scope(conn, id.as_str().unwrap_or_default())
             .map_err(internal)?
@@ -269,6 +272,9 @@ pub fn definition_preconditions(conn: &Connection, plan: &Value) -> Result<(), P
                 }
             }
             "cron.pause" | "cron.resume" | "cron.run" => {
+                if action["kind"] == "cron.run" && !manual_jobs.insert(cron_id.clone()) {
+                    return Err(PlanCode::ExecPrecondition);
+                }
                 if !jobs.contains(&cron_id) {
                     return Err(PlanCode::ExecPrecondition);
                 }
@@ -639,5 +645,50 @@ pub(crate) mod tests {
         );
         assert_eq!(cron_scope(&store.lock(), "other").unwrap(), None);
         std::fs::remove_dir_all(dir).unwrap();
+    }
+}
+
+#[cfg(test)]
+mod cron_run_uniqueness_tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn one_plan_cannot_dispatch_the_same_cron_job_twice() {
+        let (dir, store) = tests::open("duplicate-cron-run");
+        let first = "01a0cdb5-3500-70d2-8000-000000000001";
+        let second = "01a0cdb5-3500-70d2-8000-000000000002";
+        tests::record(
+            &store,
+            1,
+            (tests::PROJECT, "production", tests::ENV_ID),
+            &[
+                json!({"kind":"cron.create","params":{"cron_id":first}}),
+                json!({"kind":"cron.create","params":{"cron_id":second}}),
+            ],
+            "succeeded",
+        );
+        let run = |id| json!({"kind":"cron.run","params":{"cron_id":id}});
+        let connection = store.lock();
+        assert_eq!(
+            definition_preconditions(&connection, &json!({"actions":[run(first),run(first)]})),
+            Err(PlanCode::ExecPrecondition)
+        );
+        assert_eq!(
+            definition_preconditions(&connection, &json!({"actions":[run(first),run(second)]})),
+            Ok(()),
+            "distinct jobs remain valid"
+        );
+        assert_eq!(
+            connection
+                .query_row("SELECT count(*) FROM admissions", [], |row| row
+                    .get::<_, i64>(0))
+                .unwrap(),
+            1,
+            "precondition check wrote an admission"
+        );
+        drop(connection);
+        drop(store);
+        let _ = std::fs::remove_dir_all(dir);
     }
 }

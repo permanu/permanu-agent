@@ -303,28 +303,79 @@ impl ScheduleService for ScheduleSvc {
                 "the plan's only action must be cron.run of this cron_id",
             ));
         }
-        match self.cron.manual_allowed(&request.cron_id) {
-            Ok(()) => {}
-            Err("unknown cron job") => return Err(refused("unknown cron job")),
-            Err(reason) => {
-                self.cron.record_skipped_manual(&request.cron_id, reason);
+        let cron = self.cron.clone();
+        let change = ChangeSvc {
+            core: self.change.core.clone(),
+        };
+        // The owned task finishes admission/history even if the RPC's reply is
+        // lost. No capacity is released while a submission may still commit.
+        tokio::spawn(async move {
+            if let Some(operation) = change.verified_existing(&plan).await? {
+                let run = cron
+                    .record_manual(
+                        &request.cron_id,
+                        &operation.plan_id,
+                        &operation.operation_id,
+                    )
+                    .map_err(|_| Status::internal("manual cron history could not be committed"))?;
+                return Ok(Response::new(RunCronJobNowResponse {
+                    operation: Some(operation),
+                    run_id: run.id,
+                }));
+            }
+            let submission = crate::local::execution::Submission {
+                envelope: plan.envelope_json.clone(),
+                specs: plan.specs_jcs.clone(),
+                sealed_secrets: plan.sealed_secrets.clone(),
+            };
+            let (verified, digest, _) = change
+                .core
+                .verify(submission)
+                .await
+                .map_err(crate::local::errors::plan_status)?;
+            let plan_id = verified["id"]
+                .as_str()
+                .ok_or_else(|| Status::invalid_argument("invalid cron plan identity"))?
+                .to_owned();
+            let expires = verified["expires_at"]
+                .as_str()
+                .and_then(text::timestamp)
+                .ok_or_else(|| Status::invalid_argument("invalid cron plan expiry"))?;
+            if let Err(reason) = cron.reserve_manual(&request.cron_id, &plan_id, &digest, expires) {
+                cron.record_skipped_manual(&request.cron_id, reason);
                 return Err(status_with_reason(
                     Code::FailedPrecondition,
                     reason,
                     ErrorReason::ScheduleRejected,
                 ));
             }
-        }
-        let operation = self.change.submit(Some(plan)).await?;
-        let run = self.cron.record_manual(
-            &request.cron_id,
-            &operation.plan_id,
-            &operation.operation_id,
-        );
-        Ok(Response::new(RunCronJobNowResponse {
-            operation: Some(operation),
-            run_id: run.id,
-        }))
+            let operation = match change.submit(Some(plan)).await {
+                Ok(operation) => operation,
+                Err(err) => {
+                    cron.release_unadmitted_manual(&plan_id);
+                    return Err(err);
+                }
+            };
+            let run = match cron.record_manual(
+                &request.cron_id,
+                &operation.plan_id,
+                &operation.operation_id,
+            ) {
+                Ok(run) => run,
+                Err(_) => {
+                    cron.release_unadmitted_manual(&plan_id);
+                    return Err(Status::internal(
+                        "manual cron history could not be committed",
+                    ));
+                }
+            };
+            Ok(Response::new(RunCronJobNowResponse {
+                operation: Some(operation),
+                run_id: run.id,
+            }))
+        })
+        .await
+        .map_err(|_| Status::internal("manual cron admission task failed"))?
     }
 
     type StreamCronRunLogsStream = BoxStream<LogQueryResponse>;

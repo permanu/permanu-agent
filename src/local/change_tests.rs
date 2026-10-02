@@ -2115,3 +2115,48 @@ fn key_statement_signing_helper_matches_the_vector_chain() {
     )
     .is_ok());
 }
+
+#[tokio::test]
+async fn verified_identical_retries_bypass_submission_capacity_but_not_signature_checks() {
+    let case = plan_vector("server-add-bootstrap");
+    let host_key = case["plan"]["actions"][0]["params"]["ssh_host_key_digest_hex"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let h = Harness::with(
+        "verified-repeat",
+        Options {
+            host_keys: vec![host_key],
+            ..Default::default()
+        },
+    )
+    .await;
+    let mut change = ChangeServiceClient::new(h.channel.clone());
+    let first = change
+        .submit_signed_plan(submit(signed(&case)))
+        .await
+        .unwrap()
+        .into_inner();
+    for _ in 0..12 {
+        let retry = change
+            .submit_signed_plan(submit(signed(&case)))
+            .await
+            .unwrap()
+            .into_inner();
+        assert!(retry.deduplicated);
+        assert_eq!(retry.operation_id, first.operation_id);
+        assert_eq!(retry.plan_id, first.plan_id);
+        assert_eq!(retry.plan_digest_hex, first.plan_digest_hex);
+    }
+    let mut invalid = case.clone();
+    let signature = invalid["signed_plan"]["signatures"][0]["sig"]
+        .as_str()
+        .unwrap();
+    invalid["signed_plan"]["signatures"][0]["sig"] = json!("A".repeat(signature.len()));
+    let rejected = change
+        .submit_signed_plan(submit(signed(&invalid)))
+        .await
+        .unwrap_err();
+    assert_ne!(rejected.code(), Code::ResourceExhausted);
+    assert_eq!(trailer(&rejected, PLAN_ERROR_HEADER), "E_SIG_INVALID");
+}
