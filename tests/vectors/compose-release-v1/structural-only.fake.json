@@ -1,0 +1,78 @@
+{
+  "release": {
+    "policy_revision": 1,
+    "version": 1,
+    "capability": "compose-release-v1",
+    "action": "compose.release",
+    "application_id": "FAKE-application",
+    "spec_digest": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "policy_digest": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "target": {
+      "server_id": "FAKE-server",
+      "root": "/srv/fake",
+      "compose_project": "fake",
+      "config_digest": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "protected_digest": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    },
+    "source": {
+      "repository": "example.invalid/fake",
+      "ref": "refs/heads/main",
+      "commit": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "tree": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "desktop_tree": "cccccccccccccccccccccccccccccccccccccccc"
+    },
+    "candidate": {
+      "backend": {
+        "server": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "worker": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      },
+      "authenticated_frontend": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "public_frontend": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    },
+    "previous": {
+      "backend": {
+        "server": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "worker": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      },
+      "authenticated_frontend": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "public_frontend": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    },
+    "release_id": "FAKE-next",
+    "previous_release_id": "FAKE-prior",
+    "inventory_digest": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "migrations": "none",
+    "generation": 2,
+    "previous_generation": 1
+  },
+  "attestation": {
+    "policy_revision": 1,
+    "release_digest": "abd87a1bc34b14ea9ce5ceeab58ba1e178fc134caf174718b3f772abf87e8b90",
+    "policy_digest": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "verification_config_digest": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "run_id": "FAKE-run",
+    "producer_id": "FAKE-ci",
+    "issued_at": 946684800,
+    "expires_at": 946685100,
+    "gates": {
+      "verify:changed": "success",
+      "verify:full": "success"
+    }
+  },
+  "authorization": {
+    "release_digest": "abd87a1bc34b14ea9ce5ceeab58ba1e178fc134caf174718b3f772abf87e8b90",
+    "attestation_digest": "25960c4df4b33d59aa83ea3785436e6fce1cbd92436988658c5246a7b40d1995",
+    "owner_id": "FAKE-owner",
+    "issued_at": 946684800,
+    "expires_at": 946685100
+  },
+  "producer_signature": {
+    "key_id": "AAAAAAAAAAAAAAAAAAAAAA",
+    "alg": "ES256-raw",
+    "sig": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+  },
+  "owner_signature": {
+    "key_id": "BBBBBBBBBBBBBBBBBBBBBA",
+    "alg": "ES256-raw",
+    "sig": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+  }
+}

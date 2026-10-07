@@ -6,6 +6,7 @@
 //! verifiers apply the same parse and schema rules. `verify` adds the
 //! admission-only steps 7–12 and the bootstrap of section 7.3.
 
+pub mod ci;
 pub mod crypto;
 pub mod jcs;
 pub mod schema;

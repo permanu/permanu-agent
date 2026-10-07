@@ -13,6 +13,10 @@ pub mod age_recipient;
 pub mod apparmor;
 pub mod artifacts;
 pub mod change;
+#[cfg(feature = "compose-release-v1")]
+mod compose_authority_rpc;
+#[cfg(feature = "compose-release-v1")]
+mod compose_rpc;
 pub mod database;
 pub mod errors;
 pub mod events;
@@ -335,6 +339,14 @@ impl InfoService for InfoSvc {
                 }
             }
         }
+        #[cfg(feature = "compose-release-v1")]
+        if compose_rpc::available(self.runner.as_ref()).await {
+            advertised.push(compose_rpc::CAPABILITY.to_owned());
+        }
+        #[cfg(feature = "compose-release-v1")]
+        if compose_authority_rpc::available(self.runner.as_ref()).await {
+            advertised.push(compose_authority_rpc::CAPABILITY.to_owned());
+        }
         Ok(Response::new(HelloResponse {
             protocol_version: negotiated.to_string(),
             agent: Some(AgentInfo {
@@ -589,6 +601,10 @@ impl LocalServer {
         shutdown: impl std::future::Future<Output = ()> + Send,
     ) -> Result<(), tonic::transport::Error> {
         let sources = self.sources();
+        #[cfg(feature="compose-release-v1")]
+        let compose_svc = crate::proto::agent::compose::v1::compose_release_service_server::ComposeReleaseServiceServer::new(compose_rpc::Service{runner:self.core.runner.clone()}).max_decoding_message_size(70*1024).max_encoding_message_size(16*1024);
+        #[cfg(feature="compose-release-v1")]
+        let authority_svc = crate::proto::agent::compose::v1::compose_authority_service_server::ComposeAuthorityServiceServer::new(compose_authority_rpc::Service{runner:self.core.runner.clone()}).max_decoding_message_size(70*1024).max_encoding_message_size(16*1024);
         let info_svc = InfoServiceServer::new(InfoSvc {
             runner: self.core.runner.clone(),
             probe: self.probe.clone(),
@@ -707,7 +723,7 @@ impl LocalServer {
             .max_decoding_message_size(MAX_MESSAGE_BYTES)
             .max_encoding_message_size(MAX_MESSAGE_BYTES);
 
-        Server::builder()
+        let router = Server::builder()
             .http2_keepalive_interval(Some(Duration::from_secs(60)))
             .http2_keepalive_timeout(Some(Duration::from_secs(30)))
             .concurrency_limit_per_connection(32)
@@ -724,7 +740,10 @@ impl LocalServer {
             .add_optional_service(backup_svc)
             .add_optional_service(alert_svc)
             .add_optional_service(webhook_svc)
-            .add_optional_service(artifact_svc)
+            .add_optional_service(artifact_svc);
+        #[cfg(feature = "compose-release-v1")]
+        let router = router.add_service(compose_svc).add_service(authority_svc);
+        router
             .serve_with_incoming_shutdown(logged_incoming(listener, self.presence), shutdown)
             .await
     }
@@ -1339,9 +1358,10 @@ mod tests {
             .unwrap()
             .into_inner();
         assert!(!old.capabilities.contains(&"actions.scale.v1".to_owned()));
+        assert!(!old.capabilities.contains(&"ci.v1".to_owned()));
         h.runner.op_extra.lock().unwrap().insert(
             "runtime_capabilities".into(),
-            serde_json::json!({"ok":true,"capabilities":["actions.scale.v1","actions.db_upgrade.v1","untrusted.capability"]}),
+            serde_json::json!({"ok":true,"capabilities":["actions.scale.v1","actions.db_upgrade.v1","ci.v1","untrusted.capability"]}),
         );
         let current = client
             .hello(hello_request(&["2.1"]))
@@ -1357,6 +1377,8 @@ mod tests {
         assert!(!current
             .capabilities
             .contains(&"untrusted.capability".to_owned()));
+        // Remote CI is not installed in this local-CI Compose candidate.
+        assert!(!current.capabilities.contains(&"ci.v1".to_owned()));
         h.stop().await;
     }
 

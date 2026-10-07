@@ -201,6 +201,11 @@ fn params_for(kind: &str) -> Option<&'static [(&'static str, Shape)]> {
             ("service_id", Shape::Nullable(&UUID7)),
             ("ttl_seconds", Shape::Int(1, 900)),
         ],
+        "ci.configure" => &[
+            ("configuration_jcs", Shape::Text(2, 16384)),
+            ("configuration_digest_hex", HEX64),
+        ],
+        "ci.cancel" => &[("run_id", UUID7)],
         "rule.create" => &[("rule", RULE)],
         "rule.revoke" => &[("rule_id", UUID7), ("rule_digest_hex", HEX64)],
         "key.add" => &[("entry", KEY_ENTRY)],
@@ -432,6 +437,7 @@ fn action_rules_hold(plan: &Value, index: usize, action: &Value) -> bool {
                 .as_object()
                 .is_some_and(|set| set.keys().all(|name| !unset.contains(name.as_str())))
         }
+        "ci.configure" => super::super::ci::action_scope(plan, params),
         "rule.create" => {
             let rule = &params["rule"];
             let window = text::timestamp(rule["expires_at"].as_str().unwrap_or_default())

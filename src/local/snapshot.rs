@@ -313,6 +313,7 @@ pub fn service_state(
         environment: row.environment.clone(),
         environment_id: row.environment_id.clone(),
         spec_digest_hex: row.spec_digest_hex.clone(),
+        spec_jcs: crate::signed_plan::jcs::canonicalize(&row.spec).unwrap_or_default(),
         release_id,
         replicas_desired: row.spec["replicas"]
             .as_u64()

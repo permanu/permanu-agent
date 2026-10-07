@@ -1,0 +1,31 @@
+#[allow(dead_code)]
+mod signed_plan {
+ #[path=@STRICT_JSON@] mod strict_json;
+ #[path=@JCS@] pub mod jcs;
+ #[path=@CRYPTO@] pub mod crypto;
+}
+#[allow(dead_code)]
+#[path=@AGENT_MODULE@]
+mod agent;
+#[cfg(test)]mod tests {
+ use super::*;
+ use permanu_runner::compose_release as runner;
+ use serde_json::Value;
+ const FIXTURE:&[u8]=include_bytes!(@FIXTURE@);
+ const NOW:i64=946684801;
+ struct FixtureAuthority;
+ impl agent::AdmissionVerifier for FixtureAuthority {
+ fn verify(&self,envelope:&Value,_:i64)->Result<(),agent::Error>{let expected:Value=serde_json::from_slice(FIXTURE).unwrap();if *envelope==expected{Ok(())}else{Err(agent::Error::Authority)}}
+ }
+ impl runner::AdmissionVerifier for FixtureAuthority {
+ fn verify(&self,envelope:&[u8],_:i64)->Result<(),runner::Error>{let expected:Value=serde_json::from_slice(FIXTURE).unwrap();if serde_json::from_slice::<Value>(envelope).unwrap()==expected{Ok(())}else{Err(runner::Error::AdmissionDenied)}}
+ }
+ struct ActualRunnerBoundary;
+ impl agent::FixtureTransport for ActualRunnerBoundary {
+ fn exchange(&self,request:&[u8])->Result<Vec<u8>,agent::Error>{let authority=FixtureAuthority;let admitted=runner::accept(request,&authority,&[runner::CAPABILITY],NOW).map_err(|_|agent::Error::Transport)?;serde_json::to_vec(&admitted.response(NOW).map_err(|_|agent::Error::Transport)?).map_err(|_|agent::Error::Transport)}
+ }
+ #[test]fn actual_agent_and_runner_round_trip(){
+ let bridge=agent::Boundary::default().negotiate(Some(agent::CAPABILITY),Some(runner::CAPABILITY)).unwrap().bind(FixtureAuthority,ActualRunnerBoundary);
+ let prepared=bridge.prepare(FIXTURE,NOW).unwrap();let receipt=bridge.dispatch(&prepared,NOW).unwrap();assert_eq!(receipt.state,"fixture_validated");
+ }
+}
