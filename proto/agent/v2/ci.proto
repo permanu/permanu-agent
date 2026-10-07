@@ -1,0 +1,21 @@
+syntax = "proto3";
+package permanu.agent.v2;
+option go_package = "github.com/permanu/permanu-ai/internal/agentpb/v2;agentv2";
+
+// ci.v1: native CI runs independently of engine/Mac availability. Definitions
+// are installed only through owner-signed ci.configure; cancellation only through
+// owner-signed ci.cancel. JSON payloads follow Engine API CI schemas, never carry
+// credentials, and are capped at 64 KiB (config), 128 KiB (history/log pages).
+service CIService {
+ rpc GetCIConfiguration(GetCIConfigurationRequest) returns (CIJSONResponse);
+ rpc StartCIRun(StartCIRunRequest) returns (CIJSONResponse);
+ rpc ListCIRuns(ListCIRunsRequest) returns (CIJSONResponse);
+ rpc GetCILogs(GetCILogsRequest) returns (CIJSONResponse);
+}
+message GetCIConfigurationRequest { string project_id = 1; }
+// Manual requests are constrained to the current approved repository/ref. The
+// runner verifies source provenance; clients cannot supply commands or budgets.
+message StartCIRunRequest { string project_id = 1; string commit_sha = 2; }
+message ListCIRunsRequest { string project_id = 1; }
+message GetCILogsRequest { string run_id = 1; uint64 after = 2; uint32 limit = 3; }
+message CIJSONResponse { bytes json = 1; }
