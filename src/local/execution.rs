@@ -2362,11 +2362,10 @@ mod tests {
     async fn upgrade_errors_keep_admission_unfinished_until_terminal_receipt() {
         use crate::local::test_harness::{Harness, OpBehavior};
         use crate::signed_plan::crypto::{hex, prefixed_digest, SPEC_PREFIX};
-        use crate::signed_plan::test_support::{plan_vector, vector, TestSigner, SERVER_A};
+        use crate::signed_plan::test_support::{plan_vector, TestSigner, SERVER_A};
         use crate::signed_plan::verify::GENESIS_HEAD;
-        let owner = TestSigner::load("owner").expect("public test signing fixture");
-        let trusted =
-            serde_json::to_string(&vector("policy-cases")["context"]["trusted_keys"]).unwrap();
+        let (owner, trusted) = TestSigner::ephemeral_owner();
+        let trusted = serde_json::to_string(&trusted).unwrap();
         for missing_reply in [true, false] {
             let h = Harness::start(
                 if missing_reply {
@@ -2501,11 +2500,10 @@ mod tests {
     #[tokio::test]
     async fn restart_cancels_persisted_manual_work_before_dispatch() {
         use crate::local::test_harness::{Harness, OpBehavior};
-        use crate::signed_plan::test_support::{vector, TestSigner, SERVER_A};
+        use crate::signed_plan::test_support::{TestSigner, SERVER_A};
         use crate::signed_plan::verify::{next_head, GENESIS_HEAD};
-        let owner = TestSigner::load("owner").expect("public test signing fixture");
-        let trusted =
-            serde_json::to_string(&vector("policy-cases")["context"]["trusted_keys"]).unwrap();
+        let (owner, trusted) = TestSigner::ephemeral_owner();
+        let trusted = serde_json::to_string(&trusted).unwrap();
         for (kind, op, params) in [
             (
                 "cron.run",

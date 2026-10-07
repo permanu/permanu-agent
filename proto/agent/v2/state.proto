@@ -279,6 +279,9 @@ message ServiceState {
   // result line that activated it or the latest db_reader_ensure, whichever
   // is newer); MISSING when the release has none.
   DbReaderStatus db_reader = 11;
+  // Canonical admitted spec, for reconstructing an exact release after an
+  // offline interval. Clients verify its digest and scope before persisting.
+  string spec_jcs = 12;
 }
 
 message DeploymentState {

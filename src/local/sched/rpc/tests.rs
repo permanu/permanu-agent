@@ -272,9 +272,9 @@ async fn manual_rpc_fixture(
     SignedPlan,
 ) {
     use super::super::test_support::{production, CRON};
-    use crate::signed_plan::test_support::{plan_vector, vector, TestSigner, SERVER_A};
-    let owner = TestSigner::load("owner").expect("checked-in test signing key");
-    let trust = serde_json::to_string(&vector("policy-cases")["context"]["trusted_keys"]).unwrap();
+    use crate::signed_plan::test_support::{plan_vector, TestSigner, SERVER_A};
+    let (owner, trust) = TestSigner::ephemeral_owner();
+    let trust = serde_json::to_string(&trust).unwrap();
     let h = crate::local::test_harness::Harness::start(name, Some(&trust)).await;
     let create = plan_vector("deployer-cron-create")["plan"]["actions"][0].clone();
     crate::admissions::definitions::tests::record_at(
