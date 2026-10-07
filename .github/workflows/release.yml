@@ -21,7 +21,7 @@ jobs:
       - name: Format
         run: cargo fmt --check
       - name: Test
-        run: cargo test --locked --bin permanu-agent
+        run: cargo test --locked --bin permanu-agent --features compose-release-v1
       - name: Release signing helper tests
         run: scripts/test-sign-release.sh
       - name: Version guard
