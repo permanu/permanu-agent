@@ -1,0 +1,141 @@
+syntax = "proto3";
+package permanu.agent.compose.v1;
+option go_package = "github.com/permanu/permanu-ai/internal/agentpb/composev1;composev1";
+
+// UNFROZEN proposed proto-v2.1.13 addition. Capability
+// "compose-release-standing-v1" must be explicitly negotiated. Generated
+// bindings do not advertise/enable this service. No legacy fallback is allowed.
+// All calls require the existing authenticated transport and registered scope.
+// Mutations stay unavailable until trusted application/rule registration and a
+// qualified production root-runner host adapter exist. The ROOT RUNNER owns the
+// entire durable transaction; neither agent nor Mac orchestrates remote steps.
+service ComposeReleaseService {
+  rpc SubmitStandingRelease(SubmitStandingReleaseRequest) returns (ReleaseOperation);
+  rpc ObserveRegisteredApplication(ObserveRegisteredApplicationRequest) returns (RegisteredApplicationObservation);
+  rpc GetReleaseOperation(GetReleaseOperationRequest) returns (ReleaseOperation);
+}
+
+// Every schema_version must equal 1. Reject unknown versions, protobuf unknown
+// fields, malformed/oversized identifiers, and any missing binding before host
+// access. No field is a shell command, path override, credential or enrollment.
+message SubmitStandingReleaseRequest {
+  uint32 schema_version = 1;
+  // 1..65536 bytes; strict canonical StandingEnvelope JSON per the independent
+  // compose-standing-envelope-v1 schema. No owner signature per invocation:
+  // current trusted stored rule and CI-purpose signature are mandatory.
+  bytes envelope_json = 2;
+}
+message ObserveRegisteredApplicationRequest {
+  uint32 schema_version = 1;
+  // All IDs: [A-Za-z0-9][A-Za-z0-9_.:-]{0,127}; no unregistered discovery.
+  string application_id = 2;
+}
+message GetReleaseOperationRequest {
+  uint32 schema_version = 1;
+  // Resolve within authenticated server and current registered project scope;
+  // never perform a global digest-only lookup or disclose another application.
+  string application_id = 2;
+  // Lowercase 64hex release-domain digest, deterministically known before submit.
+  string operation_id = 3;
+}
+
+enum ReleaseOutcome {
+  RELEASE_OUTCOME_UNSPECIFIED = 0; // Never accepted as a successful response.
+  RELEASE_OUTCOME_IN_PROGRESS = 1;
+  RELEASE_OUTCOME_DEPLOYED = 2;
+  RELEASE_OUTCOME_ROLLED_BACK = 3;
+  RELEASE_OUTCOME_FAILED = 4;
+  RELEASE_OUTCOME_RECOVERY_REQUIRED = 5;
+}
+message ReleaseOperation {
+  uint32 schema_version = 1;
+  string operation_id = 2;
+  string application_id = 3;
+  string release_digest = 4; // Must equal operation_id; lowercase 64hex.
+  ReleaseOutcome outcome = 5;
+  // Runner-defined machine code, <=128 ASCII identifier bytes; never raw stderr,
+  // secrets or arbitrary exception text. Empty is permitted for deployed.
+  string reason = 6;
+}
+
+// Read-only live observation scoped by trusted registration. All fields must
+// match registered identity. This is neither evidence of passing CI nor release
+// authority. Digests are lowercase 64hex. No uninitialized bootstrap state
+// is implied: absent registered baseline fails closed.
+message RegisteredApplicationObservation {
+  uint32 schema_version = 1;
+  string application_id = 2;
+  string spec_digest = 3;
+  uint64 policy_revision = 4; // 1..2^53-1.
+  RegisteredTarget target = 5;
+  string inventory_digest = 6;
+  string release_id = 7;
+  uint64 generation = 8; // 0..2^53-1 in schema; known registered baseline required.
+  ReleaseArtifacts artifacts = 9;
+}
+message RegisteredTarget {
+  string server_id = 1;
+  // Registered absolute normalized root only, never caller-selectable.
+  string root = 2;
+  string compose_project = 3;
+  string config_digest = 4;
+  string protected_digest = 5;
+}
+message ReleaseArtifacts {
+  // Immutable backend image digests: 64 lowercase hex, matching Envelope.
+  // Server and worker are independently bound; equality is not required.
+  string server = 1;
+  string worker = 2;
+  // Immutable SHA256 artifact digests (64 lowercase hex); Flutter targets only.
+  string authenticated_frontend = 3;
+  string public_frontend = 4;
+}
+
+// Submit retries for the same app/release digest return the existing durable
+// operation without rerunning it. Semantic replay under another ID is rejected.
+// A transport timeout is NOT failure/rollback/deployment proof: query Get using
+// the predetermined identity. NOT_FOUND is not authority to bypass replay.
+// Recovery-required is durable uncertainty and must not be reported as success.
+// Read-only Get/Observe cannot repair, roll back or advance the journal.
+// Validation/authority errors use bounded gRPC status, never echo envelope data.
+
+// Independent capability "compose-application-authority-v1". Registered owner
+// approval may persist authority even when release execution backend is absent;
+// an active receipt MUST NOT be rendered as deployment enabled or healthy.
+// App-only Engine routes forward signed canonical documents, never raw policy.
+service ComposeAuthorityService {
+  // Scoped read-only current trust/rule status. Unknown application or invalid
+  // current owner trust denies; expired/revoked producer or tombstone is inactive.
+  rpc GetApplicationAuthority(GetApplicationAuthorityRequest) returns (AuthorityReceipt);
+  rpc ActivateApplication(ActivateApplicationRequest) returns (AuthorityReceipt);
+  rpc RevokeApplication(RevokeApplicationRequest) returns (AuthorityReceipt);
+}
+message ActivateApplicationRequest {
+  uint32 schema_version = 1; // Exactly 1.
+  // 1..65536 strict canonical JSON bytes: {signed_enrollment,signed_rule}.
+  // SAME existing owner key signs both distinct domains after one fresh native
+  // approval; root verifies all policy/layout/rule bindings before atomic save.
+  bytes signed_authority_json = 2;
+}
+message RevokeApplicationRequest {
+  uint32 schema_version = 1; // Exactly 1.
+  // 1..65536 strict canonical JSON bytes: {revocation,owner_signature}.
+  // Conditional exact current policy/rule/digest; cannot revoke a newer grant.
+  bytes signed_revocation_json = 2;
+}
+message AuthorityReceipt {
+  uint32 schema_version = 1; // Exactly 1.
+  string application_id = 2;
+  uint64 policy_revision = 3;
+  string rule_id = 4;
+  uint64 rule_revision = 5;
+  // SHA256(permanu-compose-authority-v1 LF + JCS complete Activation), raw64hex.
+  // Revoke retains the exact stored activation identity with active=false.
+  string authority_digest = 6;
+  bool active = 7; // Authority state only. No backend/health/deployment claim.
+}
+
+message GetApplicationAuthorityRequest {
+  uint32 schema_version = 1; // Exactly 1.
+  string application_id = 2; // Authenticated server-scoped bounded identifier.
+}
