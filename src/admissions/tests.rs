@@ -1434,13 +1434,19 @@ fn db_upgrade_caches_exact_destination_spec_and_legacy_keeps_it() {
     use crate::signed_plan::crypto::{hex, prefixed_digest, SPEC_PREFIX};
     use crate::signed_plan::jcs::canonicalize;
     use serde_json::json;
-    let owner = TestSigner::load("owner").expect("checked-in test owner key");
+    let (owner, trusted) = TestSigner::ephemeral_owner();
+    let trust = crate::signed_plan::trust::validate_trust(
+        &trusted,
+        crate::signed_plan::trust::TrustMode::Test,
+    )
+    .unwrap();
     let dir = temp_dir("store-upgrade-destination");
     let (store, _) = AdmissionStore::open(&config(&dir), false, now()).unwrap();
     seed_head(&store, USER_DEPLOY_HEAD_BEFORE);
-    let (original, specs) = user_deploy();
+    let (_, specs) = user_deploy();
+    let original = owner.envelope(&plan_vector("user-deploy")["plan"]);
     store
-        .admit(&test_trust(), &input(&original, &specs, now()))
+        .admit(&trust, &input(&original, &specs, now()))
         .unwrap();
     let mut destination: Value = serde_json::from_str(&specs[0]).unwrap();
     destination["replicas"] = json!(destination["replicas"].as_u64().unwrap() + 1);
@@ -1456,7 +1462,7 @@ fn db_upgrade_caches_exact_destination_spec_and_legacy_keeps_it() {
     let envelope = owner.envelope(&plan);
     let admitted = store
         .admit(
-            &test_trust(),
+            &trust,
             &input(&envelope, std::slice::from_ref(&destination), now()),
         )
         .unwrap();
@@ -1479,9 +1485,7 @@ fn db_upgrade_caches_exact_destination_spec_and_legacy_keeps_it() {
         .unwrap()
         .remove("spec_digest_hex");
     let legacy = owner.envelope(&plan);
-    store
-        .admit(&test_trust(), &input(&legacy, &[], now()))
-        .unwrap();
+    store.admit(&trust, &input(&legacy, &[], now())).unwrap();
     let cached: (String, String) = store
         .lock()
         .query_row(

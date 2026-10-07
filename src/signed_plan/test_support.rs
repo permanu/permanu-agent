@@ -302,6 +302,38 @@ fn keys_json_path() -> Option<PathBuf> {
 }
 
 impl TestSigner {
+    /// Fresh in-memory owner for tests that sign new plans, not golden vectors.
+    /// No private key is read from disk or persisted; only public trust is returned.
+    pub fn ephemeral_owner() -> (Self, Value) {
+        use base64::Engine;
+        let key = loop {
+            let mut scalar = [0u8; 32];
+            getrandom::getrandom(&mut scalar).expect("test CSPRNG");
+            if let Ok(key) = p256::ecdsa::SigningKey::from_slice(&scalar) {
+                break key;
+            }
+        };
+        // RFC 5480 SubjectPublicKeyInfo for an uncompressed prime256v1 point.
+        let mut der = hex::decode("3059301306072a8648ce3d020106082a8648ce3d030107034200")
+            .expect("public SPKI prefix");
+        der.extend_from_slice(key.verifying_key().to_encoded_point(false).as_bytes());
+        let spki = base64::engine::general_purpose::STANDARD.encode(der);
+        let public = super::crypto::parse_spki_base64(&spki).expect("test public key");
+        let signer = Self {
+            key_id: public.key_id,
+            key,
+        };
+        let mut trust = policy_context()["trusted_keys"].clone();
+        let mut owner = trust["keys"][0].clone();
+        owner["key_id"] = serde_json::json!(signer.key_id);
+        owner["spki"] = serde_json::json!(spki);
+        owner["label"] = serde_json::json!("Ephemeral test owner");
+        trust["keys"] = serde_json::json!([owner]);
+        trust["revocations"] = serde_json::json!([]);
+        validate_trust(&trust, TrustMode::Test).expect("ephemeral test trust");
+        (signer, trust)
+    }
+
     /// `None` (test skips) when the docs checkout is not next to this repo.
     pub fn load(name: &str) -> Option<Self> {
         let path = keys_json_path()?;

@@ -948,7 +948,7 @@ mod upgrade_spec_binding_tests {
     #[test]
     fn upgrade_destination_digest_is_optional_but_schema_checked() {
         let (mut plan, _, _) = fixture();
-        let owner = TestSigner::load("owner").expect("checked-in test owner key");
+        let (owner, _) = TestSigner::ephemeral_owner();
         assert!(parse_envelope(owner.envelope(&plan).as_bytes()).is_ok());
         plan["actions"][0]["params"]["spec_digest_hex"] = json!("bad");
         assert!(parse_envelope(owner.envelope(&plan).as_bytes()).is_err());
