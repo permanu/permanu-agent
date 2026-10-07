@@ -27,7 +27,9 @@ message SubmitStandingReleaseRequest {
 }
 message ObserveRegisteredApplicationRequest {
   uint32 schema_version = 1;
-  // All IDs: [A-Za-z0-9][A-Za-z0-9_.:-]{0,127}; no unregistered discovery.
+  // Transport IDs: [A-Za-z0-9][A-Za-z0-9_.-]{0,127}; no unregistered discovery.
+  // This agent transport subset excludes colon even where an envelope schema
+  // permits it; all submitted scope IDs must also satisfy this transport bound.
   string application_id = 2;
 }
 message GetReleaseOperationRequest {
