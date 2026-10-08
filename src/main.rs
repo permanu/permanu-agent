@@ -6,6 +6,8 @@ mod command;
 mod command_handlers;
 mod command_runtime;
 mod compose_lifecycle;
+#[cfg(feature = "compose-release-v1")]
+mod compose_release_v1;
 mod config;
 mod container_logs;
 mod control_plane_identity;

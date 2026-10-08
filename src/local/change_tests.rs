@@ -157,7 +157,18 @@ async fn bootstrap_admits_server_add_writes_trust_and_dedupes() {
         .lock()
         .unwrap()
         .iter()
-        .filter(|request| request["op"] != "runtime_capabilities")
+        // Hello negotiates optional runner capabilities; these read-only probes
+        // are not bootstrap mutations. Preserve the assertion for every other op.
+        .filter(|request| {
+            !matches!(
+                request["op"].as_str(),
+                Some(
+                    "runtime_capabilities"
+                        | "compose_v1_capabilities"
+                        | "compose_v1_authority_capabilities"
+                )
+            )
+        })
         .cloned()
         .collect();
     assert_eq!(requests.len(), 1);

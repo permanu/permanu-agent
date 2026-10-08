@@ -1,4 +1,17 @@
+#[path = "compose_codec.rs"]
+pub mod compose_codec;
 pub mod agent {
+    /// Unpublished additive bindings; no service registration is implied.
+    pub mod compose {
+        pub mod v1 {
+            #![allow(
+                dead_code,
+                clippy::doc_lazy_continuation,
+                clippy::doc_overindented_list_items
+            )]
+            tonic::include_proto!("permanu.agent.compose.v1");
+        }
+    }
     pub mod v1 {
         #![allow(dead_code)]
         tonic::include_proto!("agent.v1");

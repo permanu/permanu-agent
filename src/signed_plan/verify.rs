@@ -27,6 +27,8 @@ pub const GENESIS_HEAD: &str = "000000000000000000000000000000000000000000000000
 
 /// Always-Touch-ID kinds (section 3.2, D-013, D-016).
 pub const TID_KINDS: &[&str] = &[
+    "ci.configure",
+    "ci.cancel",
     "agent.update",
     "component.update",
     "secret.set",

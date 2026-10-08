@@ -1,4 +1,5 @@
 const V2_PROTOS: &[&str] = &[
+    "proto/agent/v2/ci.proto",
     "proto/agent/v2/common.proto",
     "proto/agent/v2/info.proto",
     "proto/agent/v2/telemetry.proto",
@@ -20,6 +21,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     tonic_prost_build::configure()
         .build_server(false)
         .compile_protos(&["proto/agent/v1/agent.proto"], &["proto"])?;
+
+    tonic_prost_build::configure()
+        .codec_path("crate::proto::compose_codec::StrictCodec")
+        .compile_protos(&["proto/agent/compose/v1/compose.proto"], &["proto"])?;
+    println!("cargo:rerun-if-changed=proto/agent/compose/v1/compose.proto");
 
     // v2: local mode. The agent serves these on its unix socket; the client
     // stubs are generated for in-crate integration tests.

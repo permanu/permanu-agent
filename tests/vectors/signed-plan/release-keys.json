@@ -1,0 +1,54 @@
+{
+  "note": "TEST ONLY: public Ed25519 release keys for vectors. Production builds refuse every key_id here (section 3.9). The real release key is generated offline by the user and is never in this repo.",
+  "test_keys": [
+    {
+      "name": "release",
+      "key_id": "cl98Xxg2voSKlukyuAPKJg",
+      "spki": "MCowBQYDK2VwAyEAxUG8N6ZYv4fm4+BLDKpGKrVaGRXdQjEdXbvfEADrd2k=",
+      "label": "Permanu TEST release key (release)",
+      "public_hex": "c541bc37a658bf87e6e3e04b0caa462ab55a1915dd42311d5dbbdf1000eb7769",
+      "seed_hex_TEST_ONLY": "0969777c99c882c535e2ec11ebe255956daa4c7b0131e573f95128562a1db762"
+    },
+    {
+      "name": "rotated",
+      "key_id": "RE1jopVSq8Moy0jDftg6Kg",
+      "spki": "MCowBQYDK2VwAyEAGZtqVq+kKLsm+LOjTwv8MyMHrGU4692o51PChact9zc=",
+      "label": "Permanu TEST release key (rotated)",
+      "public_hex": "199b6a56afa428bb26f8b3a34f0bfc332307ac6538ebdda8e753c285a72df737",
+      "seed_hex_TEST_ONLY": "4fd1cee8782a1a4259a43670cbb4e427e70f02d7126d06d76f69a1b558dcebd0"
+    },
+    {
+      "name": "stranger",
+      "key_id": "MA975uwluIeABZVJLGWMaA",
+      "spki": "MCowBQYDK2VwAyEAW8+QH6t6qsXulEJkl+b5WykQtyMrhktO5JBX8fwqlnw=",
+      "label": "Permanu TEST release key (stranger)",
+      "public_hex": "5bcf901fab7aaac5ee94426497e6f95b2910b7232b864b4ee49057f1fc2a967c",
+      "seed_hex_TEST_ONLY": "d8706782e75a0016f07a8851a0033923f03e157e2a2f3204045b032e4ee93a6e"
+    }
+  ],
+  "sample_release_keys_file": {
+    "version": 1,
+    "keys": [
+      {
+        "key_id": "cl98Xxg2voSKlukyuAPKJg",
+        "alg": "Ed25519",
+        "spki": "MCowBQYDK2VwAyEAxUG8N6ZYv4fm4+BLDKpGKrVaGRXdQjEdXbvfEADrd2k=",
+        "label": "Permanu TEST release key (release)",
+        "added_at": "2026-09-01T08:00:00Z",
+        "added_by": null
+      },
+      {
+        "key_id": "RE1jopVSq8Moy0jDftg6Kg",
+        "alg": "Ed25519",
+        "spki": "MCowBQYDK2VwAyEAGZtqVq+kKLsm+LOjTwv8MyMHrGU4692o51PChact9zc=",
+        "label": "Permanu TEST release key (rotated)",
+        "added_at": "2026-09-23T10:00:00Z",
+        "added_by": {
+          "plan_id": "01a0cdb5-3500-7001-8000-00000000000b",
+          "plan_digest_hex": "f6a50c66742dd3864c5ab9a39dc519275d135144bbe4eb5f8ac468b6969afcc9"
+        }
+      }
+    ],
+    "revocations": []
+  }
+}

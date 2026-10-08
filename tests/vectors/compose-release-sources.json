@@ -1,0 +1,118 @@
+{
+  "schema_version": 1,
+  "deployment_enabled": false,
+  "files": [
+    {
+      "path": "proto/agent/compose/v1/compose.proto",
+      "source": "proto/agent/compose/v1/compose.proto",
+      "tag": "proto-v2.1.13",
+      "commit": "be921a7602ed7814743ac02c2309a9bca9047d74",
+      "sha256": "1fd469db4fda7cfe25b7a1025399dd063ef7f614cd80d5b8b4e6df9897823774"
+    },
+    {
+      "path": "proto/agent/v1/agent.proto",
+      "source": "proto/agent/v1/agent.proto",
+      "tag": "proto-v2.1.13",
+      "commit": "be921a7602ed7814743ac02c2309a9bca9047d74",
+      "sha256": "2668fbf5c17807aa76a2f15c9421f545034ec00606e1d3875c500d4b1dfa9498"
+    },
+    {
+      "path": "proto/agent/v2/alerts.proto",
+      "source": "proto/agent/v2/alerts.proto",
+      "tag": "proto-v2.1.13",
+      "commit": "be921a7602ed7814743ac02c2309a9bca9047d74",
+      "sha256": "be03c1ab47236aa70df3da2cf4a11fe9b7fb7eb0d459e3e8d06f371751307f2f"
+    },
+    {
+      "path": "proto/agent/v2/backups.proto",
+      "source": "proto/agent/v2/backups.proto",
+      "tag": "proto-v2.1.13",
+      "commit": "be921a7602ed7814743ac02c2309a9bca9047d74",
+      "sha256": "0ed4a9ca5b8cc0fc1d94a0ac97b61aebd6b17b9932723a9a1348cc27957a888d"
+    },
+    {
+      "path": "proto/agent/v2/changes.proto",
+      "source": "proto/agent/v2/changes.proto",
+      "tag": "proto-v2.1.13",
+      "commit": "be921a7602ed7814743ac02c2309a9bca9047d74",
+      "sha256": "952387c32da25103f240eb117f62df56417d6e3e845ed298ba67790a266f0eb4"
+    },
+    {
+      "path": "proto/agent/v2/ci.proto",
+      "source": "proto/agent/v2/ci.proto",
+      "tag": "proto-v2.1.13",
+      "commit": "be921a7602ed7814743ac02c2309a9bca9047d74",
+      "sha256": "8b15ba6f4dc6fb198813a2be338acde43a63d07db21eef7c12e626675abdf90e"
+    },
+    {
+      "path": "proto/agent/v2/common.proto",
+      "source": "proto/agent/v2/common.proto",
+      "tag": "proto-v2.1.13",
+      "commit": "be921a7602ed7814743ac02c2309a9bca9047d74",
+      "sha256": "b2cb422633e6906ac1eefb8e31dd123534cbf3297b08377ad574eee316735969"
+    },
+    {
+      "path": "proto/agent/v2/events.proto",
+      "source": "proto/agent/v2/events.proto",
+      "tag": "proto-v2.1.13",
+      "commit": "be921a7602ed7814743ac02c2309a9bca9047d74",
+      "sha256": "c4c60c49f6b1ff10520e70156e28ba9e617105c0a7f0f49d04cc5de0a470147b"
+    },
+    {
+      "path": "proto/agent/v2/info.proto",
+      "source": "proto/agent/v2/info.proto",
+      "tag": "proto-v2.1.13",
+      "commit": "be921a7602ed7814743ac02c2309a9bca9047d74",
+      "sha256": "bbdf5410e5299ba6229f43e6b90829d52ea6aa4438e0d374e54a8b6c59545239"
+    },
+    {
+      "path": "proto/agent/v2/schedules.proto",
+      "source": "proto/agent/v2/schedules.proto",
+      "tag": "proto-v2.1.13",
+      "commit": "be921a7602ed7814743ac02c2309a9bca9047d74",
+      "sha256": "e6c05985e53e4dc7456eb06bda7351f98601d66c1e8ef2c5f40b42641d1bf28c"
+    },
+    {
+      "path": "proto/agent/v2/shell.proto",
+      "source": "proto/agent/v2/shell.proto",
+      "tag": "proto-v2.1.13",
+      "commit": "be921a7602ed7814743ac02c2309a9bca9047d74",
+      "sha256": "d7acbfb532ba5e66f551f0e9b78d03cdf18aa36bb7e59fd3eea6fb16b28e26ec"
+    },
+    {
+      "path": "proto/agent/v2/state.proto",
+      "source": "proto/agent/v2/state.proto",
+      "tag": "proto-v2.1.13",
+      "commit": "be921a7602ed7814743ac02c2309a9bca9047d74",
+      "sha256": "35af9d86a0794f068bb50948cb3c967dd3584662a9cf25117b165ef84a5d802b"
+    },
+    {
+      "path": "proto/agent/v2/telemetry.proto",
+      "source": "proto/agent/v2/telemetry.proto",
+      "tag": "proto-v2.1.13",
+      "commit": "be921a7602ed7814743ac02c2309a9bca9047d74",
+      "sha256": "67e6e59bf140018a40f046a3585ddcc0a63f6e38e36d372c75b2274dbb0b3643"
+    },
+    {
+      "path": "proto/agent/v2/webhooks.proto",
+      "source": "proto/agent/v2/webhooks.proto",
+      "tag": "proto-v2.1.13",
+      "commit": "be921a7602ed7814743ac02c2309a9bca9047d74",
+      "sha256": "b695269ac212b7b5aa8eb4d7e819ab01de705252f1fcb75e479792deabf3319a"
+    },
+    {
+      "path": "src/compose_release_v1/generated.rs",
+      "source": "contracts/generated/compose_release_v1.rs",
+      "tag": "contracts-v1.7.0",
+      "commit": "36fa35b4e85bb684b1ffc9da19190a932980c8d6",
+      "sha256": "d52af480b40b8ce56bc5c2f73a48451a554e8a4ea0a82ad50e04ba604d34a64f"
+    },
+    {
+      "path": "tests/vectors/compose-release-v1/structural-only.fake.json",
+      "source": "contracts/vectors/compose-release-v1/structural-only.fake.json",
+      "tag": "contracts-v1.7.0",
+      "commit": "36fa35b4e85bb684b1ffc9da19190a932980c8d6",
+      "sha256": "b2a1a279c4ecbbbb2d52e83ea557207868fc6fa51e5c28eb94d6c77e236c9ae1"
+    }
+  ]
+}

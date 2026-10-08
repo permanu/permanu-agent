@@ -4,6 +4,8 @@ version = "0.1.0"
 edition = "2021"
 
 [features]
+# Default-off whole-transaction transport; no production backend or enrollment configured.
+compose-release-v1 = []
 # Development only, never in release builds: PERMANU_AGENT_DEV_ROOT moves every
 # local-mode path under an unprivileged dir for the engine smoke test.
 dev-paths = []
@@ -55,6 +57,7 @@ x25519-dalek = { version = "2", features = ["static_secrets"] }
 zip = { version = "2", default-features = false, features = ["deflate"] }
 
 [dev-dependencies]
+tokio = { version = "1", features = ["test-util"] }
 
 [build-dependencies]
 protoc-bin-vendored = "3"

@@ -29,11 +29,13 @@ for arch in $ARCHES; do
   if command -v cargo-zigbuild >/dev/null 2>&1; then
     PERMANU_AGENT_BUILD_VERSION="${VERSION}-${arch}" cargo zigbuild \
       --release \
+      --features compose-release-v1 \
       --locked \
       --target "$target"
   else
     PERMANU_AGENT_BUILD_VERSION="${VERSION}-${arch}" cargo build \
       --release \
+      --features compose-release-v1 \
       --locked \
       --target "$target"
   fi
