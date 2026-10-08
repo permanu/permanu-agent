@@ -1,5 +1,5 @@
 //! Whole-release forwarding only. Root runner owns trust, replay and host effects.
-use super::runner::Runner;
+use super::runner::{Runner, READ_TIMEOUT};
 use crate::proto::agent::compose::v1::{
     self as pb, compose_release_service_server::ComposeReleaseService,
 };
@@ -14,7 +14,9 @@ pub async fn available(runner: &dyn Runner) -> bool {
     match runner
         .exchange(
             json!({"op":"compose_v1_capabilities","payload":{"schema_version":1}}),
-            Duration::from_secs(2),
+            // Live inventory/artifact checks use the existing bounded read budget.
+            // Unavailable callers may now wait up to 30 seconds rather than two.
+            READ_TIMEOUT,
         )
         .await
     {
@@ -265,3 +267,7 @@ fn observation(data: Value, app: &str) -> Result<pb::RegisteredApplicationObserv
 }
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+#[path = "compose_rpc/availability_tests.rs"]
+mod availability_tests;

@@ -57,6 +57,7 @@ x25519-dalek = { version = "2", features = ["static_secrets"] }
 zip = { version = "2", default-features = false, features = ["deflate"] }
 
 [dev-dependencies]
+tokio = { version = "1", features = ["test-util"] }
 
 [build-dependencies]
 protoc-bin-vendored = "3"
